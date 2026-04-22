@@ -39,12 +39,16 @@ export default function ClientsPage() {
   }, [allClients, search, filter]);
 
   const departements = Array.from(
-    new Set(clients.map((c) => c.departement).filter((d): d is string => typeof d === "string" && d.length > 0))
+    new Set(
+      clients
+        .map((c) => (c.departement == null || c.departement === "" ? null : String(c.departement)))
+        .filter((d): d is string => d !== null)
+    )
   ).sort((a, b) => a.localeCompare(b));
 
   const filteredClients = selectedDeps.length === 0
     ? clients
-    : clients.filter((c) => c.departement && selectedDeps.includes(c.departement));
+    : clients.filter((c) => c.departement != null && selectedDeps.includes(String(c.departement)));
 
   const exportCSV = () => {
     const headers = ["Entreprise", "Contact", "Email", "Téléphone", "Ville", "Département", "SIREN", "Apporteur", "Vélos commandés", "Vélos livrés", "Certificats", "Facturables", "Facturés", "Devis", "Kbis", "Attestation", "Signature", "Bicycle"];

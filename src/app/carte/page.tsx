@@ -44,12 +44,16 @@ export default function CartePage() {
   const [loading, setLoading] = useState(false);
 
   const departements = Array.from(
-    new Set(allClients.map((c) => c.departement).filter((d): d is string => typeof d === "string" && d.length > 0))
+    new Set(
+      allClients
+        .map((c) => (c.departement == null || c.departement === "" ? null : String(c.departement)))
+        .filter((d): d is string => d !== null)
+    )
   ).sort((a, b) => a.localeCompare(b));
 
   const clients = selectedDeps.length === 0
     ? allClients
-    : allClients.filter((c) => c.departement && selectedDeps.includes(c.departement));
+    : allClients.filter((c) => c.departement != null && selectedDeps.includes(String(c.departement)));
 
   const handleSelectClient = useCallback(
     async (clientId: string) => {
