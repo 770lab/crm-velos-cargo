@@ -1,28 +1,11 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { gasGet } from "@/lib/gas";
-
-interface Stats {
-  totalClients: number;
-  totalVelos: number;
-  velosLivres: number;
-  certificatsRecus: number;
-  velosFacturables: number;
-  velosFactures: number;
-  clientsDocsComplets: number;
-  progression: number;
-  livraisonsParStatut: Record<string, number>;
-}
+import { useData } from "@/lib/data-context";
 
 export default function Dashboard() {
-  const [stats, setStats] = useState<Stats | null>(null);
+  const { stats, loading } = useData();
 
-  useEffect(() => {
-    gasGet("getStats").then(setStats);
-  }, []);
-
-  if (!stats) {
+  if (loading || !stats) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-gray-400">Chargement...</div>

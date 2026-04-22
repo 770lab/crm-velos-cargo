@@ -1,47 +1,24 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useState } from "react";
 import { gasGet, gasPost } from "@/lib/gas";
-
-interface LivraisonRow {
-  id: string;
-  datePrevue: string | null;
-  dateEffective: string | null;
-  statut: string;
-  notes: string | null;
-  client: { entreprise: string; ville: string | null; adresse: string | null };
-  _count: { velos: number };
-}
-
-interface ClientOption {
-  id: string;
-  entreprise: string;
-  stats: { totalVelos: number; livres: number };
-}
+import { useData } from "@/lib/data-context";
 
 export default function LivraisonsPage() {
-  const [livraisons, setLivraisons] = useState<LivraisonRow[]>([]);
+  const { livraisons, clients: allClients, loading, refresh } = useData();
   const [showAdd, setShowAdd] = useState(false);
-
-  const load = useCallback(() => {
-    gasGet("getLivraisons").then(setLivraisons);
-  }, []);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   const updateStatut = async (id: string, statut: string) => {
     const data: Record<string, unknown> = { statut };
     if (statut === "livree") data.dateEffective = new Date().toISOString();
     await gasPost("updateLivraison", { id, data });
-    load();
+    refresh("livraisons");
   };
 
   const deleteLivraison = async (id: string) => {
     if (!confirm("Supprimer cette livraison ?")) return;
     await gasGet("deleteLivraison", { id });
-    load();
+    refresh("livraisons");
   };
 
   const statutColors: Record<string, string> = {
@@ -124,21 +101,16 @@ export default function LivraisonsPage() {
         </table>
       </div>
 
-      {showAdd && <AddLivraisonModal onClose={() => { setShowAdd(false); load(); }} />}
+      {showAdd && <AddLivraisonModal clients={allClients} onClose={() => { setShowAdd(false); refresh("livraisons"); }} />}
     </div>
   );
 }
 
-function AddLivraisonModal({ onClose }: { onClose: () => void }) {
-  const [clients, setClients] = useState<ClientOption[]>([]);
+function AddLivraisonModal({ clients, onClose }: { clients: { id: string; entreprise: string; stats: { totalVelos: number } }[]; onClose: () => void }) {
   const [clientId, setClientId] = useState("");
   const [datePrevue, setDatePrevue] = useState("");
   const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    gasGet("getClients").then(setClients);
-  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

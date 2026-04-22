@@ -2,26 +2,10 @@
 
 import { useEffect, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
-import { gasGet, gasPost } from "@/lib/gas";
+import { gasPost } from "@/lib/gas";
+import { useData } from "@/lib/data-context";
 
 const MapView = dynamic(() => import("@/components/map-view"), { ssr: false });
-
-interface ClientPoint {
-  id: string;
-  entreprise: string;
-  ville: string | null;
-  departement: string | null;
-  adresse: string | null;
-  codePostal: string | null;
-  lat: number;
-  lng: number;
-  nbVelos: number;
-  modeLivraison: string;
-  telephone: string | null;
-  email: string | null;
-  docsComplets: boolean;
-  velosLivres: number;
-}
 
 interface TourneeClient {
   id: string;
@@ -50,17 +34,13 @@ interface TourneeResult {
 }
 
 export default function CartePage() {
-  const [allClients, setAllClients] = useState<ClientPoint[]>([]);
+  const { carte: allClients } = useData();
   const [selected, setSelected] = useState<string | null>(null);
   const [mode, setMode] = useState<"atelier" | "sursite">("atelier");
   const [maxDistance, setMaxDistance] = useState(50);
   const [departement, setDepartement] = useState("all");
   const [tournee, setTournee] = useState<TourneeResult | null>(null);
   const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    gasGet("getCarte").then(setAllClients);
-  }, []);
 
   const departements = Array.from(
     new Set(allClients.map((c) => c.departement).filter((d): d is string => typeof d === "string" && d.length > 0))

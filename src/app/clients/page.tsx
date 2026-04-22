@@ -1,52 +1,41 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
-import { gasGet, gasPost } from "@/lib/gas";
-
-interface ClientRow {
-  id: string;
-  entreprise: string;
-  siren: string | null;
-  contact: string | null;
-  email: string | null;
-  telephone: string | null;
-  ville: string | null;
-  departement: string | null;
-  apporteur: string | null;
-  devisSignee: boolean;
-  kbisRecu: boolean;
-  attestationRecue: boolean;
-  signatureOk: boolean;
-  inscriptionBicycle: boolean;
-  nbVelosCommandes: number;
-  stats: {
-    totalVelos: number;
-    livres: number;
-    certificats: number;
-    facturables: number;
-    factures: number;
-  };
-}
+import { gasPost } from "@/lib/gas";
+import { useData } from "@/lib/data-context";
 
 export default function ClientsPage() {
-  const [clients, setClients] = useState<ClientRow[]>([]);
+  const { clients: allClients, loading, refresh } = useData();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const [departement, setDepartement] = useState("all");
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
 
-  const loadClients = useCallback(() => {
-    const params: Record<string, string> = {};
-    if (search) params.search = search;
-    if (filter !== "all") params.filter = filter;
-    gasGet("getClients", params).then(setClients);
-  }, [search, filter]);
-
-  useEffect(() => {
-    loadClients();
-  }, [loadClients]);
+  const clients = useMemo(() => {
+    let result = allClients;
+    if (search) {
+      const q = search.toLowerCase();
+      result = result.filter(
+        (c) =>
+          c.entreprise.toLowerCase().includes(q) ||
+          c.contact?.toLowerCase().includes(q) ||
+          c.email?.toLowerCase().includes(q) ||
+          c.ville?.toLowerCase().includes(q)
+      );
+    }
+    if (filter === "docs_manquants") {
+      result = result.filter(
+        (c) => !c.devisSignee || !c.kbisRecu || !c.attestationRecue || !c.signatureOk || !c.inscriptionBicycle
+      );
+    } else if (filter === "prets") {
+      result = result.filter(
+        (c) => c.devisSignee && c.kbisRecu && c.attestationRecue && c.signatureOk && c.inscriptionBicycle
+      );
+    }
+    return result;
+  }, [allClients, search, filter]);
 
   const departements = Array.from(
     new Set(clients.map((c) => c.departement).filter((d): d is string => typeof d === "string" && d.length > 0))
@@ -171,7 +160,7 @@ export default function ClientsPage() {
               <tr>
                 <td colSpan={10} className="px-4 py-12 text-center text-gray-400">
                   {clients.length === 0
-                    ? "Aucun client. Importez votre tableau ou ajoutez un client."
+                    ? (loading ? "Chargement..." : "Aucun client. Importez votre tableau ou ajoutez un client.")
                     : "Aucun client trouvé pour ces filtres."}
                 </td>
               </tr>
@@ -180,8 +169,8 @@ export default function ClientsPage() {
         </table>
       </div>
 
-      {showAdd && <AddClientModal onClose={() => { setShowAdd(false); loadClients(); }} />}
-      {showImport && <ImportModal onClose={() => { setShowImport(false); loadClients(); }} />}
+      {showAdd && <AddClientModal onClose={() => { setShowAdd(false); refresh("clients"); }} />}
+      {showImport && <ImportModal onClose={() => { setShowImport(false); refresh("clients"); }} />}
     </div>
   );
 }
