@@ -29,6 +29,10 @@ model Client {
   signatureOk        Boolean  @default(false)
   inscriptionBicycle Boolean  @default(false)
 
+  latitude           Float?
+  longitude          Float?
+  modeLivraison      String   @default("atelier") // atelier (6/camion) ou sursite (54/camion)
+
   notes              String?
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt

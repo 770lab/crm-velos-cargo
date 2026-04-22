@@ -1,0 +1,252 @@
+"use client";
+
+import { useEffect, useState, useCallback } from "react";
+import dynamic from "next/dynamic";
+
+const MapView = dynamic(() => import("@/components/map-view"), { ssr: false });
+
+interface ClientPoint {
+  id: string;
+  entreprise: string;
+  ville: string | null;
+  departement: string | null;
+  adresse: string | null;
+  codePostal: string | null;
+  lat: number;
+  lng: number;
+  nbVelos: number;
+  modeLivraison: string;
+  telephone: string | null;
+  email: string | null;
+  docsComplets: boolean;
+  velosLivres: number;
+}
+
+interface TourneeClient {
+  id: string;
+  entreprise: string;
+  ville: string | null;
+  lat: number;
+  lng: number;
+  nbVelos: number;
+  distance: number;
+}
+
+interface TourneeResult {
+  mode: string;
+  capacite: number;
+  tournee: TourneeClient[];
+  totalVelos: number;
+  clientsProches: Array<{
+    id: string;
+    entreprise: string;
+    ville: string | null;
+    lat: number;
+    lng: number;
+    distance: number;
+    velosRestants: number;
+  }>;
+}
+
+export default function CartePage() {
+  const [clients, setClients] = useState<ClientPoint[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [mode, setMode] = useState<"atelier" | "sursite">("atelier");
+  const [maxDistance, setMaxDistance] = useState(50);
+  const [tournee, setTournee] = useState<TourneeResult | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/carte")
+      .then((r) => r.json())
+      .then(setClients);
+  }, []);
+
+  const handleSelectClient = useCallback(
+    async (clientId: string) => {
+      setSelected(clientId);
+      setLoading(true);
+      const res = await fetch("/api/carte", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId, mode, maxDistance }),
+      });
+      const data = await res.json();
+      setTournee(data);
+      setLoading(false);
+    },
+    [mode, maxDistance]
+  );
+
+  useEffect(() => {
+    if (selected) handleSelectClient(selected);
+  }, [mode, maxDistance, selected, handleSelectClient]);
+
+  const selectedClient = clients.find((c) => c.id === selected);
+  const tourneeIds = new Set(tournee?.tournee.map((t) => t.id) || []);
+
+  return (
+    <div className="flex h-[calc(100vh-4rem)]">
+      <div className="flex-1 relative">
+        <MapView
+          clients={clients}
+          selectedId={selected}
+          tourneeIds={tourneeIds}
+          tournee={tournee?.tournee || []}
+          onSelectClient={handleSelectClient}
+        />
+      </div>
+
+      <div className="w-96 bg-white border-l overflow-y-auto">
+        <div className="p-4 border-b">
+          <h2 className="font-semibold text-lg">Planification</h2>
+          <p className="text-sm text-gray-500 mt-1">
+            {clients.length} clients sur la carte
+          </p>
+        </div>
+
+        <div className="p-4 border-b space-y-3">
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">
+              Mode de livraison
+            </label>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setMode("atelier")}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  mode === "atelier"
+                    ? "bg-blue-600 text-white"
+                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                }`}
+              >
+                Atelier (6/camion)
+              </button>
+              <button
+                onClick={() => setMode("sursite")}
+                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
+                  mode === "sursite"
+                    ? "bg-orange-600 text-white"
+                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                }`}
+              >
+                Sur site (54/camion)
+              </button>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">
+              Rayon max : {maxDistance} km
+            </label>
+            <input
+              type="range"
+              min={10}
+              max={200}
+              step={10}
+              value={maxDistance}
+              onChange={(e) => setMaxDistance(Number(e.target.value))}
+              className="w-full"
+            />
+          </div>
+        </div>
+
+        {!selected && (
+          <div className="p-8 text-center text-gray-400 text-sm">
+            Cliquez sur un client sur la carte pour calculer une tournée
+          </div>
+        )}
+
+        {loading && (
+          <div className="p-8 text-center text-gray-400 text-sm">
+            Calcul de la tournée...
+          </div>
+        )}
+
+        {selected && selectedClient && tournee && !loading && (
+          <div className="p-4 space-y-4">
+            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+              <div className="font-medium text-blue-900">
+                {selectedClient.entreprise}
+              </div>
+              <div className="text-sm text-blue-700">
+                {selectedClient.ville} ({selectedClient.departement})
+              </div>
+              <div className="text-sm text-blue-600 mt-1">
+                {selectedClient.nbVelos - selectedClient.velosLivres} vélos à
+                livrer
+              </div>
+            </div>
+
+            <div className="bg-green-50 border border-green-200 rounded-lg p-3">
+              <div className="flex justify-between items-center">
+                <span className="font-medium text-green-900">Tournée suggérée</span>
+                <span className="text-sm text-green-700">
+                  {tournee.totalVelos}/{tournee.capacite} vélos
+                </span>
+              </div>
+              <div className="text-xs text-green-600 mt-1">
+                {tournee.tournee.length} arrêt{tournee.tournee.length > 1 ? "s" : ""} —{" "}
+                {mode === "atelier" ? "montage atelier" : "montage sur site"}
+              </div>
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="text-sm font-medium text-gray-700">
+                Arrêts de la tournée
+              </h3>
+              {tournee.tournee.map((t, i) => (
+                <div
+                  key={t.id}
+                  className={`flex items-center gap-3 p-2 rounded-lg text-sm ${
+                    i === 0 ? "bg-blue-50" : "bg-gray-50"
+                  }`}
+                >
+                  <span className="w-6 h-6 rounded-full bg-green-600 text-white text-xs flex items-center justify-center font-medium">
+                    {i + 1}
+                  </span>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-medium truncate">{t.entreprise}</div>
+                    <div className="text-xs text-gray-500">
+                      {t.ville}
+                      {t.distance > 0 && ` — ${t.distance} km`}
+                    </div>
+                  </div>
+                  <span className="text-xs font-medium bg-white px-2 py-1 rounded border">
+                    {t.nbVelos} v.
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {tournee.clientsProches.length > tournee.tournee.length - 1 && (
+              <div className="space-y-2">
+                <h3 className="text-sm font-medium text-gray-700">
+                  Autres clients proches
+                </h3>
+                {tournee.clientsProches
+                  .filter((c) => !tourneeIds.has(c.id))
+                  .slice(0, 10)
+                  .map((c) => (
+                    <button
+                      key={c.id}
+                      onClick={() => handleSelectClient(c.id)}
+                      className="w-full flex items-center gap-3 p-2 rounded-lg text-sm hover:bg-gray-50 text-left"
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="truncate">{c.entreprise}</div>
+                        <div className="text-xs text-gray-400">
+                          {c.ville} — {c.distance} km
+                        </div>
+                      </div>
+                      <span className="text-xs text-gray-500">
+                        {c.velosRestants} v.
+                      </span>
+                    </button>
+                  ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
