@@ -14,8 +14,19 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://770lab.github.io"),
   title: "CRM Vélos Cargo - Artisans Verts",
   description: "Gestion des livraisons de vélos cargo",
+  icons: {
+    icon: "/crm-velos-cargo/favicon.svg",
+    apple: "/crm-velos-cargo/apple-touch-icon.png",
+  },
+  openGraph: {
+    title: "CRM Vélos Cargo - Artisans Verts",
+    description: "Gestion des livraisons de vélos cargo",
+    images: [{ url: "/crm-velos-cargo/og-image.png", width: 1200, height: 630 }],
+    type: "website",
+  },
 };
 
 export default function RootLayout({

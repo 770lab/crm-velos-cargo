@@ -30,7 +30,7 @@ export default function LivraisonsPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Livraisons</h1>
           <p className="text-gray-500 mt-1">{livraisons.length} livraisons planifiées</p>
@@ -43,8 +43,8 @@ export default function LivraisonsPage() {
         </button>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-white rounded-xl shadow-sm border overflow-x-auto">
+        <table className="w-full min-w-[600px] text-sm">
           <thead className="bg-gray-50 border-b">
             <tr>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Client</th>

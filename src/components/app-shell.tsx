@@ -9,7 +9,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     <AuthGate>
       <DataProvider>
         <Sidebar />
-        <main className="flex-1 ml-64 p-8">{children}</main>
+        <main className="flex-1 p-4 pt-16 lg:pt-8 lg:ml-64 lg:p-8">{children}</main>
       </DataProvider>
     </AuthGate>
   );

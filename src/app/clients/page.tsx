@@ -47,7 +47,7 @@ export default function ClientsPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Clients</h1>
           <p className="text-gray-500 mt-1">{filteredClients.length} clients{departement !== "all" ? ` (dép. ${departement})` : ""}</p>
@@ -68,7 +68,7 @@ export default function ClientsPage() {
         </div>
       </div>
 
-      <div className="flex gap-4 mb-6">
+      <div className="flex flex-col sm:flex-row gap-3 mb-6">
         <input
           type="text"
           placeholder="Rechercher..."
@@ -97,8 +97,8 @@ export default function ClientsPage() {
         </select>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
-        <table className="w-full text-sm">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
+        <table className="w-full min-w-[800px] text-sm">
           <thead className="bg-gray-50 border-b">
             <tr>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Entreprise</th>

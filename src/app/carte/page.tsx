@@ -69,8 +69,8 @@ export default function CartePage() {
   const tourneeIds = new Set(tournee?.tournee.map((t) => t.id) || []);
 
   return (
-    <div className="flex h-[calc(100vh-4rem)]">
-      <div className="flex-1 relative">
+    <div className="flex flex-col lg:flex-row h-[calc(100vh-5rem)] lg:h-[calc(100vh-4rem)]">
+      <div className="flex-1 relative min-h-[300px]">
         <MapView
           clients={clients}
           selectedId={selected}
@@ -80,7 +80,7 @@ export default function CartePage() {
         />
       </div>
 
-      <div className="w-96 bg-white border-l overflow-y-auto">
+      <div className="w-full lg:w-96 bg-white border-t lg:border-t-0 lg:border-l overflow-y-auto max-h-[50vh] lg:max-h-none">
         <div className="p-4 border-b">
           <h2 className="font-semibold text-lg">Planification</h2>
           <p className="text-sm text-gray-500 mt-1">
