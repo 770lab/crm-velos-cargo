@@ -23,6 +23,7 @@ interface ClientRow {
   email: string | null;
   telephone: string | null;
   ville: string | null;
+  codePostal: string | null;
   departement: string | null;
   apporteur: string | null;
   devisSignee: boolean;

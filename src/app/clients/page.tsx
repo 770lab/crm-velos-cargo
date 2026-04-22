@@ -11,6 +11,7 @@ export default function ClientsPage() {
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
+  const [codePostal, setCodePostal] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
 
@@ -46,9 +47,16 @@ export default function ClientsPage() {
     )
   ).sort((a, b) => a.localeCompare(b));
 
-  const filteredClients = selectedDeps.length === 0
-    ? clients
-    : clients.filter((c) => c.departement != null && selectedDeps.includes(String(c.departement)));
+  const cpFilter = codePostal.trim();
+  const filteredClients = clients.filter((c) => {
+    if (selectedDeps.length > 0 && !(c.departement != null && selectedDeps.includes(String(c.departement)))) {
+      return false;
+    }
+    if (cpFilter && !(c.codePostal != null && String(c.codePostal).startsWith(cpFilter))) {
+      return false;
+    }
+    return true;
+  });
 
   const exportCSV = () => {
     const headers = ["Entreprise", "Contact", "Email", "Téléphone", "Ville", "Département", "SIREN", "Apporteur", "Vélos commandés", "Vélos livrés", "Certificats", "Facturables", "Facturés", "Devis", "Kbis", "Attestation", "Signature", "Bicycle"];
@@ -75,6 +83,7 @@ export default function ClientsPage() {
           <p className="text-gray-500 mt-1">
             {filteredClients.length} clients
             {selectedDeps.length > 0 && ` (dép. ${[...selectedDeps].sort((a, b) => a.localeCompare(b)).join(", ")})`}
+            {cpFilter && ` (CP ${cpFilter})`}
           </p>
         </div>
         <div className="flex gap-3">
@@ -113,6 +122,14 @@ export default function ClientsPage() {
           options={departements}
           className="sm:w-56"
           placeholder="Tous les dép."
+        />
+        <input
+          type="text"
+          inputMode="numeric"
+          value={codePostal}
+          onChange={(e) => setCodePostal(e.target.value)}
+          placeholder="Code postal (ex. 75010)"
+          className="sm:w-48 px-4 py-2 border border-gray-300 rounded-lg text-sm"
         />
         <select
           value={filter}
