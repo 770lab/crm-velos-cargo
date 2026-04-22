@@ -32,6 +32,7 @@ export default function ClientsPage() {
   const [clients, setClients] = useState<ClientRow[]>([]);
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
+  const [departement, setDepartement] = useState("all");
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
 
@@ -48,12 +49,20 @@ export default function ClientsPage() {
     loadClients();
   }, [loadClients]);
 
+  const departements = Array.from(
+    new Set(clients.map((c) => c.departement).filter(Boolean))
+  ).sort((a, b) => a!.localeCompare(b!));
+
+  const filteredClients = departement === "all"
+    ? clients
+    : clients.filter((c) => c.departement === departement);
+
   return (
     <div>
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Clients</h1>
-          <p className="text-gray-500 mt-1">{clients.length} clients</p>
+          <p className="text-gray-500 mt-1">{filteredClients.length} clients{departement !== "all" ? ` (dép. ${departement})` : ""}</p>
         </div>
         <div className="flex gap-3">
           <button
@@ -79,6 +88,16 @@ export default function ClientsPage() {
           onChange={(e) => setSearch(e.target.value)}
           className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm"
         />
+        <select
+          value={departement}
+          onChange={(e) => setDepartement(e.target.value)}
+          className="px-4 py-2 border border-gray-300 rounded-lg text-sm"
+        >
+          <option value="all">Tous les dép.</option>
+          {departements.map((d) => (
+            <option key={d} value={d!}>{d}</option>
+          ))}
+        </select>
         <select
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
@@ -107,7 +126,7 @@ export default function ClientsPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {clients.map((c) => (
+            {filteredClients.map((c) => (
               <tr key={c.id} className="hover:bg-gray-50">
                 <td className="px-4 py-3">
                   <Link
@@ -149,10 +168,12 @@ export default function ClientsPage() {
                 </td>
               </tr>
             ))}
-            {clients.length === 0 && (
+            {filteredClients.length === 0 && (
               <tr>
                 <td colSpan={10} className="px-4 py-12 text-center text-gray-400">
-                  Aucun client. Importez votre tableau ou ajoutez un client.
+                  {clients.length === 0
+                    ? "Aucun client. Importez votre tableau ou ajoutez un client."
+                    : "Aucun client trouvé pour ces filtres."}
                 </td>
               </tr>
             )}

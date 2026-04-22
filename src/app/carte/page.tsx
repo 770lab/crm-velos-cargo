@@ -49,18 +49,27 @@ interface TourneeResult {
 }
 
 export default function CartePage() {
-  const [clients, setClients] = useState<ClientPoint[]>([]);
+  const [allClients, setAllClients] = useState<ClientPoint[]>([]);
   const [selected, setSelected] = useState<string | null>(null);
   const [mode, setMode] = useState<"atelier" | "sursite">("atelier");
   const [maxDistance, setMaxDistance] = useState(50);
+  const [departement, setDepartement] = useState("all");
   const [tournee, setTournee] = useState<TourneeResult | null>(null);
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
     fetch("/api/carte")
       .then((r) => r.json())
-      .then(setClients);
+      .then(setAllClients);
   }, []);
+
+  const departements = Array.from(
+    new Set(allClients.map((c) => c.departement).filter(Boolean))
+  ).sort((a, b) => a!.localeCompare(b!));
+
+  const clients = departement === "all"
+    ? allClients
+    : allClients.filter((c) => c.departement === departement);
 
   const handleSelectClient = useCallback(
     async (clientId: string) => {
@@ -106,6 +115,21 @@ export default function CartePage() {
         </div>
 
         <div className="p-4 border-b space-y-3">
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">
+              Filtrer par département
+            </label>
+            <select
+              value={departement}
+              onChange={(e) => { setDepartement(e.target.value); setSelected(null); setTournee(null); }}
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+            >
+              <option value="all">Tous les départements</option>
+              {departements.map((d) => (
+                <option key={d} value={d!}>{d}</option>
+              ))}
+            </select>
+          </div>
           <div>
             <label className="text-xs font-medium text-gray-600 block mb-1">
               Mode de livraison

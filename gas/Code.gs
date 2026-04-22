@@ -444,7 +444,7 @@ function deleteLivraison(id) {
 // ---- IMPORT INITIAL ----
 
 function importInitialData() {
-  var json = UrlFetchApp.fetch("RAW_JSON_URL_HERE").getContentText();
+  var json = UrlFetchApp.fetch("https://raw.githubusercontent.com/770lab/crm-velos-cargo/main/gas/data-export.json").getContentText();
   var data = JSON.parse(json);
 
   var clientsSheet = SS.getSheetByName("Clients") || SS.insertSheet("Clients");

@@ -36,15 +36,59 @@ interface ClientDetail {
   attestationRecue: boolean;
   signatureOk: boolean;
   inscriptionBicycle: boolean;
+  devisLien: string | null;
+  kbisLien: string | null;
+  attestationLien: string | null;
+  signatureLien: string | null;
+  bicycleLien: string | null;
   notes: string | null;
   velos: Velo[];
 }
+
+const DOC_CONFIG = [
+  {
+    field: "devisSignee",
+    lienField: "devisLien",
+    label: "Devis signée",
+    description: "Le client signe le devis. Maria reçoit le document dans son Drive.",
+    step: 1,
+  },
+  {
+    field: "kbisRecu",
+    lienField: "kbisLien",
+    label: "Kbis",
+    description: "Extrait Kbis de moins de 3 mois. Le client l'envoie par email ou Drive.",
+    step: 2,
+  },
+  {
+    field: "attestationRecue",
+    lienField: "attestationLien",
+    label: "Attestation salariés",
+    description: "Attestation du nombre de salariés. Document fourni par le client.",
+    step: 3,
+  },
+  {
+    field: "signatureOk",
+    lienField: "signatureLien",
+    label: "Signature électronique",
+    description: "Contrat signé électroniquement via la plateforme de signature.",
+    step: 4,
+  },
+  {
+    field: "inscriptionBicycle",
+    lienField: "bicycleLien",
+    label: "Inscription Bicycle",
+    description: "Le client s'inscrit sur Bicycle pour les certificats d'homologation.",
+    step: 5,
+  },
+];
 
 export default function ClientDetailPage() {
   const { id } = useParams<{ id: string }>();
   const router = useRouter();
   const [client, setClient] = useState<ClientDetail | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [saving, setSaving] = useState<string | null>(null);
 
   const load = useCallback(() => {
     fetch(`/api/clients/${id}`)
@@ -56,13 +100,15 @@ export default function ClientDetailPage() {
     load();
   }, [load]);
 
-  const toggleDoc = async (field: string, value: boolean) => {
+  const updateField = async (field: string, value: unknown) => {
+    setSaving(field);
     await fetch(`/api/clients/${id}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ [field]: value }),
     });
     load();
+    setSaving(null);
   };
 
   const bulkAction = async (action: string) => {
@@ -89,6 +135,7 @@ export default function ClientDetailPage() {
   const velosLivres = client.velos.filter((v) => v.photoQrPrise).length;
   const certRecus = client.velos.filter((v) => v.certificatRecu).length;
   const facturables = client.velos.filter((v) => v.facturable).length;
+  const docsValides = [client.devisSignee, client.kbisRecu, client.attestationRecue, client.signatureOk, client.inscriptionBicycle].filter(Boolean).length;
 
   const toggleAll = () => {
     if (selected.size === client.velos.length) {
@@ -134,32 +181,42 @@ export default function ClientDetailPage() {
         </button>
       </div>
 
-      <div className="grid grid-cols-5 gap-4 mb-8">
-        <DocCard
-          label="Devis signée"
-          ok={client.devisSignee}
-          onToggle={() => toggleDoc("devisSignee", !client.devisSignee)}
-        />
-        <DocCard
-          label="Kbis"
-          ok={client.kbisRecu}
-          onToggle={() => toggleDoc("kbisRecu", !client.kbisRecu)}
-        />
-        <DocCard
-          label="Attestation salariés"
-          ok={client.attestationRecue}
-          onToggle={() => toggleDoc("attestationRecue", !client.attestationRecue)}
-        />
-        <DocCard
-          label="Signature électronique"
-          ok={client.signatureOk}
-          onToggle={() => toggleDoc("signatureOk", !client.signatureOk)}
-        />
-        <DocCard
-          label="Inscription Bicycle"
-          ok={client.inscriptionBicycle}
-          onToggle={() => toggleDoc("inscriptionBicycle", !client.inscriptionBicycle)}
-        />
+      {/* Progression documents */}
+      <div className="bg-white rounded-xl border p-4 mb-6">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="font-semibold text-gray-900">Dossier administratif</h2>
+          <span className="text-sm font-medium text-gray-600">{docsValides}/5 validés</span>
+        </div>
+        <div className="w-full bg-gray-200 rounded-full h-2">
+          <div
+            className="bg-green-500 h-2 rounded-full transition-all"
+            style={{ width: `${(docsValides / 5) * 100}%` }}
+          />
+        </div>
+        <p className="text-xs text-gray-400 mt-2">
+          Chaque document arrive dans le Google Drive partagé. Collez le lien Drive ci-dessous puis cliquez &quot;Valider&quot; pour confirmer la réception.
+        </p>
+      </div>
+
+      {/* Document cards */}
+      <div className="space-y-3 mb-8">
+        {DOC_CONFIG.map((doc) => {
+          const isValid = client[doc.field as keyof ClientDetail] as boolean;
+          const lien = (client[doc.lienField as keyof ClientDetail] as string) || "";
+          return (
+            <DocCardExpanded
+              key={doc.field}
+              step={doc.step}
+              label={doc.label}
+              description={doc.description}
+              validated={isValid}
+              lien={lien}
+              saving={saving === doc.field || saving === doc.lienField}
+              onToggle={() => updateField(doc.field, !isValid)}
+              onSaveLien={(url) => updateField(doc.lienField, url)}
+            />
+          );
+        })}
       </div>
 
       <div className="grid grid-cols-3 gap-4 mb-8">
@@ -282,22 +339,132 @@ export default function ClientDetailPage() {
   );
 }
 
-function DocCard({ label, ok, onToggle }: { label: string; ok: boolean; onToggle: () => void }) {
+function DocCardExpanded({
+  step,
+  label,
+  description,
+  validated,
+  lien,
+  saving,
+  onToggle,
+  onSaveLien,
+}: {
+  step: number;
+  label: string;
+  description: string;
+  validated: boolean;
+  lien: string;
+  saving: boolean;
+  onToggle: () => void;
+  onSaveLien: (url: string) => void;
+}) {
+  const [editLien, setEditLien] = useState(lien);
+  const [editing, setEditing] = useState(false);
+
+  useEffect(() => {
+    setEditLien(lien);
+  }, [lien]);
+
   return (
-    <button
-      onClick={onToggle}
-      className={`rounded-xl border p-4 text-left transition-colors ${
-        ok ? "bg-green-50 border-green-200" : "bg-white border-gray-200 hover:border-gray-300"
+    <div
+      className={`rounded-xl border p-4 transition-colors ${
+        validated
+          ? "bg-green-50 border-green-200"
+          : "bg-white border-gray-200"
       }`}
     >
-      <div className="flex items-center gap-2">
-        <span className={`w-3 h-3 rounded-full ${ok ? "bg-green-500" : "bg-red-400"}`} />
-        <span className="text-sm font-medium">{label}</span>
+      <div className="flex items-start gap-3">
+        <div
+          className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${
+            validated
+              ? "bg-green-500 text-white"
+              : "bg-gray-200 text-gray-500"
+          }`}
+        >
+          {validated ? "✓" : step}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center justify-between">
+            <h3 className="font-medium text-gray-900">{label}</h3>
+            <button
+              onClick={onToggle}
+              disabled={saving}
+              className={`px-3 py-1 text-xs font-medium rounded-lg transition-colors ${
+                validated
+                  ? "bg-green-100 text-green-700 hover:bg-red-100 hover:text-red-700"
+                  : "bg-blue-600 text-white hover:bg-blue-700"
+              } disabled:opacity-50`}
+            >
+              {saving ? "..." : validated ? "Validé — annuler ?" : "Valider"}
+            </button>
+          </div>
+          <p className="text-xs text-gray-500 mt-1">{description}</p>
+
+          {/* Lien Drive */}
+          <div className="mt-3">
+            {!editing && !lien && (
+              <button
+                onClick={() => setEditing(true)}
+                className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
+              >
+                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                </svg>
+                Ajouter le lien Google Drive
+              </button>
+            )}
+            {!editing && lien && (
+              <div className="flex items-center gap-2 text-xs">
+                <svg className="w-3.5 h-3.5 text-green-600 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                </svg>
+                <a
+                  href={lien}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-blue-600 hover:underline truncate max-w-xs"
+                >
+                  Voir le document
+                </a>
+                <button
+                  onClick={() => setEditing(true)}
+                  className="text-gray-400 hover:text-gray-600 ml-1"
+                >
+                  modifier
+                </button>
+              </div>
+            )}
+            {editing && (
+              <div className="flex gap-2">
+                <input
+                  type="url"
+                  placeholder="https://drive.google.com/..."
+                  value={editLien}
+                  onChange={(e) => setEditLien(e.target.value)}
+                  className="flex-1 px-2 py-1 text-xs border border-gray-300 rounded-lg"
+                  autoFocus
+                />
+                <button
+                  onClick={() => {
+                    onSaveLien(editLien);
+                    setEditing(false);
+                  }}
+                  className="px-2 py-1 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700"
+                >
+                  OK
+                </button>
+                <button
+                  onClick={() => { setEditLien(lien); setEditing(false); }}
+                  className="px-2 py-1 text-xs text-gray-500 hover:text-gray-700"
+                >
+                  Annuler
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
       </div>
-      <div className="text-xs text-gray-500 mt-1">
-        {ok ? "Reçu" : "En attente"}
-      </div>
-    </button>
+    </div>
   );
 }
 
