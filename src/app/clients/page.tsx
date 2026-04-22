@@ -45,6 +45,23 @@ export default function ClientsPage() {
     ? clients
     : clients.filter((c) => c.departement === departement);
 
+  const exportCSV = () => {
+    const headers = ["Entreprise", "Contact", "Email", "Téléphone", "Ville", "Département", "SIREN", "Apporteur", "Vélos commandés", "Vélos livrés", "Certificats", "Facturables", "Facturés", "Devis", "Kbis", "Attestation", "Signature", "Bicycle"];
+    const rows = filteredClients.map((c) => [
+      c.entreprise, c.contact || "", c.email || "", c.telephone || "", c.ville || "", c.departement || "", c.siren || "", c.apporteur || "",
+      c.stats.totalVelos, c.stats.livres, c.stats.certificats, c.stats.facturables, c.stats.factures,
+      c.devisSignee ? "Oui" : "Non", c.kbisRecu ? "Oui" : "Non", c.attestationRecue ? "Oui" : "Non", c.signatureOk ? "Oui" : "Non", c.inscriptionBicycle ? "Oui" : "Non",
+    ]);
+    const csv = [headers, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(";")).join("\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `clients-velos-cargo-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
@@ -53,6 +70,12 @@ export default function ClientsPage() {
           <p className="text-gray-500 mt-1">{filteredClients.length} clients{departement !== "all" ? ` (dép. ${departement})` : ""}</p>
         </div>
         <div className="flex gap-3">
+          <button
+            onClick={exportCSV}
+            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm"
+          >
+            Exporter CSV
+          </button>
           <button
             onClick={() => setShowImport(true)}
             className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm"
