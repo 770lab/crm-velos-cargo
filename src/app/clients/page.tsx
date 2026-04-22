@@ -105,6 +105,7 @@ export default function ClientsPage() {
               <th className="text-left px-4 py-3 font-medium text-gray-600">Ville</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Dép.</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Vélos</th>
+              <th className="text-center px-4 py-3 font-medium text-gray-600">Dossier</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Devis</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Kbis</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Attest.</th>
@@ -132,6 +133,9 @@ export default function ClientsPage() {
                 <td className="text-center px-4 py-3 font-medium">
                   {c.stats.livres}/{c.stats.totalVelos}
                 </td>
+                <td className="px-4 py-3">
+                  <DocProgress devis={c.devisSignee} kbis={c.kbisRecu} attestation={c.attestationRecue} signature={c.signatureOk} bicycle={c.inscriptionBicycle} />
+                </td>
                 <td className="text-center px-4 py-3">
                   <StatusDot ok={c.devisSignee} />
                 </td>
@@ -158,7 +162,7 @@ export default function ClientsPage() {
             ))}
             {filteredClients.length === 0 && (
               <tr>
-                <td colSpan={10} className="px-4 py-12 text-center text-gray-400">
+                <td colSpan={11} className="px-4 py-12 text-center text-gray-400">
                   {clients.length === 0
                     ? (loading ? "Chargement..." : "Aucun client. Importez votre tableau ou ajoutez un client.")
                     : "Aucun client trouvé pour ces filtres."}
@@ -171,6 +175,20 @@ export default function ClientsPage() {
 
       {showAdd && <AddClientModal onClose={() => { setShowAdd(false); refresh("clients"); }} />}
       {showImport && <ImportModal onClose={() => { setShowImport(false); refresh("clients"); }} />}
+    </div>
+  );
+}
+
+function DocProgress({ devis, kbis, attestation, signature, bicycle }: { devis: boolean; kbis: boolean; attestation: boolean; signature: boolean; bicycle: boolean }) {
+  const count = [devis, kbis, attestation, signature, bicycle].filter(Boolean).length;
+  const pct = (count / 5) * 100;
+  const color = count === 5 ? "bg-green-500" : count >= 3 ? "bg-blue-500" : count >= 1 ? "bg-amber-500" : "bg-gray-300";
+  return (
+    <div className="flex items-center gap-2 min-w-[80px]">
+      <div className="flex-1 bg-gray-200 rounded-full h-2">
+        <div className={`${color} h-2 rounded-full transition-all`} style={{ width: `${pct}%` }} />
+      </div>
+      <span className="text-xs text-gray-500 whitespace-nowrap">{count}/5</span>
     </div>
   );
 }
