@@ -3,7 +3,7 @@
 import { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { gasGet, gasPost } from "@/lib/gas";
+import { gasGet, gasPost, gasUpload } from "@/lib/gas";
 
 export default function ClientDetailWrapper() {
   return (
@@ -214,6 +214,23 @@ function ClientDetailPage() {
               saving={saving === doc.field || saving === doc.lienField}
               onToggle={() => updateField(doc.field, !isValid)}
               onSaveLien={(url) => updateField(doc.lienField, url)}
+              onUpload={async (file) => {
+                setSaving(doc.field);
+                const reader = new FileReader();
+                const base64 = await new Promise<string>((resolve) => {
+                  reader.onload = () => resolve((reader.result as string).split(",")[1]);
+                  reader.readAsDataURL(file);
+                });
+                await gasUpload("uploadDoc", {
+                  clientId: id,
+                  docType: doc.field,
+                  fileName: file.name,
+                  fileData: base64,
+                  mimeType: file.type,
+                });
+                load();
+                setSaving(null);
+              }}
             />
           );
         })}
@@ -348,6 +365,7 @@ function DocCardExpanded({
   saving,
   onToggle,
   onSaveLien,
+  onUpload,
 }: {
   step: number;
   label: string;
@@ -357,9 +375,11 @@ function DocCardExpanded({
   saving: boolean;
   onToggle: () => void;
   onSaveLien: (url: string) => void;
+  onUpload: (file: File) => void;
 }) {
   const [editLien, setEditLien] = useState(lien);
   const [editing, setEditing] = useState(false);
+  const [uploading, setUploading] = useState(false);
 
   useEffect(() => {
     setEditLien(lien);
@@ -400,18 +420,40 @@ function DocCardExpanded({
           </div>
           <p className="text-xs text-gray-500 mt-1">{description}</p>
 
-          {/* Lien Drive */}
+          {/* Upload ou lien Drive */}
           <div className="mt-3">
             {!editing && !lien && (
-              <button
-                onClick={() => setEditing(true)}
-                className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
-              >
-                <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-                </svg>
-                Ajouter le lien Google Drive
-              </button>
+              <div className="flex items-center gap-3">
+                <label className="text-xs text-green-700 bg-green-50 hover:bg-green-100 px-3 py-1.5 rounded-lg cursor-pointer flex items-center gap-1.5 transition-colors">
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12" />
+                  </svg>
+                  {uploading ? "Envoi..." : "Uploader un fichier"}
+                  <input
+                    type="file"
+                    accept=".pdf,.jpg,.jpeg,.png,.webp"
+                    className="hidden"
+                    disabled={uploading || saving}
+                    onChange={async (e) => {
+                      const file = e.target.files?.[0];
+                      if (!file) return;
+                      setUploading(true);
+                      await onUpload(file);
+                      setUploading(false);
+                    }}
+                  />
+                </label>
+                <span className="text-xs text-gray-400">ou</span>
+                <button
+                  onClick={() => setEditing(true)}
+                  className="text-xs text-blue-600 hover:text-blue-800 flex items-center gap-1"
+                >
+                  <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
+                  </svg>
+                  Coller un lien Drive
+                </button>
+              </div>
             )}
             {!editing && lien && (
               <div className="flex items-center gap-2 text-xs">

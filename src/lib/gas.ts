@@ -19,3 +19,15 @@ export async function gasPost(action: string, body: unknown) {
   const res = await fetch(url.toString(), { redirect: "follow" });
   return res.json();
 }
+
+export async function gasUpload(action: string, body: unknown) {
+  const url = new URL(GAS_URL);
+  url.searchParams.set("action", action);
+  const res = await fetch(url.toString(), {
+    method: "POST",
+    body: JSON.stringify(body),
+    headers: { "Content-Type": "text/plain" },
+    redirect: "follow",
+  });
+  return res.json();
+}

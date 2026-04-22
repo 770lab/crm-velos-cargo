@@ -58,6 +58,10 @@ function handleRequest(e) {
         var bodyUV = getBody();
         result = updateVelos(bodyUV);
         break;
+      case "uploadDoc":
+        var bodyUD = getBody();
+        result = uploadDoc(bodyUD);
+        break;
       default:
         result = { error: "Action inconnue: " + action };
     }
@@ -445,6 +449,85 @@ function deleteLivraison(id) {
     }
   }
   return { error: "Livraison non trouvée" };
+}
+
+// ---- UPLOAD DOCUMENTS ----
+
+var DRIVE_PARENT_ID = "1cAycg2vUSZbcj6FqJnpmB_hHYCgCBmSR";
+
+function getOrCreateFolder(parent, name) {
+  var folders = parent.getFoldersByName(name);
+  if (folders.hasNext()) return folders.next();
+  return parent.createFolder(name);
+}
+
+function uploadDoc(body) {
+  var clientId = body.clientId;
+  var docType = body.docType;
+  var fileName = body.fileName;
+  var base64Data = body.fileData;
+  var mimeType = body.mimeType || "application/pdf";
+
+  if (!clientId || !docType || !base64Data) {
+    return { error: "Paramètres manquants" };
+  }
+
+  var sheet = SS.getSheetByName("Clients");
+  var all = sheet.getDataRange().getValues();
+  var headers = all[0];
+  var clientRow = null;
+  var clientRowIdx = -1;
+  for (var i = 1; i < all.length; i++) {
+    if (all[i][0] === clientId) {
+      clientRow = all[i];
+      clientRowIdx = i;
+      break;
+    }
+  }
+  if (!clientRow) return { error: "Client non trouvé" };
+
+  var entreprise = clientRow[headers.indexOf("entreprise")] || "sans-nom";
+  var safeName = entreprise.replace(/[^a-zA-Z0-9À-ÿ\s\-]/g, "").substring(0, 50);
+
+  var parentFolder = DriveApp.getFolderById(DRIVE_PARENT_ID);
+  var crmFolder = getOrCreateFolder(parentFolder, "DOCS CRM VELOS");
+  var clientFolder = getOrCreateFolder(crmFolder, safeName + " [" + clientId.substring(0, 8) + "]");
+
+  var docLabels = {
+    devisSignee: "Devis",
+    kbisRecu: "Kbis",
+    attestationRecue: "Attestation",
+    signatureOk: "Signature",
+    inscriptionBicycle: "Bicycle"
+  };
+  var docLabel = docLabels[docType] || docType;
+  var ext = fileName.split(".").pop() || "pdf";
+  var fullName = docLabel + " - " + safeName + "." + ext;
+
+  var decoded = Utilities.base64Decode(base64Data);
+  var blob = Utilities.newBlob(decoded, mimeType, fullName);
+  var file = clientFolder.createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+
+  var fileUrl = file.getUrl();
+
+  var lienFields = {
+    devisSignee: "devisLien",
+    kbisRecu: "kbisLien",
+    attestationRecue: "attestationLien",
+    signatureOk: "signatureLien",
+    inscriptionBicycle: "bicycleLien"
+  };
+
+  var lienField = lienFields[docType];
+  if (lienField) {
+    var col = headers.indexOf(lienField);
+    if (col > -1) {
+      sheet.getRange(clientRowIdx + 1, col + 1).setValue(fileUrl);
+    }
+  }
+
+  return { ok: true, url: fileUrl, fileName: fullName };
 }
 
 // ---- IMPORT INITIAL ----
