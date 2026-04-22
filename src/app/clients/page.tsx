@@ -50,8 +50,8 @@ export default function ClientsPage() {
   }, [loadClients]);
 
   const departements = Array.from(
-    new Set(clients.map((c) => c.departement).filter(Boolean))
-  ).sort((a, b) => a!.localeCompare(b!));
+    new Set(clients.map((c) => c.departement).filter((d): d is string => typeof d === "string" && d.length > 0))
+  ).sort((a, b) => a.localeCompare(b));
 
   const filteredClients = departement === "all"
     ? clients

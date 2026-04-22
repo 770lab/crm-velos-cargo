@@ -64,8 +64,8 @@ export default function CartePage() {
   }, []);
 
   const departements = Array.from(
-    new Set(allClients.map((c) => c.departement).filter(Boolean))
-  ).sort((a, b) => a!.localeCompare(b!));
+    new Set(allClients.map((c) => c.departement).filter((d): d is string => typeof d === "string" && d.length > 0))
+  ).sort((a, b) => a.localeCompare(b));
 
   const clients = departement === "all"
     ? allClients
