@@ -14,6 +14,7 @@ export default function ClientsPage() {
   const [codePostal, setCodePostal] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
+  const [showSync, setShowSync] = useState(false);
 
   const clients = useMemo(() => {
     let result = allClients;
@@ -98,6 +99,12 @@ export default function ClientsPage() {
             className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm"
           >
             Importer CSV
+          </button>
+          <button
+            onClick={() => setShowSync(true)}
+            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm"
+          >
+            Synchroniser Drive
           </button>
           <button
             onClick={() => setShowAdd(true)}
@@ -220,6 +227,7 @@ export default function ClientsPage() {
 
       {showAdd && <AddClientModal onClose={() => { setShowAdd(false); refresh("clients"); }} />}
       {showImport && <ImportModal onClose={() => { setShowImport(false); refresh("clients"); }} />}
+      {showSync && <SyncDriveModal onClose={() => { setShowSync(false); refresh("clients"); }} />}
     </div>
   );
 }
@@ -430,6 +438,131 @@ function ImportModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+interface SyncReport {
+  updates?: { client: string; docType: string; file: string; by: string }[];
+  orphans?: string[];
+  unknowns?: { folder: string; file: string }[];
+  aiClassified?: number;
+  filesSeen?: number;
+  error?: string;
+}
+
+function SyncDriveModal({ onClose }: { onClose: () => void }) {
+  const [loading, setLoading] = useState(false);
+  const [report, setReport] = useState<SyncReport | null>(null);
+
+  const run = async () => {
+    setLoading(true);
+    try {
+      const data = await gasPost("syncDrive", {});
+      setReport(data);
+    } catch (err) {
+      setReport({ error: err instanceof Error ? err.message : "Erreur inconnue" });
+    }
+    setLoading(false);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+        <h2 className="text-lg font-semibold mb-2">Synchroniser les documents Drive</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Scanne les sous-dossiers de <strong>DOSSIER VELO</strong>, associe chaque fichier au client
+          correspondant et coche automatiquement les cases (Devis, Kbis, Attestation, Bicycle).
+          Les fichiers non reconnus par leur nom sont classés par IA.
+        </p>
+
+        {!report && !loading && (
+          <button
+            onClick={run}
+            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
+          >
+            Lancer la synchronisation
+          </button>
+        )}
+
+        {loading && (
+          <p className="text-sm text-gray-500">Synchronisation en cours… (peut prendre quelques minutes)</p>
+        )}
+
+        {report && report.error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-700">
+            Erreur : {report.error}
+          </div>
+        )}
+
+        {report && !report.error && (
+          <div className="space-y-3 text-sm">
+            <div className="grid grid-cols-3 gap-3">
+              <Stat label="Fichiers vus" value={report.filesSeen ?? 0} />
+              <Stat label="Mises à jour" value={report.updates?.length ?? 0} />
+              <Stat label="Classés par IA" value={report.aiClassified ?? 0} />
+            </div>
+
+            {report.orphans && report.orphans.length > 0 && (
+              <details className="border rounded-lg p-2">
+                <summary className="cursor-pointer font-medium">
+                  Dossiers Drive sans client correspondant ({report.orphans.length})
+                </summary>
+                <ul className="mt-2 text-xs text-gray-600 space-y-1">
+                  {report.orphans.map((o) => <li key={o}>• {o}</li>)}
+                </ul>
+              </details>
+            )}
+
+            {report.unknowns && report.unknowns.length > 0 && (
+              <details className="border rounded-lg p-2">
+                <summary className="cursor-pointer font-medium">
+                  Fichiers non classés ({report.unknowns.length})
+                </summary>
+                <ul className="mt-2 text-xs text-gray-600 space-y-1">
+                  {report.unknowns.map((u, i) => (
+                    <li key={i}>• [{u.folder}] {u.file}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+
+            {report.updates && report.updates.length > 0 && (
+              <details className="border rounded-lg p-2" open>
+                <summary className="cursor-pointer font-medium">
+                  Documents associés ({report.updates.length})
+                </summary>
+                <ul className="mt-2 text-xs text-gray-600 space-y-1 max-h-60 overflow-y-auto">
+                  {report.updates.map((u, i) => (
+                    <li key={i}>
+                      • <span className="font-medium">{u.client}</span> — {u.docType}
+                      {u.by === "ai" && <span className="ml-1 text-purple-600">(IA)</span>}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </div>
+        )}
+
+        <div className="flex justify-end mt-4">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm bg-gray-100 rounded-lg hover:bg-gray-200"
+          >
+            Fermer
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: number }) {
+  return (
+    <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-center">
+      <div className="text-2xl font-bold text-gray-900">{value}</div>
+      <div className="text-xs text-gray-500">{label}</div>
     </div>
   );
 }

@@ -62,6 +62,9 @@ function handleRequest(e) {
         var bodyUD = getBody();
         result = uploadDoc(bodyUD);
         break;
+      case "syncDrive":
+        result = syncDriveDocs();
+        break;
       default:
         result = { error: "Action inconnue: " + action };
     }
@@ -528,6 +531,180 @@ function uploadDoc(body) {
   }
 
   return { ok: true, url: fileUrl, fileName: fullName };
+}
+
+// ---- SYNC DRIVE DOCS ----
+
+var DRIVE_DOSSIER_VELO_ID = "128TpToF7VqUEdxop6KwfNrUJxge3PBgM";
+
+var DOC_TYPE_TO_FIELDS = {
+  DEVIS:             { flag: "devisSignee",        link: "devisLien" },
+  KBIS:              { flag: "kbisRecu",           link: "kbisLien" },
+  ATTESTATION_URSSAF:{ flag: "attestationRecue",   link: "attestationLien" },
+  DSN:               { flag: "attestationRecue",   link: "attestationLien" },
+  BICYCLE:           { flag: "inscriptionBicycle", link: "bicycleLien" },
+  SIGNATURE:         { flag: "signatureOk",        link: "signatureLien" }
+};
+
+function normalizeName(s) {
+  if (!s) return "";
+  return String(s)
+    .toUpperCase()
+    .normalize("NFD").replace(/[̀-ͯ]/g, "")
+    .replace(/[^A-Z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function detectDocTypeByName(fileName) {
+  var n = normalizeName(fileName);
+  if (/^DEVIS\b/.test(n)) return "DEVIS";
+  if (/^KBIS\b/.test(n) || /\bEXTRAIT\s+KBIS\b/.test(n)) return "KBIS";
+  if (/^DSN\b/.test(n)) return "DSN";
+  if (/\bATTESTATION\b.*\bURSSAF\b/.test(n) || /^URSSAF\b/.test(n)) return "ATTESTATION_URSSAF";
+  if (/\bBICYCLE\b/.test(n)) return "BICYCLE";
+  if (/\bSIGN(ATURE|E)\b/.test(n)) return "SIGNATURE";
+  return null;
+}
+
+function classifyWithGemini(file) {
+  var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
+  if (!apiKey) return null;
+
+  var mimeType = file.getMimeType();
+  if (mimeType !== "application/pdf" &&
+      mimeType.indexOf("image/") !== 0) {
+    return null;
+  }
+
+  var blob = file.getBlob();
+  if (blob.getBytes().length > 18 * 1024 * 1024) return null;
+
+  var base64 = Utilities.base64Encode(blob.getBytes());
+  var prompt = "Tu classes un document administratif français d'une entreprise. " +
+    "Réponds UNIQUEMENT par un seul label parmi : DEVIS, KBIS, ATTESTATION_URSSAF, DSN, BICYCLE, SIGNATURE, AUTRE. " +
+    "Règles : " +
+    "- DEVIS = un devis commercial (émis ou signé). " +
+    "- KBIS = extrait Kbis ou extrait d'immatriculation RCS. " +
+    "- ATTESTATION_URSSAF = attestation de vigilance URSSAF ou de paiement cotisations. " +
+    "- DSN = Déclaration Sociale Nominative (effectif salariés). " +
+    "- BICYCLE = document d'inscription à la plateforme Bicycle. " +
+    "- SIGNATURE = attestation sur l'honneur ou document de signature isolé. " +
+    "- AUTRE = tout le reste. " +
+    "Aucun autre texte dans ta réponse.";
+
+  var payload = {
+    contents: [{
+      parts: [
+        { text: prompt },
+        { inline_data: { mime_type: mimeType, data: base64 } }
+      ]
+    }],
+    generationConfig: { temperature: 0, maxOutputTokens: 10 }
+  };
+
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
+  try {
+    var res = UrlFetchApp.fetch(url, {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+    var code = res.getResponseCode();
+    if (code !== 200) return null;
+    var data = JSON.parse(res.getContentText());
+    var text = (((data.candidates || [])[0] || {}).content || {}).parts;
+    if (!text || !text[0]) return null;
+    var label = String(text[0].text || "").trim().toUpperCase().replace(/[^A-Z_]/g, "");
+    if (DOC_TYPE_TO_FIELDS[label]) return label;
+    return null;
+  } catch (err) {
+    return null;
+  }
+}
+
+function syncDriveDocs() {
+  var sheet = SS.getSheetByName("Clients");
+  var all = sheet.getDataRange().getValues();
+  var headers = all[0];
+  var iEntreprise = headers.indexOf("entreprise");
+
+  var clientsByKey = {};
+  for (var i = 1; i < all.length; i++) {
+    var key = normalizeName(all[i][iEntreprise]);
+    if (key) clientsByKey[key] = { row: all[i], rowIdx: i };
+  }
+
+  var root;
+  try {
+    root = DriveApp.getFolderById(DRIVE_DOSSIER_VELO_ID);
+  } catch (err) {
+    return { error: "Impossible d'accéder au dossier DOSSIER VELO : " + err.message };
+  }
+
+  var report = {
+    updates: [],
+    orphans: [],
+    unknowns: [],
+    aiClassified: 0,
+    filesSeen: 0
+  };
+
+  var subFolders = root.getFolders();
+  while (subFolders.hasNext()) {
+    var folder = subFolders.next();
+    var folderKey = normalizeName(folder.getName());
+    var match = clientsByKey[folderKey];
+    if (!match) {
+      report.orphans.push(folder.getName());
+      continue;
+    }
+
+    var files = folder.getFiles();
+    while (files.hasNext()) {
+      var file = files.next();
+      report.filesSeen++;
+
+      var docType = detectDocTypeByName(file.getName());
+      var classifiedBy = "name";
+      if (!docType) {
+        docType = classifyWithGemini(file);
+        if (docType) {
+          classifiedBy = "ai";
+          report.aiClassified++;
+        }
+      }
+
+      if (!docType || docType === "AUTRE" || !DOC_TYPE_TO_FIELDS[docType]) {
+        report.unknowns.push({
+          folder: folder.getName(),
+          file: file.getName()
+        });
+        continue;
+      }
+
+      var fieldSet = DOC_TYPE_TO_FIELDS[docType];
+      var flagCol = headers.indexOf(fieldSet.flag);
+      var linkCol = headers.indexOf(fieldSet.link);
+      if (flagCol === -1) continue;
+
+      var url = file.getUrl();
+      sheet.getRange(match.rowIdx + 1, flagCol + 1).setValue("TRUE");
+      if (linkCol !== -1) {
+        sheet.getRange(match.rowIdx + 1, linkCol + 1).setValue(url);
+      }
+
+      report.updates.push({
+        client: match.row[iEntreprise],
+        docType: docType,
+        file: file.getName(),
+        by: classifiedBy
+      });
+    }
+  }
+
+  return report;
 }
 
 // ---- IMPORT INITIAL ----
