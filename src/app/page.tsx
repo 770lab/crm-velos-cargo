@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useData } from "@/lib/data-context";
 
 export default function Dashboard() {
@@ -19,36 +20,42 @@ export default function Dashboard() {
       value: stats.totalClients,
       sub: `${stats.clientsDocsComplets} dossiers complets`,
       color: "bg-blue-500",
+      href: "/clients",
     },
     {
       label: "Vélos total",
       value: stats.totalVelos,
       sub: `${stats.progression}% livrés`,
       color: "bg-green-500",
+      href: "/clients",
     },
     {
       label: "Vélos livrés",
       value: stats.velosLivres,
       sub: `sur ${stats.totalVelos}`,
       color: "bg-emerald-500",
+      href: "/livraisons",
     },
     {
       label: "Certificats reçus",
       value: stats.certificatsRecus,
       sub: `sur ${stats.totalVelos}`,
       color: "bg-purple-500",
+      href: "/clients",
     },
     {
       label: "Facturables",
       value: stats.velosFacturables,
       sub: "livré + certificat + photo QR",
       color: "bg-amber-500",
+      href: "/livraisons",
     },
     {
       label: "Facturés",
       value: stats.velosFactures,
       sub: `reste ${stats.velosFacturables - stats.velosFactures} à facturer`,
       color: "bg-teal-500",
+      href: "/livraisons",
     },
   ];
 
@@ -70,9 +77,10 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
         {cards.map((card) => (
-          <div
+          <Link
             key={card.label}
-            className="bg-white rounded-xl shadow-sm border border-gray-200 p-6"
+            href={card.href}
+            className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md hover:border-gray-300 transition-all cursor-pointer block"
           >
             <div className="flex items-center gap-3 mb-3">
               <div className={`w-3 h-3 rounded-full ${card.color}`} />
@@ -80,7 +88,7 @@ export default function Dashboard() {
             </div>
             <div className="text-3xl font-bold text-gray-900">{card.value}</div>
             <div className="text-sm text-gray-400 mt-1">{card.sub}</div>
-          </div>
+          </Link>
         ))}
       </div>
 
