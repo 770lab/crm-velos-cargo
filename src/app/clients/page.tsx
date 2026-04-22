@@ -6,10 +6,14 @@ import Link from "next/link";
 interface ClientRow {
   id: string;
   entreprise: string;
+  siren: string | null;
   contact: string | null;
   email: string | null;
   telephone: string | null;
   ville: string | null;
+  departement: string | null;
+  apporteur: string | null;
+  devisSignee: boolean;
   kbisRecu: boolean;
   attestationRecue: boolean;
   signatureOk: boolean;
@@ -92,10 +96,11 @@ export default function ClientsPage() {
             <tr>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Entreprise</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Ville</th>
+              <th className="text-center px-4 py-3 font-medium text-gray-600">Dép.</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Vélos</th>
+              <th className="text-center px-4 py-3 font-medium text-gray-600">Devis</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Kbis</th>
-              <th className="text-center px-4 py-3 font-medium text-gray-600">Attestation</th>
-              <th className="text-center px-4 py-3 font-medium text-gray-600">Signature</th>
+              <th className="text-center px-4 py-3 font-medium text-gray-600">Attest.</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Bicycle</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Livrés</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Facturables</th>
@@ -116,17 +121,18 @@ export default function ClientsPage() {
                   )}
                 </td>
                 <td className="px-4 py-3 text-gray-600">{c.ville || "-"}</td>
+                <td className="text-center px-4 py-3 text-gray-500">{c.departement || "-"}</td>
                 <td className="text-center px-4 py-3 font-medium">
                   {c.stats.livres}/{c.stats.totalVelos}
+                </td>
+                <td className="text-center px-4 py-3">
+                  <StatusDot ok={c.devisSignee} />
                 </td>
                 <td className="text-center px-4 py-3">
                   <StatusDot ok={c.kbisRecu} />
                 </td>
                 <td className="text-center px-4 py-3">
                   <StatusDot ok={c.attestationRecue} />
-                </td>
-                <td className="text-center px-4 py-3">
-                  <StatusDot ok={c.signatureOk} />
                 </td>
                 <td className="text-center px-4 py-3">
                   <StatusDot ok={c.inscriptionBicycle} />
@@ -145,7 +151,7 @@ export default function ClientsPage() {
             ))}
             {clients.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-4 py-12 text-center text-gray-400">
+                <td colSpan={10} className="px-4 py-12 text-center text-gray-400">
                   Aucun client. Importez votre tableau ou ajoutez un client.
                 </td>
               </tr>

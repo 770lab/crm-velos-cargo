@@ -26,6 +26,12 @@ interface ClientDetail {
   ville: string | null;
   codePostal: string | null;
   nbVelosCommandes: number;
+  siren: string | null;
+  operationNumero: string | null;
+  referenceOperation: string | null;
+  apporteur: string | null;
+  departement: string | null;
+  devisSignee: boolean;
   kbisRecu: boolean;
   attestationRecue: boolean;
   signatureOk: boolean;
@@ -104,13 +110,19 @@ export default function ClientDetailPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">{client.entreprise}</h1>
           <div className="flex gap-4 mt-2 text-sm text-gray-500">
-            {client.contact && <span>{client.contact}</span>}
+            {client.siren && <span>SIREN: {client.siren}</span>}
             {client.email && <span>{client.email}</span>}
             {client.telephone && <span>{client.telephone}</span>}
           </div>
           {(client.adresse || client.ville) && (
             <div className="text-sm text-gray-400 mt-1">
-              {[client.adresse, client.codePostal, client.ville].filter(Boolean).join(", ")}
+              {[client.adresse, client.codePostal, client.ville, client.departement ? `(${client.departement})` : null].filter(Boolean).join(", ")}
+            </div>
+          )}
+          {(client.apporteur || client.operationNumero) && (
+            <div className="text-sm text-gray-400 mt-1">
+              {client.apporteur && <span>Apporteur: {client.apporteur}</span>}
+              {client.operationNumero && <span> — Op. n°{client.operationNumero}</span>}
             </div>
           )}
         </div>
@@ -122,7 +134,12 @@ export default function ClientDetailPage() {
         </button>
       </div>
 
-      <div className="grid grid-cols-4 gap-4 mb-8">
+      <div className="grid grid-cols-5 gap-4 mb-8">
+        <DocCard
+          label="Devis signée"
+          ok={client.devisSignee}
+          onToggle={() => toggleDoc("devisSignee", !client.devisSignee)}
+        />
         <DocCard
           label="Kbis"
           ok={client.kbisRecu}

@@ -7,27 +7,34 @@ datasource db {
 }
 
 model Client {
-  id                String   @id @default(cuid())
-  entreprise        String
-  contact           String?
-  email             String?
-  telephone         String?
-  adresse           String?
-  ville             String?
-  codePostal        String?
-  nbVelosCommandes  Int      @default(0)
+  id                 String   @id @default(cuid())
+  entreprise         String
+  siren              String?
+  contact            String?
+  email              String?
+  telephone          String?
+  adresse            String?
+  ville              String?
+  codePostal         String?
+  departement        String?
+  nbVelosCommandes   Int      @default(0)
 
-  kbisRecu          Boolean  @default(false)
-  attestationRecue  Boolean  @default(false)
-  signatureOk       Boolean  @default(false)
-  inscriptionBicycle Boolean @default(false)
+  operationNumero    String?
+  referenceOperation String?
+  apporteur          String?
+  devisSignee        Boolean  @default(false)
 
-  notes             String?
-  createdAt         DateTime @default(now())
-  updatedAt         DateTime @updatedAt
+  kbisRecu           Boolean  @default(false)
+  attestationRecue   Boolean  @default(false)
+  signatureOk        Boolean  @default(false)
+  inscriptionBicycle Boolean  @default(false)
 
-  velos             Velo[]
-  livraisons        Livraison[]
+  notes              String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  velos              Velo[]
+  livraisons         Livraison[]
 }
 
 model Velo {
