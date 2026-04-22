@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
 import { gasPost } from "@/lib/gas";
 import { useData } from "@/lib/data-context";
+import MultiDepSelect from "@/components/multi-dep-select";
 
 const MapView = dynamic(() => import("@/components/map-view"), { ssr: false });
 
@@ -38,7 +39,7 @@ export default function CartePage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [mode, setMode] = useState<"atelier" | "sursite">("atelier");
   const [maxDistance, setMaxDistance] = useState(50);
-  const [departement, setDepartement] = useState("all");
+  const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
   const [tournee, setTournee] = useState<TourneeResult | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -46,9 +47,9 @@ export default function CartePage() {
     new Set(allClients.map((c) => c.departement).filter((d): d is string => typeof d === "string" && d.length > 0))
   ).sort((a, b) => a.localeCompare(b));
 
-  const clients = departement === "all"
+  const clients = selectedDeps.length === 0
     ? allClients
-    : allClients.filter((c) => c.departement === departement);
+    : allClients.filter((c) => c.departement && selectedDeps.includes(c.departement));
 
   const handleSelectClient = useCallback(
     async (clientId: string) => {
@@ -93,16 +94,11 @@ export default function CartePage() {
             <label className="text-xs font-medium text-gray-600 block mb-1">
               Filtrer par département
             </label>
-            <select
-              value={departement}
-              onChange={(e) => { setDepartement(e.target.value); setSelected(null); setTournee(null); }}
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-            >
-              <option value="all">Tous les départements</option>
-              {departements.map((d) => (
-                <option key={d} value={d!}>{d}</option>
-              ))}
-            </select>
+            <MultiDepSelect
+              value={selectedDeps}
+              onChange={(deps) => { setSelectedDeps(deps); setSelected(null); setTournee(null); }}
+              options={departements}
+            />
           </div>
           <div>
             <label className="text-xs font-medium text-gray-600 block mb-1">

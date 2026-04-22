@@ -4,12 +4,13 @@ import { useMemo, useState } from "react";
 import Link from "next/link";
 import { gasPost } from "@/lib/gas";
 import { useData } from "@/lib/data-context";
+import MultiDepSelect from "@/components/multi-dep-select";
 
 export default function ClientsPage() {
   const { clients: allClients, loading, refresh } = useData();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
-  const [departement, setDepartement] = useState("all");
+  const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
 
@@ -41,9 +42,9 @@ export default function ClientsPage() {
     new Set(clients.map((c) => c.departement).filter((d): d is string => typeof d === "string" && d.length > 0))
   ).sort((a, b) => a.localeCompare(b));
 
-  const filteredClients = departement === "all"
+  const filteredClients = selectedDeps.length === 0
     ? clients
-    : clients.filter((c) => c.departement === departement);
+    : clients.filter((c) => c.departement && selectedDeps.includes(c.departement));
 
   const exportCSV = () => {
     const headers = ["Entreprise", "Contact", "Email", "Téléphone", "Ville", "Département", "SIREN", "Apporteur", "Vélos commandés", "Vélos livrés", "Certificats", "Facturables", "Facturés", "Devis", "Kbis", "Attestation", "Signature", "Bicycle"];
@@ -67,7 +68,10 @@ export default function ClientsPage() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Clients</h1>
-          <p className="text-gray-500 mt-1">{filteredClients.length} clients{departement !== "all" ? ` (dép. ${departement})` : ""}</p>
+          <p className="text-gray-500 mt-1">
+            {filteredClients.length} clients
+            {selectedDeps.length > 0 && ` (dép. ${[...selectedDeps].sort((a, b) => a.localeCompare(b)).join(", ")})`}
+          </p>
         </div>
         <div className="flex gap-3">
           <button
@@ -99,16 +103,13 @@ export default function ClientsPage() {
           onChange={(e) => setSearch(e.target.value)}
           className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-sm"
         />
-        <select
-          value={departement}
-          onChange={(e) => setDepartement(e.target.value)}
-          className="px-4 py-2 border border-gray-300 rounded-lg text-sm"
-        >
-          <option value="all">Tous les dép.</option>
-          {departements.map((d) => (
-            <option key={d} value={d!}>{d}</option>
-          ))}
-        </select>
+        <MultiDepSelect
+          value={selectedDeps}
+          onChange={setSelectedDeps}
+          options={departements}
+          className="sm:w-56"
+          placeholder="Tous les dép."
+        />
         <select
           value={filter}
           onChange={(e) => setFilter(e.target.value)}
