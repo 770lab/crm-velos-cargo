@@ -1,0 +1,67 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+}
+
+model Client {
+  id                String   @id @default(cuid())
+  entreprise        String
+  contact           String?
+  email             String?
+  telephone         String?
+  adresse           String?
+  ville             String?
+  codePostal        String?
+  nbVelosCommandes  Int      @default(0)
+
+  kbisRecu          Boolean  @default(false)
+  attestationRecue  Boolean  @default(false)
+  signatureOk       Boolean  @default(false)
+  inscriptionBicycle Boolean @default(false)
+
+  notes             String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  velos             Velo[]
+  livraisons        Livraison[]
+}
+
+model Velo {
+  id                 String   @id @default(cuid())
+  reference          String?
+  qrCode             String?  @unique
+  certificatRecu     Boolean  @default(false)
+  certificatNumero   String?
+  photoQrPrise       Boolean  @default(false)
+  facturable         Boolean  @default(false)
+  facture            Boolean  @default(false)
+
+  clientId           String
+  client             Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  livraisonId        String?
+  livraison          Livraison? @relation(fields: [livraisonId], references: [id])
+
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+}
+
+model Livraison {
+  id                String    @id @default(cuid())
+  datePrevue        DateTime?
+  dateEffective     DateTime?
+  statut            String    @default("planifiee") // planifiee, en_cours, livree, annulee
+  notes             String?
+
+  clientId          String
+  client            Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+
+  velos             Velo[]
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+}

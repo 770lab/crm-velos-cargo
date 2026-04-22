@@ -1,65 +1,144 @@
-import Image from "next/image";
+"use client";
 
-export default function Home() {
+import { useEffect, useState } from "react";
+
+interface Stats {
+  totalClients: number;
+  totalVelos: number;
+  velosLivres: number;
+  certificatsRecus: number;
+  velosFacturables: number;
+  velosFactures: number;
+  clientsDocsComplets: number;
+  progression: number;
+  livraisonsParStatut: Record<string, number>;
+}
+
+export default function Dashboard() {
+  const [stats, setStats] = useState<Stats | null>(null);
+
+  useEffect(() => {
+    fetch("/api/stats")
+      .then((r) => r.json())
+      .then(setStats);
+  }, []);
+
+  if (!stats) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="text-gray-400">Chargement...</div>
+      </div>
+    );
+  }
+
+  const cards = [
+    {
+      label: "Clients",
+      value: stats.totalClients,
+      sub: `${stats.clientsDocsComplets} dossiers complets`,
+      color: "bg-blue-500",
+    },
+    {
+      label: "Vélos total",
+      value: stats.totalVelos,
+      sub: `${stats.progression}% livrés`,
+      color: "bg-green-500",
+    },
+    {
+      label: "Vélos livrés",
+      value: stats.velosLivres,
+      sub: `sur ${stats.totalVelos}`,
+      color: "bg-emerald-500",
+    },
+    {
+      label: "Certificats reçus",
+      value: stats.certificatsRecus,
+      sub: `sur ${stats.totalVelos}`,
+      color: "bg-purple-500",
+    },
+    {
+      label: "Facturables",
+      value: stats.velosFacturables,
+      sub: "livré + certificat + photo QR",
+      color: "bg-amber-500",
+    },
+    {
+      label: "Facturés",
+      value: stats.velosFactures,
+      sub: `reste ${stats.velosFacturables - stats.velosFactures} à facturer`,
+      color: "bg-teal-500",
+    },
+  ];
+
+  const restant = stats.totalVelos - stats.velosLivres;
+  const joursRestants = Math.ceil(
+    (new Date("2026-06-22").getTime() - Date.now()) / (1000 * 60 * 60 * 24)
+  );
+  const velosParJour =
+    joursRestants > 0 ? Math.ceil(restant / joursRestants) : restant;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+    <div>
+      <div className="mb-8">
+        <h1 className="text-2xl font-bold text-gray-900">Tableau de bord</h1>
+        <p className="text-gray-500 mt-1">
+          Opération vélos cargo — objectif 2 mois
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
+        {cards.map((card) => (
+          <div
+            key={card.label}
+            className="bg-white rounded-xl shadow-sm border border-gray-200 p-6"
           >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+            <div className="flex items-center gap-3 mb-3">
+              <div className={`w-3 h-3 rounded-full ${card.color}`} />
+              <span className="text-sm text-gray-500">{card.label}</span>
+            </div>
+            <div className="text-3xl font-bold text-gray-900">{card.value}</div>
+            <div className="text-sm text-gray-400 mt-1">{card.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 mb-8">
+        <h2 className="text-lg font-semibold mb-4">Progression globale</h2>
+        <div className="w-full bg-gray-200 rounded-full h-6 mb-3">
+          <div
+            className="bg-green-500 h-6 rounded-full transition-all flex items-center justify-center text-xs text-white font-medium"
+            style={{ width: `${Math.max(stats.progression, 2)}%` }}
           >
-            Documentation
-          </a>
+            {stats.progression}%
+          </div>
         </div>
-      </main>
+        <div className="flex justify-between text-sm text-gray-500">
+          <span>{stats.velosLivres} livrés</span>
+          <span>{restant} restants</span>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+        <h2 className="text-lg font-semibold mb-4">Rythme nécessaire</h2>
+        <div className="grid grid-cols-3 gap-6 text-center">
+          <div>
+            <div className="text-2xl font-bold text-orange-500">
+              {joursRestants}
+            </div>
+            <div className="text-sm text-gray-500">jours restants</div>
+          </div>
+          <div>
+            <div className="text-2xl font-bold text-orange-500">
+              {velosParJour}
+            </div>
+            <div className="text-sm text-gray-500">vélos/jour requis</div>
+          </div>
+          <div>
+            <div className="text-2xl font-bold text-orange-500">{restant}</div>
+            <div className="text-sm text-gray-500">vélos à livrer</div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
