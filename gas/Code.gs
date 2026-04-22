@@ -47,6 +47,9 @@ function handleRequest(e) {
         var bodyCL = getBody();
         result = createLivraison(bodyCL);
         break;
+      case "createTournee":
+        result = createTournee(getBody());
+        break;
       case "updateLivraison":
         var bodyUL = getBody();
         result = updateLivraison(bodyUL.id || e.parameter.id, bodyUL.data || bodyUL);
@@ -64,6 +67,12 @@ function handleRequest(e) {
         break;
       case "syncDrive":
         result = syncDriveDocs();
+        break;
+      case "classifyBatch":
+        result = classifyBatch(parseInt(e.parameter.limit || "20", 10));
+        break;
+      case "classifyStatus":
+        result = classifyStatus();
         break;
       default:
         result = { error: "Action inconnue: " + action };
@@ -424,6 +433,42 @@ function createLivraison(body) {
   return { id: id };
 }
 
+function createTournee(body) {
+  var sheet = SS.getSheetByName("Livraisons");
+  if (!sheet) {
+    sheet = SS.insertSheet("Livraisons");
+    sheet.getRange(1, 1, 1, 6).setValues([["id","clientId","datePrevue","dateEffective","statut","notes"]]);
+  }
+
+  var stops = body.stops || [];
+  if (stops.length === 0) return { error: "Aucun arrêt" };
+
+  var tourneeId = Utilities.getUuid().slice(0, 8);
+  var total = stops.length;
+  var date = body.datePrevue || "";
+  var mode = body.mode || "";
+  var userNotes = (body.notes || "").trim();
+
+  var rows = stops.map(function(s, i) {
+    var ordre = s.ordre || (i + 1);
+    var nbVelos = s.nbVelos || 0;
+    var pieces = [
+      "Tournée " + date,
+      "arrêt " + ordre + "/" + total,
+      nbVelos + " vélo" + (nbVelos > 1 ? "s" : "")
+    ];
+    if (mode) pieces.push(mode === "atelier" ? "atelier" : "sur site");
+    if (userNotes) pieces.push(userNotes);
+    pieces.push("[" + tourneeId + "]");
+    return [Utilities.getUuid(), s.clientId, date, "", "planifiee", pieces.join(" — ")];
+  });
+
+  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, 6).setValues(rows);
+  SpreadsheetApp.flush();
+
+  return { tourneeId: tourneeId, created: rows.length, datePrevue: date };
+}
+
 function updateLivraison(id, data) {
   var sheet = SS.getSheetByName("Livraisons");
   if (!sheet) return { error: "Pas de feuille Livraisons" };
@@ -535,7 +580,7 @@ function uploadDoc(body) {
 
 // ---- SYNC DRIVE DOCS ----
 
-var DRIVE_DOSSIER_VELO_ID = "128TpToF7VqUEdxop6KwfNrUJxge3PBgM";
+var DRIVE_DOSSIER_VELO_ID = "1cAycg2vUSZbcj6FqJnpmB_hHYCgCBmSR";
 
 var DOC_TYPE_TO_FIELDS = {
   DEVIS:             { flag: "devisSignee",        link: "devisLien" },
@@ -558,10 +603,10 @@ function normalizeName(s) {
 
 function detectDocTypeByName(fileName) {
   var n = normalizeName(fileName);
-  if (/^DEVIS\b/.test(n)) return "DEVIS";
-  if (/^KBIS\b/.test(n) || /\bEXTRAIT\s+KBIS\b/.test(n)) return "KBIS";
-  if (/^DSN\b/.test(n)) return "DSN";
-  if (/\bATTESTATION\b.*\bURSSAF\b/.test(n) || /^URSSAF\b/.test(n)) return "ATTESTATION_URSSAF";
+  if (/\bDEVIS\b/.test(n)) return "DEVIS";
+  if (/\b\d*KBIS\b/.test(n) || /\bEXTRAIT\s+KBIS\b/.test(n)) return "KBIS";
+  if (/\bDSN\b/.test(n) || /\bDNS\b/.test(n) || /^SALARIES\b/.test(n)) return "DSN";
+  if (/\bATT(ESTATION)?\b.*\bURSSAF\b/.test(n) || /^URSSAF\b/.test(n)) return "ATTESTATION_URSSAF";
   if (/\bBICYCLE\b/.test(n)) return "BICYCLE";
   if (/\bSIGN(ATURE|E)\b/.test(n)) return "SIGNATURE";
   return null;
@@ -668,17 +713,12 @@ function syncDriveDocs() {
 
       var docType = detectDocTypeByName(file.getName());
       var classifiedBy = "name";
-      if (!docType) {
-        docType = classifyWithGemini(file);
-        if (docType) {
-          classifiedBy = "ai";
-          report.aiClassified++;
-        }
-      }
 
       if (!docType || docType === "AUTRE" || !DOC_TYPE_TO_FIELDS[docType]) {
         report.unknowns.push({
           folder: folder.getName(),
+          folderKey: folderKey,
+          fileId: file.getId(),
           file: file.getName()
         });
         continue;
@@ -704,7 +744,91 @@ function syncDriveDocs() {
     }
   }
 
+  PropertiesService.getScriptProperties().setProperty(
+    "AI_QUEUE",
+    JSON.stringify(report.unknowns)
+  );
+  report.aiQueueSize = report.unknowns.length;
+
   return report;
+}
+
+function classifyStatus() {
+  var raw = PropertiesService.getScriptProperties().getProperty("AI_QUEUE");
+  var queue = raw ? JSON.parse(raw) : [];
+  return { remaining: queue.length };
+}
+
+function classifyBatch(limit) {
+  limit = limit || 20;
+
+  var props = PropertiesService.getScriptProperties();
+  var raw = props.getProperty("AI_QUEUE");
+  var queue = raw ? JSON.parse(raw) : [];
+
+  if (queue.length === 0) {
+    return { processed: 0, classified: 0, remaining: 0, updates: [] };
+  }
+
+  var sheet = SS.getSheetByName("Clients");
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  var iEntreprise = headers.indexOf("entreprise");
+
+  var clientsByKey = {};
+  var all = sheet.getDataRange().getValues();
+  for (var i = 1; i < all.length; i++) {
+    var key = normalizeName(all[i][iEntreprise]);
+    if (key) clientsByKey[key] = { row: all[i], rowIdx: i };
+  }
+
+  var batch = queue.slice(0, limit);
+  var rest = queue.slice(limit);
+
+  var updates = [];
+  var errors = [];
+  var classified = 0;
+
+  for (var j = 0; j < batch.length; j++) {
+    var item = batch[j];
+    try {
+      var file = DriveApp.getFileById(item.fileId);
+      var docType = classifyWithGemini(file);
+      if (!docType || docType === "AUTRE" || !DOC_TYPE_TO_FIELDS[docType]) continue;
+
+      var match = clientsByKey[item.folderKey];
+      if (!match) continue;
+
+      var fieldSet = DOC_TYPE_TO_FIELDS[docType];
+      var flagCol = headers.indexOf(fieldSet.flag);
+      var linkCol = headers.indexOf(fieldSet.link);
+      if (flagCol === -1) continue;
+
+      sheet.getRange(match.rowIdx + 1, flagCol + 1).setValue("TRUE");
+      if (linkCol !== -1) {
+        sheet.getRange(match.rowIdx + 1, linkCol + 1).setValue(file.getUrl());
+      }
+
+      classified++;
+      updates.push({
+        client: match.row[iEntreprise],
+        docType: docType,
+        file: item.file
+      });
+    } catch (err) {
+      errors.push({ file: item.file, error: err.message });
+    }
+  }
+
+  props.setProperty("AI_QUEUE", JSON.stringify(rest));
+  SpreadsheetApp.flush();
+
+  return {
+    processed: batch.length,
+    classified: classified,
+    remaining: rest.length,
+    updates: updates,
+    errors: errors
+  };
 }
 
 // ---- IMPORT INITIAL ----
@@ -735,4 +859,35 @@ function importInitialData() {
 
   SpreadsheetApp.flush();
   return "Import terminé: " + data.clients.rows.length + " clients, " + data.velos.rows.length + " vélos";
+}
+
+function debugDriveFolder() {
+  var folder;
+  try {
+    folder = DriveApp.getFolderById(DRIVE_DOSSIER_VELO_ID);
+  } catch (err) {
+    Logger.log("ERREUR getFolderById: " + err.message);
+    return;
+  }
+  Logger.log("Nom dossier : " + folder.getName());
+  Logger.log("URL : " + folder.getUrl());
+  Logger.log("Propriétaire (si accessible) : " + (folder.getOwner() ? folder.getOwner().getEmail() : "non accessible"));
+
+  var subCount = 0;
+  var subs = folder.getFolders();
+  var firstNames = [];
+  while (subs.hasNext()) {
+    var sub = subs.next();
+    subCount++;
+    if (firstNames.length < 10) firstNames.push(sub.getName());
+  }
+  Logger.log("Sous-dossiers : " + subCount);
+  if (firstNames.length) Logger.log("Premiers noms : " + firstNames.join(" | "));
+
+  var fileCount = 0;
+  var files = folder.getFiles();
+  while (files.hasNext()) { fileCount++; files.next(); }
+  Logger.log("Fichiers à la racine : " + fileCount);
+
+  Logger.log("Utilisateur exécuteur : " + Session.getActiveUser().getEmail());
 }

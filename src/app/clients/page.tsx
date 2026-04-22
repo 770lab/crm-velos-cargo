@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { gasPost } from "@/lib/gas";
+import { gasGet, gasPost } from "@/lib/gas";
 import { useData } from "@/lib/data-context";
 import MultiDepSelect from "@/components/multi-dep-select";
 
@@ -447,16 +447,27 @@ interface SyncReport {
   orphans?: string[];
   unknowns?: { folder: string; file: string }[];
   aiClassified?: number;
+  aiQueueSize?: number;
   filesSeen?: number;
   error?: string;
+}
+
+interface ClassifyProgress {
+  total: number;
+  processed: number;
+  classified: number;
+  running: boolean;
+  done: boolean;
 }
 
 function SyncDriveModal({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<SyncReport | null>(null);
+  const [ai, setAi] = useState<ClassifyProgress | null>(null);
 
   const run = async () => {
     setLoading(true);
+    setAi(null);
     try {
       const data = await gasPost("syncDrive", {});
       setReport(data);
@@ -464,6 +475,31 @@ function SyncDriveModal({ onClose }: { onClose: () => void }) {
       setReport({ error: err instanceof Error ? err.message : "Erreur inconnue" });
     }
     setLoading(false);
+  };
+
+  const runAi = async () => {
+    const total = report?.aiQueueSize ?? report?.unknowns?.length ?? 0;
+    if (total === 0) return;
+    setAi({ total, processed: 0, classified: 0, running: true, done: false });
+
+    let processed = 0;
+    let classified = 0;
+    let remaining = total;
+
+    while (remaining > 0) {
+      try {
+        const data = await gasGet("classifyBatch", { limit: "20" });
+        processed += data.processed ?? 0;
+        classified += data.classified ?? 0;
+        remaining = data.remaining ?? 0;
+        setAi({ total, processed, classified, running: remaining > 0, done: remaining === 0 });
+        if ((data.processed ?? 0) === 0) break;
+      } catch (err) {
+        setAi({ total, processed, classified, running: false, done: false });
+        console.error(err);
+        return;
+      }
+    }
   };
 
   return (
@@ -512,6 +548,39 @@ function SyncDriveModal({ onClose }: { onClose: () => void }) {
                   {report.orphans.map((o) => <li key={o}>• {o}</li>)}
                 </ul>
               </details>
+            )}
+
+            {(report.aiQueueSize ?? 0) > 0 && !ai && (
+              <div className="border border-purple-200 bg-purple-50 rounded-lg p-3">
+                <p className="text-sm text-purple-900 mb-2">
+                  {report.aiQueueSize} fichiers non reconnus par leur nom — peuvent être classifiés par Gemini.
+                </p>
+                <button
+                  onClick={runAi}
+                  className="px-3 py-1.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm"
+                >
+                  Classer par IA ({report.aiQueueSize})
+                </button>
+              </div>
+            )}
+
+            {ai && (
+              <div className="border border-purple-200 bg-purple-50 rounded-lg p-3 text-sm">
+                <div className="flex justify-between mb-1">
+                  <span>Classification IA</span>
+                  <span className="font-mono">
+                    {ai.processed}/{ai.total} traités · {ai.classified} classifiés
+                  </span>
+                </div>
+                <div className="w-full bg-purple-200 rounded-full h-2">
+                  <div
+                    className="bg-purple-600 h-2 rounded-full transition-all"
+                    style={{ width: `${ai.total ? (ai.processed / ai.total) * 100 : 0}%` }}
+                  />
+                </div>
+                {ai.done && <p className="text-xs mt-2 text-purple-700">Terminé.</p>}
+                {ai.running && <p className="text-xs mt-2 text-purple-700">En cours…</p>}
+              </div>
             )}
 
             {report.unknowns && report.unknowns.length > 0 && (

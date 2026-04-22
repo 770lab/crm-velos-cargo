@@ -1,7 +1,8 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
+import Link from "next/link";
 import { gasPost } from "@/lib/gas";
 import { useData } from "@/lib/data-context";
 import MultiDepSelect from "@/components/multi-dep-select";
@@ -35,7 +36,7 @@ interface TourneeResult {
 }
 
 export default function CartePage() {
-  const { carte: allClients } = useData();
+  const { carte: allClients, refresh } = useData();
   const [selected, setSelected] = useState<string | null>(null);
   const [mode, setMode] = useState<"atelier" | "sursite">("atelier");
   const [maxDistance, setMaxDistance] = useState(50);
@@ -254,6 +255,13 @@ export default function CartePage() {
               ))}
             </div>
 
+            <PlanifierTournee
+              mode={mode}
+              tournee={tournee}
+              onPlanned={() => refresh("livraisons")}
+              resetTour={() => handleSelectClient(selected!)}
+            />
+
             {tournee.clientsProches.length > tournee.tournee.length - 1 && (
               <div className="space-y-2">
                 <h3 className="text-sm font-medium text-gray-700">
@@ -283,6 +291,180 @@ export default function CartePage() {
             )}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function nextMondayISO(): string {
+  const d = new Date();
+  const day = d.getDay();
+  const diff = (8 - day) % 7 || 7;
+  d.setDate(d.getDate() + diff);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function todayISO(): string {
+  const d = new Date();
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function PlanifierTournee({
+  mode,
+  tournee,
+  onPlanned,
+  resetTour,
+}: {
+  mode: "atelier" | "sursite";
+  tournee: TourneeResult;
+  onPlanned: () => void;
+  resetTour: () => void;
+}) {
+  const [date, setDate] = useState<string>(() => nextMondayISO());
+  const [notes, setNotes] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [result, setResult] = useState<{ tourneeId: string; created: number; datePrevue: string } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const today = useMemo(() => todayISO(), []);
+  const isPast = date && date < today;
+
+  const formatFrDate = (iso: string) => {
+    if (!iso) return "";
+    const [y, m, d] = iso.split("-");
+    return `${d}/${m}/${y}`;
+  };
+
+  const weekdayLabel = useMemo(() => {
+    if (!date) return "";
+    const d = new Date(date + "T00:00:00");
+    return d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
+  }, [date]);
+
+  const submit = async () => {
+    if (!date) {
+      setError("Choisis une date");
+      return;
+    }
+    setError(null);
+    setLoading(true);
+    try {
+      const stops = tournee.tournee.map((t, i) => ({
+        clientId: t.id,
+        ordre: i + 1,
+        nbVelos: t.nbVelos,
+      }));
+      const r = await gasPost("createTournee", {
+        datePrevue: date,
+        notes: notes.trim(),
+        mode,
+        stops,
+      });
+      if (r.error) {
+        setError(r.error);
+      } else {
+        setResult(r);
+        onPlanned();
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erreur inconnue");
+    }
+    setLoading(false);
+  };
+
+  const reset = () => {
+    setResult(null);
+    setNotes("");
+    setError(null);
+    resetTour();
+  };
+
+  if (result) {
+    return (
+      <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-4 space-y-3">
+        <div className="flex items-start gap-2">
+          <span className="text-emerald-600 text-xl leading-none">✓</span>
+          <div>
+            <div className="font-medium text-emerald-900">Tournée planifiée</div>
+            <div className="text-sm text-emerald-700">
+              {result.created} livraison{result.created > 1 ? "s" : ""} créée{result.created > 1 ? "s" : ""} pour le{" "}
+              <span className="font-medium">{formatFrDate(result.datePrevue)}</span>
+            </div>
+            <div className="text-xs text-emerald-600 mt-0.5 font-mono">ID tournée : {result.tourneeId}</div>
+          </div>
+        </div>
+        <div className="flex gap-2">
+          <Link
+            href="/livraisons"
+            className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm"
+          >
+            Voir dans Livraisons →
+          </Link>
+          <button
+            onClick={reset}
+            className="px-3 py-1.5 bg-white border border-emerald-300 text-emerald-700 rounded-lg hover:bg-emerald-100 text-sm"
+          >
+            Nouvelle tournée
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="border-t pt-3 space-y-2">
+      <h3 className="text-sm font-medium text-gray-700">Planifier cette tournée</h3>
+
+      <div className="space-y-2">
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Date prévue</label>
+          <input
+            type="date"
+            value={date}
+            min={today}
+            onChange={(e) => setDate(e.target.value)}
+            className="w-full px-3 py-2 border rounded-lg text-sm"
+          />
+          {date && !isPast && (
+            <p className="text-xs text-gray-500 mt-1 capitalize">{weekdayLabel}</p>
+          )}
+          {isPast && (
+            <p className="text-xs text-amber-700 mt-1">⚠️ Date dans le passé</p>
+          )}
+        </div>
+
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Notes (optionnel)</label>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            placeholder="ex. camion 2, conducteur Jean…"
+            rows={2}
+            className="w-full px-3 py-2 border rounded-lg text-sm resize-none"
+          />
+        </div>
+
+        {error && (
+          <div className="bg-red-50 border border-red-200 rounded-lg p-2 text-xs text-red-700">
+            {error}
+          </div>
+        )}
+
+        <button
+          onClick={submit}
+          disabled={loading || !date}
+          className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 text-sm font-medium"
+        >
+          {loading
+            ? "Création en cours…"
+            : `Planifier (${tournee.tournee.length} arrêt${tournee.tournee.length > 1 ? "s" : ""} · ${tournee.totalVelos} vélo${tournee.totalVelos > 1 ? "s" : ""})`}
+        </button>
       </div>
     </div>
   );
