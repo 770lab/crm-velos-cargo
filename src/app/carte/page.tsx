@@ -41,6 +41,7 @@ export default function CartePage() {
   const [maxDistance, setMaxDistance] = useState(50);
   const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
   const [codePostal, setCodePostal] = useState("");
+  const [search, setSearch] = useState("");
   const [tournee, setTournee] = useState<TourneeResult | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -53,12 +54,17 @@ export default function CartePage() {
   ).sort((a, b) => a.localeCompare(b));
 
   const cpFilter = codePostal.trim();
+  const searchQuery = search.trim().toLowerCase();
   const clients = allClients.filter((c) => {
     if (selectedDeps.length > 0 && !(c.departement != null && selectedDeps.includes(String(c.departement)))) {
       return false;
     }
     if (cpFilter && !(c.codePostal != null && String(c.codePostal).startsWith(cpFilter))) {
       return false;
+    }
+    if (searchQuery) {
+      const hay = `${c.entreprise} ${c.ville ?? ""}`.toLowerCase();
+      if (!hay.includes(searchQuery)) return false;
     }
     return true;
   });
@@ -102,6 +108,18 @@ export default function CartePage() {
         </div>
 
         <div className="p-4 border-b space-y-3">
+          <div>
+            <label className="text-xs font-medium text-gray-600 block mb-1">
+              Rechercher
+            </label>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => { setSearch(e.target.value); setSelected(null); setTournee(null); }}
+              placeholder="Nom du client ou ville..."
+              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+            />
+          </div>
           <div>
             <label className="text-xs font-medium text-gray-600 block mb-1">
               Filtrer par département
