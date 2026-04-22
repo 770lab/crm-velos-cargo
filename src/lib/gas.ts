@@ -8,17 +8,14 @@ export async function gasGet(action: string, params?: Record<string, string>) {
       url.searchParams.set(k, v);
     }
   }
-  const res = await fetch(url.toString(), { cache: "no-store" });
+  const res = await fetch(url.toString(), { redirect: "follow" });
   return res.json();
 }
 
 export async function gasPost(action: string, body: unknown) {
   const url = new URL(GAS_URL);
   url.searchParams.set("action", action);
-  const res = await fetch(url.toString(), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(body),
-  });
+  url.searchParams.set("body", encodeURIComponent(JSON.stringify(body)));
+  const res = await fetch(url.toString(), { redirect: "follow" });
   return res.json();
 }

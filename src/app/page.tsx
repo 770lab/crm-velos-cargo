@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { gasGet } from "@/lib/gas";
 
 interface Stats {
   totalClients: number;
@@ -18,9 +19,7 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Stats | null>(null);
 
   useEffect(() => {
-    fetch("/api/stats")
-      .then((r) => r.json())
-      .then(setStats);
+    gasGet("getStats").then(setStats);
   }, []);
 
   if (!stats) {

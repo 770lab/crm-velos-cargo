@@ -12,6 +12,12 @@ function handleRequest(e) {
   var action = (e.parameter && e.parameter.action) || "";
   var result;
 
+  function getBody() {
+    if (e.postData && e.postData.contents) return JSON.parse(e.postData.contents);
+    if (e.parameter && e.parameter.body) return JSON.parse(decodeURIComponent(e.parameter.body));
+    return {};
+  }
+
   try {
     switch (action) {
       case "getClients":
@@ -21,8 +27,8 @@ function handleRequest(e) {
         result = getClient(e.parameter.id);
         break;
       case "updateClient":
-        var body = JSON.parse(e.postData.contents);
-        result = updateClient(body.id, body.data);
+        var bodyUC = getBody();
+        result = updateClient(bodyUC.id || e.parameter.id, bodyUC.data || bodyUC);
         break;
       case "getStats":
         result = getStats();
@@ -31,26 +37,26 @@ function handleRequest(e) {
         result = getCarte();
         break;
       case "suggestTournee":
-        var body2 = JSON.parse(e.postData.contents);
-        result = suggestTournee(body2.clientId, body2.mode, body2.maxDistance);
+        var bodyST = getBody();
+        result = suggestTournee(bodyST.clientId, bodyST.mode, bodyST.maxDistance);
         break;
       case "getLivraisons":
         result = getLivraisons();
         break;
       case "createLivraison":
-        var body3 = JSON.parse(e.postData.contents);
-        result = createLivraison(body3);
+        var bodyCL = getBody();
+        result = createLivraison(bodyCL);
         break;
       case "updateLivraison":
-        var body4 = JSON.parse(e.postData.contents);
-        result = updateLivraison(body4.id, body4.data);
+        var bodyUL = getBody();
+        result = updateLivraison(bodyUL.id || e.parameter.id, bodyUL.data || bodyUL);
         break;
       case "deleteLivraison":
         result = deleteLivraison(e.parameter.id);
         break;
       case "updateVelos":
-        var body5 = JSON.parse(e.postData.contents);
-        result = updateVelos(body5);
+        var bodyUV = getBody();
+        result = updateVelos(bodyUV);
         break;
       default:
         result = { error: "Action inconnue: " + action };

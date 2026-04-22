@@ -1,8 +1,17 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { Suspense, useEffect, useState, useCallback } from "react";
+import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
+import { gasGet, gasPost } from "@/lib/gas";
+
+export default function ClientDetailWrapper() {
+  return (
+    <Suspense fallback={<div className="text-gray-400 p-8">Chargement...</div>}>
+      <ClientDetailPage />
+    </Suspense>
+  );
+}
 
 interface Velo {
   id: string;
@@ -83,17 +92,16 @@ const DOC_CONFIG = [
   },
 ];
 
-export default function ClientDetailPage() {
-  const { id } = useParams<{ id: string }>();
+function ClientDetailPage() {
+  const searchParams = useSearchParams();
+  const id = searchParams.get("id") || "";
   const router = useRouter();
   const [client, setClient] = useState<ClientDetail | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState<string | null>(null);
 
   const load = useCallback(() => {
-    fetch(`/api/clients/${id}`)
-      .then((r) => r.json())
-      .then(setClient);
+    gasGet("getClient", { id }).then(setClient);
   }, [id]);
 
   useEffect(() => {
@@ -102,29 +110,21 @@ export default function ClientDetailPage() {
 
   const updateField = async (field: string, value: unknown) => {
     setSaving(field);
-    await fetch(`/api/clients/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ [field]: value }),
-    });
+    await gasPost("updateClient", { id, data: { [field]: value } });
     load();
     setSaving(null);
   };
 
   const bulkAction = async (action: string) => {
     if (selected.size === 0) return;
-    await fetch(`/api/clients/${id}/velos`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ bulkAction: action, veloIds: Array.from(selected) }),
-    });
+    await gasPost("updateVelos", { bulkAction: action, veloIds: Array.from(selected) });
     setSelected(new Set());
     load();
   };
 
   const deleteClient = async () => {
     if (!confirm("Supprimer ce client et tous ses vélos ?")) return;
-    await fetch(`/api/clients/${id}`, { method: "DELETE" });
+    await gasGet("deleteClient", { id });
     router.push("/clients");
   };
 

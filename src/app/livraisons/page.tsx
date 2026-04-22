@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import { gasGet, gasPost } from "@/lib/gas";
 
 interface LivraisonRow {
   id: string;
@@ -23,9 +24,7 @@ export default function LivraisonsPage() {
   const [showAdd, setShowAdd] = useState(false);
 
   const load = useCallback(() => {
-    fetch("/api/livraisons")
-      .then((r) => r.json())
-      .then(setLivraisons);
+    gasGet("getLivraisons").then(setLivraisons);
   }, []);
 
   useEffect(() => {
@@ -35,17 +34,13 @@ export default function LivraisonsPage() {
   const updateStatut = async (id: string, statut: string) => {
     const data: Record<string, unknown> = { statut };
     if (statut === "livree") data.dateEffective = new Date().toISOString();
-    await fetch(`/api/livraisons/${id}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    });
+    await gasPost("updateLivraison", { id, data });
     load();
   };
 
   const deleteLivraison = async (id: string) => {
     if (!confirm("Supprimer cette livraison ?")) return;
-    await fetch(`/api/livraisons/${id}`, { method: "DELETE" });
+    await gasGet("deleteLivraison", { id });
     load();
   };
 
@@ -142,20 +137,14 @@ function AddLivraisonModal({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetch("/api/clients")
-      .then((r) => r.json())
-      .then(setClients);
+    gasGet("getClients").then(setClients);
   }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!clientId) return;
     setLoading(true);
-    await fetch("/api/livraisons", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ clientId, datePrevue: datePrevue || null, notes: notes || null }),
-    });
+    await gasPost("createLivraison", { clientId, datePrevue: datePrevue || null, notes: notes || null });
     onClose();
   };
 

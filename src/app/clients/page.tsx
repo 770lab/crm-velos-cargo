@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import Link from "next/link";
+import { gasGet, gasPost } from "@/lib/gas";
 
 interface ClientRow {
   id: string;
@@ -37,12 +38,10 @@ export default function ClientsPage() {
   const [showImport, setShowImport] = useState(false);
 
   const loadClients = useCallback(() => {
-    const params = new URLSearchParams();
-    if (search) params.set("search", search);
-    if (filter !== "all") params.set("filter", filter);
-    fetch(`/api/clients?${params}`)
-      .then((r) => r.json())
-      .then(setClients);
+    const params: Record<string, string> = {};
+    if (search) params.search = search;
+    if (filter !== "all") params.filter = filter;
+    gasGet("getClients", params).then(setClients);
   }, [search, filter]);
 
   useEffect(() => {
@@ -130,7 +129,7 @@ export default function ClientsPage() {
               <tr key={c.id} className="hover:bg-gray-50">
                 <td className="px-4 py-3">
                   <Link
-                    href={`/clients/${c.id}`}
+                    href={`/clients/detail?id=${c.id}`}
                     className="text-blue-600 hover:underline font-medium"
                   >
                     {c.entreprise}
@@ -213,11 +212,7 @@ function AddClientModal({ onClose }: { onClose: () => void }) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    await fetch("/api/clients", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(form),
-    });
+    await gasPost("createClient", form);
     onClose();
   };
 
@@ -343,12 +338,7 @@ function ImportModal({ onClose }: { onClose: () => void }) {
       };
     }).filter((r) => r.entreprise);
 
-    const res = await fetch("/api/import", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ rows }),
-    });
-    const data = await res.json();
+    const data = await gasPost("importClients", { rows });
     setResult(data);
     setLoading(false);
   };

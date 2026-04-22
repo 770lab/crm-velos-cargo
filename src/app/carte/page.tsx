@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import dynamic from "next/dynamic";
+import { gasGet, gasPost } from "@/lib/gas";
 
 const MapView = dynamic(() => import("@/components/map-view"), { ssr: false });
 
@@ -58,9 +59,7 @@ export default function CartePage() {
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    fetch("/api/carte")
-      .then((r) => r.json())
-      .then(setAllClients);
+    gasGet("getCarte").then(setAllClients);
   }, []);
 
   const departements = Array.from(
@@ -75,12 +74,7 @@ export default function CartePage() {
     async (clientId: string) => {
       setSelected(clientId);
       setLoading(true);
-      const res = await fetch("/api/carte", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ clientId, mode, maxDistance }),
-      });
-      const data = await res.json();
+      const data = await gasPost("suggestTournee", { clientId, mode, maxDistance });
       setTournee(data);
       setLoading(false);
     },
