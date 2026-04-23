@@ -831,10 +831,13 @@ function TourneeModal({
   const isRetrait = tournee.mode === "retrait";
 
   const segments = useMemo(() => {
-    if (isRetrait) return tournee.livraisons.map(() => ({ distKm: 0, trajetMin: 0, fromLabel: "" }));
     const segs: { distKm: number; trajetMin: number; fromLabel: string }[] = [];
     for (let i = 0; i < tournee.livraisons.length; i++) {
       const curr = tournee.livraisons[i].client;
+      if (isRetrait && i === 0) {
+        segs.push({ distKm: 0, trajetMin: 0, fromLabel: "" });
+        continue;
+      }
       const prevLat = i === 0 ? ENTREPOT.lat : (tournee.livraisons[i - 1].client.lat ?? 0);
       const prevLng = i === 0 ? ENTREPOT.lng : (tournee.livraisons[i - 1].client.lng ?? 0);
       const fromLabel = i === 0 ? ENTREPOT.label : "";
