@@ -90,6 +90,9 @@ function handleRequest(e) {
       case "fetchParcelle":
         result = fetchParcelle(e.parameter.id);
         break;
+      case "cancelTournee":
+        result = cancelTournee(e.parameter.tourneeId);
+        break;
       default:
         result = { error: "Action inconnue: " + action };
     }
@@ -841,6 +844,36 @@ function restoreLivraison(id) {
     }
   }
   return { error: "Livraison non trouvée" };
+}
+
+function cancelTournee(tourneeId) {
+  if (!tourneeId) return { error: "tourneeId manquant" };
+  var sheet = SS.getSheetByName("Livraisons");
+  if (!sheet) return { error: "Pas de feuille Livraisons" };
+  var all = sheet.getDataRange().getValues();
+  var headers = all[0];
+  var iTournee = headers.indexOf("tourneeId");
+  var iStatut = headers.indexOf("statut");
+  var iDateEff = headers.indexOf("dateEffective");
+  var iClientId = headers.indexOf("clientId");
+  var iNbVelos = headers.indexOf("nbVelos");
+  if (iTournee === -1 || iStatut === -1) return { error: "Colonnes manquantes" };
+
+  var cancelled = 0;
+  for (var i = 1; i < all.length; i++) {
+    if (all[i][iTournee] === tourneeId && all[i][iStatut] !== "annulee") {
+      var oldStatut = all[i][iStatut];
+      sheet.getRange(i + 1, iStatut + 1).setValue("annulee");
+      if (iDateEff !== -1) sheet.getRange(i + 1, iDateEff + 1).setValue("");
+      if (oldStatut === "livree" && iClientId !== -1 && iNbVelos !== -1) {
+        var nb = Number(all[i][iNbVelos]) || 0;
+        if (nb > 0) unmarkVelosLivres(all[i][iClientId], nb);
+      }
+      cancelled++;
+    }
+  }
+  SpreadsheetApp.flush();
+  return { ok: true, cancelled: cancelled };
 }
 
 // ---- UPLOAD DOCUMENTS ----

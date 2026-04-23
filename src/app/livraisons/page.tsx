@@ -291,7 +291,7 @@ function ListView({ tournees, onOpen }: { tournees: Tournee[]; onOpen: (t: Tourn
             <tr key={t.tourneeId || t.livraisons[0].id} className="hover:bg-gray-50 cursor-pointer" onClick={() => onOpen(t)}>
               <td className="px-4 py-2">{t.datePrevue ? new Date(t.datePrevue).toLocaleDateString("fr-FR") : "—"}</td>
               <td className="px-4 py-2 font-mono text-xs">{t.tourneeId || "(sans tournée)"}</td>
-              <td className="px-4 py-2">{t.mode || "—"}</td>
+              <td className="px-4 py-2">{t.mode ? (MODE_LABELS[t.mode] || t.mode) : "—"}</td>
               <td className="px-4 py-2 text-center">{t.livraisons.length}</td>
               <td className="px-4 py-2 text-center">{t.totalVelos}</td>
               <td className="px-4 py-2 text-center"><StatutPill statut={t.statutGlobal} /></td>
@@ -333,7 +333,7 @@ function TourneeCard({
       {!compact && (
         <div className="text-[10px] opacity-75 truncate">
           {tournee.tourneeId ? `🚛 ${tournee.tourneeId}` : ""}
-          {tournee.mode ? ` · ${tournee.mode === "atelier" ? "atelier" : "sur site"}` : ""}
+          {tournee.mode ? ` · ${MODE_LABELS[tournee.mode] || tournee.mode}` : ""}
         </div>
       )}
     </button>
@@ -341,10 +341,17 @@ function TourneeCard({
 }
 
 function modePalette(mode: string | null) {
-  if (mode === "sursite") return { bg: "bg-orange-100", border: "border-orange-300", text: "text-orange-900" };
-  if (mode === "atelier") return { bg: "bg-blue-100", border: "border-blue-300", text: "text-blue-900" };
+  if (mode === "gros") return { bg: "bg-indigo-100", border: "border-indigo-300", text: "text-indigo-900" };
+  if (mode === "moyen") return { bg: "bg-orange-100", border: "border-orange-300", text: "text-orange-900" };
+  if (mode === "camionnette") return { bg: "bg-teal-100", border: "border-teal-300", text: "text-teal-900" };
   return { bg: "bg-gray-100", border: "border-gray-300", text: "text-gray-800" };
 }
+
+const MODE_LABELS: Record<string, string> = {
+  gros: "Gros camion (132)",
+  moyen: "Moyen (54)",
+  camionnette: "Camionnette (20)",
+};
 
 function StatutPill({ statut }: { statut: Tournee["statutGlobal"] }) {
   const map: Record<string, string> = {
@@ -365,6 +372,9 @@ function StatutPill({ statut }: { statut: Tournee["statutGlobal"] }) {
   );
 }
 
+const MINUTES_PAR_VELO = 8;
+const HEURES_JOURNEE = 8;
+
 function TourneeModal({
   tournee,
   onClose,
@@ -375,6 +385,7 @@ function TourneeModal({
   onChanged: () => void;
 }) {
   const [busy, setBusy] = useState<string | null>(null);
+  const [monteurs, setMonteurs] = useState(2);
 
   const updateStatut = async (id: string, statut: string) => {
     setBusy(id);
@@ -390,6 +401,23 @@ function TourneeModal({
     for (const l of tournee.livraisons) {
       if (l.statut !== "livree") {
         await gasPost("updateLivraison", { id: l.id, data: { statut: "livree", dateEffective: new Date().toISOString() } });
+      }
+    }
+    onChanged();
+    setBusy(null);
+    onClose();
+  };
+
+  const cancelAll = async () => {
+    if (!confirm(`Annuler toute la tournée (${tournee.livraisons.length} livraisons) ? Les données sont conservées.`)) return;
+    setBusy("cancelAll");
+    if (tournee.tourneeId) {
+      await gasGet("cancelTournee", { tourneeId: tournee.tourneeId });
+    } else {
+      for (const l of tournee.livraisons) {
+        if (l.statut !== "annulee") {
+          await gasGet("deleteLivraison", { id: l.id });
+        }
       }
     }
     onChanged();
@@ -414,6 +442,17 @@ function TourneeModal({
 
   const palette = modePalette(tournee.mode);
 
+  const totalMinutes = tournee.totalVelos * MINUTES_PAR_VELO;
+  const heuresTotal = totalMinutes / 60;
+  const minutesJournee = HEURES_JOURNEE * 60;
+  const velosParMonteurJour = Math.floor(minutesJournee / MINUTES_PAR_VELO);
+  const monteursNecessaires = Math.ceil(tournee.totalVelos / velosParMonteurJour);
+  const velosAvecEffectif = monteurs * velosParMonteurJour;
+  const faisableEnUnJour = tournee.totalVelos <= velosAvecEffectif;
+  const tempsAvecEffectif = totalMinutes / monteurs;
+  const heuresAvecEffectif = Math.floor(tempsAvecEffectif / 60);
+  const minutesRestantes = Math.round(tempsAvecEffectif % 60);
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div className="bg-white rounded-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
@@ -426,11 +465,45 @@ function TourneeModal({
             </div>
             <div className="text-sm text-gray-500 mt-1">
               {tournee.datePrevue && new Date(tournee.datePrevue).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
-              {tournee.mode && ` · ${tournee.mode === "atelier" ? "atelier (6/camion)" : "sur site (54/camion)"}`}
-              {` · ${tournee.totalVelos} vélos`}
+              {` · ${tournee.totalVelos} vélos · ${tournee.livraisons.length} arrêts`}
             </div>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+        </div>
+
+        {/* Estimation temps + effectif */}
+        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 space-y-2">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium text-blue-900">Estimation temps</span>
+            <span className="text-xs text-blue-600">{MINUTES_PAR_VELO} min/vélo (montage + admin)</span>
+          </div>
+          <div className="text-sm text-blue-800">
+            {tournee.totalVelos} vélos × {MINUTES_PAR_VELO} min = <strong>{Math.floor(heuresTotal)}h{totalMinutes % 60 > 0 ? `${String(totalMinutes % 60).padStart(2, "0")}` : ""}</strong> de travail total
+          </div>
+          <div className="text-xs text-blue-700">
+            Monteurs recommandés : <strong>{monteursNecessaires}</strong> (base {HEURES_JOURNEE}h/jour, {velosParMonteurJour} vélos/monteur)
+          </div>
+
+          <div className="flex items-center gap-3 pt-2 border-t border-blue-200">
+            <label className="text-sm text-blue-800 whitespace-nowrap">Mon effectif :</label>
+            <input
+              type="number"
+              min={1}
+              max={20}
+              value={monteurs}
+              onChange={(e) => setMonteurs(Math.max(1, parseInt(e.target.value) || 1))}
+              className="w-16 px-2 py-1 text-sm border border-blue-300 rounded-lg text-center bg-white"
+            />
+            <span className="text-sm text-blue-800">monteur{monteurs > 1 ? "s" : ""}</span>
+          </div>
+
+          <div className={`text-sm font-medium rounded-lg px-3 py-2 ${faisableEnUnJour ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
+            {faisableEnUnJour ? (
+              <>Faisable en 1 jour — {heuresAvecEffectif}h{minutesRestantes > 0 ? String(minutesRestantes).padStart(2, "0") : ""} de travail par monteur · Capacité : {velosAvecEffectif} vélos</>
+            ) : (
+              <>Pas faisable en 1 jour — il faudrait {heuresAvecEffectif}h{minutesRestantes > 0 ? String(minutesRestantes).padStart(2, "0") : ""}/monteur · Capacité : {velosAvecEffectif}/{tournee.totalVelos} vélos</>
+            )}
+          </div>
         </div>
 
         <div className="space-y-2">
@@ -482,7 +555,14 @@ function TourneeModal({
           ))}
         </div>
 
-        <div className="flex justify-end gap-3 mt-4 pt-3 border-t">
+        <div className="flex justify-between gap-3 mt-4 pt-3 border-t">
+          <button
+            onClick={cancelAll}
+            disabled={busy === "cancelAll"}
+            className="px-4 py-2 text-sm bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:opacity-50"
+          >
+            {busy === "cancelAll" ? "Annulation…" : "Annuler toute la tournée"}
+          </button>
           <button
             onClick={setAllLivrees}
             disabled={busy === "all"}
