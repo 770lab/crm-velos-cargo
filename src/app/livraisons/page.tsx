@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { gasGet, gasPost } from "@/lib/gas";
 import { useData, type LivraisonRow } from "@/lib/data-context";
+import DateLoadPicker, { type DayLoad } from "@/components/date-load-picker";
 
 type View = "semaine" | "mois" | "liste";
 
@@ -27,6 +28,22 @@ export default function LivraisonsPage() {
   }, [refresh]);
 
   const tournees = useMemo(() => groupByTournee(livraisons), [livraisons]);
+
+  const loadByDate = useMemo(() => {
+    const map = new Map<string, { velos: number; tournees: Set<string>; modes: Set<string> }>();
+    for (const l of livraisons) {
+      if (l.statut === "annulee" || !l.datePrevue) continue;
+      const iso = isoDate(l.datePrevue);
+      if (!map.has(iso)) map.set(iso, { velos: 0, tournees: new Set(), modes: new Set() });
+      const e = map.get(iso)!;
+      e.velos += l._count?.velos ?? l.nbVelos ?? 0;
+      if (l.tourneeId) e.tournees.add(l.tourneeId);
+      if (l.mode) e.modes.add(l.mode);
+    }
+    return new Map<string, DayLoad>(
+      Array.from(map.entries()).map(([k, v]) => [k, { velos: v.velos, tournees: v.tournees.size, modes: Array.from(v.modes) }])
+    );
+  }, [livraisons]);
 
   const searchQuery = search.trim().toLowerCase();
   const filteredTournees = useMemo(() => {
@@ -125,6 +142,7 @@ export default function LivraisonsPage() {
       {openTournee && (
         <TourneeModal
           tournee={openTournee}
+          loadByDate={loadByDate}
           onClose={() => setOpenTournee(null)}
           onChanged={() => { refresh("livraisons"); refresh("carte"); }}
         />
@@ -619,10 +637,12 @@ function computeDeployPlan(
 
 function TourneeModal({
   tournee,
+  loadByDate,
   onClose,
   onChanged,
 }: {
   tournee: Tournee;
+  loadByDate: Map<string, DayLoad>;
   onClose: () => void;
   onChanged: () => void;
 }) {
@@ -631,6 +651,20 @@ function TourneeModal({
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editingDate, setEditingDate] = useState(false);
   const [newDate, setNewDate] = useState(tournee.datePrevue ? isoDate(tournee.datePrevue) : "");
+
+  const loadByDateSansTournee = useMemo(() => {
+    if (!tournee.datePrevue) return loadByDate;
+    const iso = isoDate(tournee.datePrevue);
+    const existing = loadByDate.get(iso);
+    if (!existing) return loadByDate;
+    const adjVelos = Math.max(0, existing.velos - tournee.totalVelos);
+    const adjTournees = Math.max(0, existing.tournees - 1);
+    const adjModes = tournee.mode ? existing.modes.filter((m) => m !== tournee.mode) : existing.modes;
+    const next = new Map(loadByDate);
+    if (adjVelos === 0 && adjTournees === 0) next.delete(iso);
+    else next.set(iso, { velos: adjVelos, tournees: adjTournees, modes: adjModes });
+    return next;
+  }, [loadByDate, tournee.datePrevue, tournee.totalVelos, tournee.mode]);
 
   const changeDate = async () => {
     if (!newDate) return;
@@ -801,24 +835,25 @@ function TourneeModal({
             </div>
             <div className="text-sm text-gray-500 mt-1 flex items-center gap-2 flex-wrap">
               {editingDate ? (
-                <span className="flex items-center gap-1">
-                  <input
-                    type="date"
+                <div className="w-full max-w-md border rounded-lg p-3 bg-gray-50">
+                  <DateLoadPicker
                     value={newDate}
-                    onChange={(e) => setNewDate(e.target.value)}
-                    className="px-2 py-0.5 border border-blue-300 rounded text-sm"
+                    onChange={setNewDate}
+                    loadByDate={loadByDateSansTournee}
                   />
-                  <button
-                    onClick={changeDate}
-                    disabled={busy === "date"}
-                    className="px-2 py-0.5 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 disabled:opacity-50"
-                  >
-                    {busy === "date" ? "..." : "OK"}
-                  </button>
-                  <button onClick={() => setEditingDate(false)} className="text-gray-400 hover:text-gray-600 text-xs">
-                    annuler
-                  </button>
-                </span>
+                  <div className="flex items-center justify-end gap-2 mt-2">
+                    <button onClick={() => setEditingDate(false)} className="text-gray-500 hover:text-gray-700 text-xs">
+                      annuler
+                    </button>
+                    <button
+                      onClick={changeDate}
+                      disabled={busy === "date" || !newDate}
+                      className="px-3 py-1 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 disabled:opacity-50"
+                    >
+                      {busy === "date" ? "..." : "Déplacer la tournée"}
+                    </button>
+                  </div>
+                </div>
               ) : (
                 <button
                   onClick={() => setEditingDate(true)}

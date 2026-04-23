@@ -364,28 +364,61 @@ function RappelMailModal({
   onClose: () => void;
 }) {
   const missing = DOCS_RAPPEL.filter((d) => !client[d.key]);
-  const dateLabel = delivery
-    ? new Date(delivery.date).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })
+  const dateObj = delivery ? new Date(delivery.date) : null;
+  const dateLabel = dateObj
+    ? dateObj.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })
+    : null;
+  const shortDateLabel = dateObj
+    ? dateObj.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })
+    : null;
+  const deadline48h = dateObj ? new Date(dateObj.getTime() - 48 * 3600 * 1000) : null;
+  const deadlineLabel = deadline48h
+    ? deadline48h.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })
     : null;
 
-  const defaultSubject = `Vélos Cargo — préparation ${dateLabel ? "de votre livraison du " + dateLabel : "de votre dossier"}`;
+  const defaultSubject = shortDateLabel
+    ? `Vélos Cargo — livraison du ${shortDateLabel} : documents à fournir sous 48h`
+    : `Vélos Cargo — finalisation de votre dossier`;
+
+  const blocManquants = missing.length > 0
+    ? [
+        ``,
+        `Pour que nous puissions la maintenir, votre dossier CEE doit être complet.`,
+        `Il nous manque à ce jour les documents suivants :`,
+        ``,
+        ...missing.map((m) => `  • ${m.label}`),
+      ]
+    : [
+        ``,
+        `Votre dossier est à ce jour complet de notre côté. Aucune action n'est requise, nous vous confirmerons la fenêtre de passage la veille.`,
+      ];
+
+  const blocDeadline = (dateObj && missing.length > 0)
+    ? [
+        ``,
+        `⚠ Ces pièces doivent impérativement nous parvenir au plus tard 48 heures avant la date de livraison, soit le ${deadlineLabel}.`,
+        ``,
+        `Sans réception de l'intégralité des documents dans ce délai, la livraison sera automatiquement reportée — sans exception, et la nouvelle date ne pourra être repositionnée qu'en fonction de nos tournées disponibles. Ce délai nous est imposé par le montage du dossier CEE, il n'est pas négociable.`,
+        ``,
+        `Vous pouvez nous répondre directement à ce mail en y joignant les documents, ou les déposer sur votre espace Drive habituel.`,
+      ]
+    : [];
+
   const defaultBody = [
     `Bonjour${client.contact ? " " + client.contact : ""},`,
     ``,
     dateLabel
-      ? `Nous préparons la livraison de vos ${delivery!.nbVelos} vélo${delivery!.nbVelos > 1 ? "s" : ""} cargo pour le ${dateLabel}.`
-      : `Nous préparons la livraison de vos vélos cargo.`,
-    ``,
-    missing.length > 0
-      ? `Pour finaliser votre dossier CEE, il nous manque les documents suivants :\n${missing.map((m) => "  • " + m.label).join("\n")}\n\nMerci de nous les transmettre en réponse à ce mail avant la date de livraison.`
-      : `Votre dossier est complet — aucun document manquant de notre côté.`,
+      ? `Votre livraison de ${delivery!.nbVelos} vélo${delivery!.nbVelos > 1 ? "s" : ""} cargo est programmée le ${dateLabel}.`
+      : `Nous finalisons la préparation de votre dossier Vélos Cargo en vue de la livraison.`,
+    ...blocManquants,
+    ...blocDeadline,
     ``,
     `Rappel du process :`,
-    `  1. Nous livrons les vélos sur place et vérifions leur état avec vous.`,
-    `  2. Vous signez le procès-verbal de livraison.`,
-    `  3. Nous finalisons l'inscription sur la plateforme Bicycle et transmettons votre certificat d'économies d'énergie.`,
+    `  1. Livraison des vélos sur votre site et vérification contradictoire.`,
+    `  2. Signature du procès-verbal de livraison.`,
+    `  3. Inscription sur la plateforme Bicycle et transmission de votre certificat d'économies d'énergie.`,
     ``,
-    `Pour toute question, restez en contact, on reste disponibles.`,
+    `Si un document manquant pose question (pièce introuvable, besoin d'un modèle, doute sur la version demandée), appelez-nous dès aujourd'hui : il est toujours plus simple d'anticiper que de décaler une tournée.`,
     ``,
     `Cordialement,`,
     `L'équipe Artisans Verts Energy`,
