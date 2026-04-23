@@ -396,7 +396,82 @@ function StatutPill({ statut }: { statut: Tournee["statutGlobal"] }) {
 
 const MINUTES_PAR_VELO = 8;
 const HEURES_JOURNEE = 8;
+const SEUIL_SPLIT_MIN = 90;
 const ENTREPOT = { lat: 48.9417, lng: 2.4614, label: "Entrepôt (Le Blanc-Mesnil)" };
+
+interface DeployStep {
+  stopIndex: number;
+  monteursAffectes: number;
+  montageTotal: number;
+  tempsSurPlace: number;
+  camionAttend: boolean;
+  arrivee: number;
+  depart: number;
+}
+
+function computeDeployPlan(
+  livraisons: { _count: { velos: number } }[],
+  segments: { trajetMin: number }[],
+  monteurs: number
+): { steps: DeployStep[]; totalElapsed: number } {
+  const steps: DeployStep[] = [];
+  let camionTime = 0;
+  let monteursDisponibles = monteurs;
+  const equipeEnCours: { finAt: number; monteurs: number }[] = [];
+
+  for (let i = 0; i < livraisons.length; i++) {
+    camionTime += segments[i].trajetMin;
+
+    // Récupérer les équipes qui ont fini
+    for (let e = equipeEnCours.length - 1; e >= 0; e--) {
+      if (equipeEnCours[e].finAt <= camionTime) {
+        monteursDisponibles += equipeEnCours[e].monteurs;
+        equipeEnCours.splice(e, 1);
+      }
+    }
+
+    const montageTotal = livraisons[i]._count.velos * MINUTES_PAR_VELO;
+    const effectifIci = Math.max(1, monteursDisponibles);
+    const tempsSurPlace = montageTotal / effectifIci;
+
+    if (tempsSurPlace > SEUIL_SPLIT_MIN && monteursDisponibles > 1 && i < livraisons.length - 1) {
+      // Arrêt long : déployer une équipe, camion avance
+      const monteursDeployes = Math.ceil(effectifIci / 2);
+      const tempsDeploye = montageTotal / monteursDeployes;
+      steps.push({
+        stopIndex: i,
+        monteursAffectes: monteursDeployes,
+        montageTotal,
+        tempsSurPlace: tempsDeploye,
+        camionAttend: false,
+        arrivee: camionTime,
+        depart: camionTime,
+      });
+      equipeEnCours.push({ finAt: camionTime + tempsDeploye, monteurs: monteursDeployes });
+      monteursDisponibles -= monteursDeployes;
+    } else {
+      // Arrêt court ou dernier : camion attend
+      steps.push({
+        stopIndex: i,
+        monteursAffectes: effectifIci,
+        montageTotal,
+        tempsSurPlace,
+        camionAttend: true,
+        arrivee: camionTime,
+        depart: camionTime + tempsSurPlace,
+      });
+      camionTime += tempsSurPlace;
+    }
+  }
+
+  // Attendre les équipes encore déployées
+  let maxFinish = camionTime;
+  for (const e of equipeEnCours) {
+    if (e.finAt > maxFinish) maxFinish = e.finAt;
+  }
+
+  return { steps, totalElapsed: maxFinish };
+}
 
 function TourneeModal({
   tournee,
@@ -539,11 +614,18 @@ function TourneeModal({
   const totalTrajetMin = segments.reduce((s, seg) => s + seg.trajetMin, 0);
   const totalMontageMin = tournee.totalVelos * MINUTES_PAR_VELO;
   const montageAvecEffectif = totalMontageMin / monteurs;
-  const totalJourneeEffectif = montageAvecEffectif + totalTrajetMin;
+  const totalJourneeSimple = montageAvecEffectif + totalTrajetMin;
   const minutesJournee = HEURES_JOURNEE * 60;
   const velosParMonteurJour = Math.floor(minutesJournee / MINUTES_PAR_VELO);
   const monteursNecessaires = Math.ceil((totalMontageMin + totalTrajetMin) / minutesJournee);
   const velosAvecEffectif = monteurs * velosParMonteurJour;
+
+  const deployPlan = useMemo(
+    () => computeDeployPlan(tournee.livraisons, segments, monteurs),
+    [tournee.livraisons, segments, monteurs]
+  );
+  const hasParallel = deployPlan.steps.some((s) => !s.camionAttend);
+  const totalJourneeEffectif = hasParallel ? deployPlan.totalElapsed : totalJourneeSimple;
   const faisableEnUnJour = totalJourneeEffectif <= minutesJournee;
 
   const fmtDuree = (min: number) => {
@@ -665,6 +747,29 @@ function TourneeModal({
               <>Pas faisable en 1 jour — {fmtDuree(totalJourneeEffectif)} dépasse {HEURES_JOURNEE}h · Capacité max : {velosAvecEffectif} vélos</>
             )}
           </div>
+
+          {hasParallel && !isRetrait && (
+            <div className="bg-purple-50 border border-purple-200 rounded-lg p-2 space-y-1">
+              <div className="text-xs font-medium text-purple-900">Plan de déploiement parallèle</div>
+              <div className="text-[10px] text-purple-700 space-y-0.5">
+                {deployPlan.steps.map((s, i) => {
+                  const l = tournee.livraisons[s.stopIndex];
+                  return (
+                    <div key={i} className="flex items-center gap-1">
+                      <span className="w-4 text-center font-bold">{s.stopIndex + 1}</span>
+                      <span className="truncate flex-1">{l.client.entreprise}</span>
+                      <span>{l._count.velos}v · {s.monteursAffectes} mont. · {fmtDuree(s.tempsSurPlace)}</span>
+                      {!s.camionAttend && <span className="text-purple-600 font-medium ml-1">→ camion avance</span>}
+                      {s.camionAttend && <span className="text-gray-500 ml-1">camion attend</span>}
+                    </div>
+                  );
+                })}
+                <div className="pt-1 border-t border-purple-200 font-medium">
+                  Gain parallèle : {fmtDuree(totalJourneeSimple - totalJourneeEffectif)} économisés
+                </div>
+              </div>
+            </div>
+          )}
         </div>
 
         {/* Barre sélection */}
@@ -733,9 +838,17 @@ function TourneeModal({
                     <div className="text-xs text-gray-400">{l.client.telephone}</div>
                   )}
                 </div>
-                <span className="text-sm font-medium bg-gray-100 px-2 py-0.5 rounded">
-                  {l._count.velos} v.
-                </span>
+                <div className="text-right shrink-0">
+                  <span className="text-sm font-medium bg-gray-100 px-2 py-0.5 rounded">
+                    {l._count.velos} v.
+                  </span>
+                  {!isRetrait && monteurs > 1 && deployPlan.steps[i] && (
+                    <div className={`text-[9px] mt-0.5 ${deployPlan.steps[i].camionAttend ? "text-gray-400" : "text-purple-600 font-medium"}`}>
+                      {fmtDuree(deployPlan.steps[i].tempsSurPlace)} · {deployPlan.steps[i].monteursAffectes}m
+                      {!deployPlan.steps[i].camionAttend && " →"}
+                    </div>
+                  )}
+                </div>
                 <select
                   value={l.statut}
                   disabled={busy === l.id}
