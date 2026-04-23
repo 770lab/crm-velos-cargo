@@ -30,6 +30,10 @@ function handleRequest(e) {
         var bodyUC = getBody();
         result = updateClient(bodyUC.id || e.parameter.id, bodyUC.data || bodyUC);
         break;
+      case "bulkUpdateClients":
+        var bodyBU = getBody();
+        result = bulkUpdateClients(bodyBU.clientIds || [], bodyBU.data || {});
+        break;
       case "getStats":
         result = getStats();
         break;
@@ -214,6 +218,42 @@ function updateClient(id, data) {
     }
   }
   return { error: "Client non trouvé" };
+}
+
+// Met à jour le même set de champs sur plusieurs clients d'un coup.
+// data : { devisSignee: true, kbisRecu: false, ... } — booléens écrits comme "TRUE"/"FALSE".
+function bulkUpdateClients(clientIds, data) {
+  if (!clientIds || clientIds.length === 0) return { error: "Aucun client sélectionné" };
+  if (!data || Object.keys(data).length === 0) return { error: "Aucun champ à mettre à jour" };
+
+  var sheet = SS.getSheetByName("Clients");
+  var all = sheet.getDataRange().getValues();
+  var headers = all[0];
+  var idxByCol = {};
+  var keys = Object.keys(data);
+  for (var k = 0; k < keys.length; k++) {
+    var col = headers.indexOf(keys[k]);
+    if (col === -1) continue;
+    idxByCol[keys[k]] = col;
+  }
+  if (Object.keys(idxByCol).length === 0) return { error: "Aucune colonne valide" };
+
+  var ids = {};
+  for (var x = 0; x < clientIds.length; x++) ids[clientIds[x]] = true;
+
+  var updated = 0;
+  for (var i = 1; i < all.length; i++) {
+    if (!ids[all[i][0]]) continue;
+    for (var key2 in idxByCol) {
+      var c = idxByCol[key2];
+      var val2 = data[key2];
+      if (typeof val2 === "boolean") val2 = val2 ? "TRUE" : "FALSE";
+      sheet.getRange(i + 1, c + 1).setValue(val2);
+    }
+    updated++;
+  }
+  SpreadsheetApp.flush();
+  return { ok: true, updated: updated };
 }
 
 // ---- VELOS ----

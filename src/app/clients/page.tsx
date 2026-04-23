@@ -15,6 +15,8 @@ export default function ClientsPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showSync, setShowSync] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const clients = useMemo(() => {
     let result = allClients;
@@ -149,10 +151,38 @@ export default function ClientsPage() {
         </select>
       </div>
 
+      <BulkActionBar
+        selectedIds={selectedIds}
+        onClear={() => setSelectedIds(new Set())}
+        busy={bulkBusy}
+        onApply={async (data) => {
+          setBulkBusy(true);
+          await gasPost("bulkUpdateClients", { clientIds: [...selectedIds], data });
+          await refresh("clients");
+          setBulkBusy(false);
+        }}
+      />
+
       <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
         <table className="w-full min-w-[800px] text-sm">
           <thead className="bg-gray-50 border-b">
             <tr>
+              <th className="px-3 py-3 w-8">
+                <input
+                  type="checkbox"
+                  aria-label="Sélectionner tous les clients filtrés"
+                  checked={filteredClients.length > 0 && filteredClients.every((c) => selectedIds.has(c.id))}
+                  onChange={(e) => {
+                    if (e.target.checked) {
+                      setSelectedIds(new Set([...selectedIds, ...filteredClients.map((c) => c.id)]));
+                    } else {
+                      const ids = new Set(selectedIds);
+                      filteredClients.forEach((c) => ids.delete(c.id));
+                      setSelectedIds(ids);
+                    }
+                  }}
+                />
+              </th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Entreprise</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Ville</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Dép.</th>
@@ -168,7 +198,20 @@ export default function ClientsPage() {
           </thead>
           <tbody className="divide-y divide-gray-100">
             {filteredClients.map((c) => (
-              <tr key={c.id} className="hover:bg-gray-50">
+              <tr key={c.id} className={`hover:bg-gray-50 ${selectedIds.has(c.id) ? "bg-blue-50/50" : ""}`}>
+                <td className="px-3 py-3 w-8">
+                  <input
+                    type="checkbox"
+                    aria-label={`Sélectionner ${c.entreprise}`}
+                    checked={selectedIds.has(c.id)}
+                    onChange={(e) => {
+                      const ids = new Set(selectedIds);
+                      if (e.target.checked) ids.add(c.id);
+                      else ids.delete(c.id);
+                      setSelectedIds(ids);
+                    }}
+                  />
+                </td>
                 <td className="px-4 py-3">
                   <Link
                     href={`/clients/detail?id=${c.id}`}
@@ -212,7 +255,7 @@ export default function ClientsPage() {
             ))}
             {filteredClients.length === 0 && (
               <tr>
-                <td colSpan={11} className="px-4 py-12 text-center text-gray-400">
+                <td colSpan={12} className="px-4 py-12 text-center text-gray-400">
                   {clients.length === 0
                     ? (loading ? "Chargement..." : "Aucun client. Importez votre tableau ou ajoutez un client.")
                     : "Aucun client trouvé pour ces filtres."}
@@ -240,6 +283,85 @@ function DocProgress({ devis, kbis, attestation, signature, bicycle }: { devis: 
         <div className={`${color} h-2 rounded-full transition-all`} style={{ width: `${pct}%` }} />
       </div>
       <span className="text-xs text-gray-500 whitespace-nowrap">{count}/5</span>
+    </div>
+  );
+}
+
+function BulkActionBar({
+  selectedIds,
+  onClear,
+  onApply,
+  busy,
+}: {
+  selectedIds: Set<string>;
+  onClear: () => void;
+  onApply: (data: Record<string, boolean>) => void | Promise<void>;
+  busy: boolean;
+}) {
+  if (selectedIds.size === 0) return null;
+  const FIELDS: { key: string; label: string }[] = [
+    { key: "devisSignee", label: "Devis" },
+    { key: "kbisRecu", label: "Kbis" },
+    { key: "attestationRecue", label: "Attest." },
+    { key: "inscriptionBicycle", label: "Bicycle" },
+  ];
+  const setAll = (val: boolean) => {
+    const data: Record<string, boolean> = {};
+    FIELDS.forEach((f) => (data[f.key] = val));
+    onApply(data);
+  };
+  const setOne = (field: string, val: boolean) => {
+    onApply({ [field]: val });
+  };
+  return (
+    <div className="sticky top-0 z-30 mb-3 bg-blue-600 text-white rounded-lg shadow-md px-4 py-2 flex flex-wrap items-center gap-2">
+      <span className="font-medium">{selectedIds.size} sélectionné{selectedIds.size > 1 ? "s" : ""}</span>
+      <span className="hidden sm:inline text-blue-200">·</span>
+      <button
+        onClick={() => setAll(true)}
+        disabled={busy}
+        className="px-2 py-1 bg-emerald-500 rounded hover:bg-emerald-600 text-xs font-medium disabled:opacity-50"
+      >
+        ✓ Tout cocher
+      </button>
+      <button
+        onClick={() => setAll(false)}
+        disabled={busy}
+        className="px-2 py-1 bg-red-500 rounded hover:bg-red-600 text-xs font-medium disabled:opacity-50"
+      >
+        ✗ Tout décocher
+      </button>
+      <span className="hidden sm:inline text-blue-200">|</span>
+      {FIELDS.map((f) => (
+        <span key={f.key} className="inline-flex items-center gap-0.5">
+          <span className="text-xs">{f.label}</span>
+          <button
+            onClick={() => setOne(f.key, true)}
+            disabled={busy}
+            title={`Cocher ${f.label} pour les ${selectedIds.size} sélectionnés`}
+            className="px-1.5 py-0.5 bg-white/20 hover:bg-emerald-500 rounded text-[11px] disabled:opacity-50"
+          >
+            ✓
+          </button>
+          <button
+            onClick={() => setOne(f.key, false)}
+            disabled={busy}
+            title={`Décocher ${f.label} pour les ${selectedIds.size} sélectionnés`}
+            className="px-1.5 py-0.5 bg-white/20 hover:bg-red-500 rounded text-[11px] disabled:opacity-50"
+          >
+            ✗
+          </button>
+        </span>
+      ))}
+      <span className="ml-auto" />
+      {busy && <span className="text-xs">Mise à jour…</span>}
+      <button
+        onClick={onClear}
+        disabled={busy}
+        className="px-2 py-1 bg-white/10 hover:bg-white/20 rounded text-xs disabled:opacity-50"
+      >
+        Désélectionner
+      </button>
     </div>
   );
 }
@@ -426,7 +548,6 @@ function UploadDocModal({
 
 function PreviewDocModal({
   previewUrl,
-  downloadUrl,
   openUrl,
   onClose,
   onReplace,
@@ -437,6 +558,11 @@ function PreviewDocModal({
   onClose: () => void;
   onReplace: () => void;
 }) {
+  // Note : on n'expose plus de bouton "Télécharger" direct. Le lien
+  // drive.google.com/uc?export=download échoue en 403 si le fichier n'a
+  // pas été partagé en ANYONE_WITH_LINK (cas des fichiers existants pas
+  // uploadés via le CRM). À la place, on ouvre Drive : le viewer Drive
+  // a son propre bouton ⬇ qui marche dans tous les cas (cookies + scope).
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div className="bg-white rounded-xl p-4 w-full max-w-3xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
@@ -458,24 +584,15 @@ function PreviewDocModal({
           <button onClick={onReplace} className="px-3 py-1.5 text-sm border rounded text-gray-700 hover:bg-gray-50">
             Remplacer
           </button>
-          <div className="flex gap-2">
-            <a
-              href={openUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-3 py-1.5 text-sm border rounded text-blue-700 hover:bg-blue-50"
-            >
-              Ouvrir dans Drive
-            </a>
-            {downloadUrl && (
-              <a
-                href={downloadUrl}
-                className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700"
-              >
-                Télécharger
-              </a>
-            )}
-          </div>
+          <a
+            href={openUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Ouvre Drive — le bouton ⬇ natif te permet ensuite de télécharger"
+            className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+          >
+            Ouvrir dans Drive (puis ⬇)
+          </a>
         </div>
       </div>
     </div>
