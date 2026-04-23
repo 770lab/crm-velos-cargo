@@ -386,12 +386,48 @@ function TourneeModal({
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [monteurs, setMonteurs] = useState(2);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+
+  const toggleSelect = (id: string) => {
+    const next = new Set(selected);
+    next.has(id) ? next.delete(id) : next.add(id);
+    setSelected(next);
+  };
+
+  const toggleAll = () => {
+    if (selected.size === tournee.livraisons.length) {
+      setSelected(new Set());
+    } else {
+      setSelected(new Set(tournee.livraisons.map((l) => l.id)));
+    }
+  };
 
   const updateStatut = async (id: string, statut: string) => {
     setBusy(id);
     const data: Record<string, unknown> = { statut };
     if (statut === "livree") data.dateEffective = new Date().toISOString();
     await gasPost("updateLivraison", { id, data });
+    onChanged();
+    setBusy(null);
+  };
+
+  const bulkAction = async (action: "livree" | "annulee" | "planifiee") => {
+    if (selected.size === 0) return;
+    const label = action === "annulee" ? "annuler" : action === "livree" ? "marquer livrées" : "restaurer";
+    if (!confirm(`${label.charAt(0).toUpperCase() + label.slice(1)} ${selected.size} livraison${selected.size > 1 ? "s" : ""} ?`)) return;
+    setBusy("bulk");
+    for (const id of selected) {
+      const l = tournee.livraisons.find((x) => x.id === id);
+      if (!l) continue;
+      if (action === "annulee" && l.statut !== "annulee") {
+        await gasGet("deleteLivraison", { id });
+      } else if (action === "livree" && l.statut !== "livree") {
+        await gasPost("updateLivraison", { id, data: { statut: "livree", dateEffective: new Date().toISOString() } });
+      } else if (action === "planifiee" && l.statut === "annulee") {
+        await gasGet("restoreLivraison", { id });
+      }
+    }
+    setSelected(new Set());
     onChanged();
     setBusy(null);
   };
@@ -426,7 +462,7 @@ function TourneeModal({
   };
 
   const annuler = async (id: string) => {
-    if (!confirm("Annuler cette livraison ? (la donnée est conservée, le statut passe à 'annulée')")) return;
+    if (!confirm("Annuler cette livraison ?")) return;
     setBusy(id);
     await gasGet("deleteLivraison", { id });
     onChanged();
@@ -506,9 +542,53 @@ function TourneeModal({
           </div>
         </div>
 
+        {/* Barre sélection */}
+        <div className="flex items-center gap-3 mb-2">
+          <label className="flex items-center gap-1.5 text-xs text-gray-500 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={selected.size === tournee.livraisons.length && tournee.livraisons.length > 0}
+              onChange={toggleAll}
+            />
+            Tout sélectionner
+          </label>
+          {selected.size > 0 && (
+            <div className="flex items-center gap-2 ml-auto">
+              <span className="text-xs text-gray-500">{selected.size} sélectionnée{selected.size > 1 ? "s" : ""}</span>
+              <button
+                onClick={() => bulkAction("livree")}
+                disabled={busy === "bulk"}
+                className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded-lg hover:bg-green-200 disabled:opacity-50"
+              >
+                Marquer livrées
+              </button>
+              <button
+                onClick={() => bulkAction("annulee")}
+                disabled={busy === "bulk"}
+                className="px-2 py-1 text-xs bg-red-100 text-red-700 rounded-lg hover:bg-red-200 disabled:opacity-50"
+              >
+                Annuler
+              </button>
+              <button
+                onClick={() => bulkAction("planifiee")}
+                disabled={busy === "bulk"}
+                className="px-2 py-1 text-xs bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 disabled:opacity-50"
+              >
+                Restaurer
+              </button>
+            </div>
+          )}
+        </div>
+
         <div className="space-y-2">
           {tournee.livraisons.map((l, i) => (
-            <div key={l.id} className="border rounded-lg p-3 flex items-center gap-3">
+            <div key={l.id} className={`border rounded-lg p-3 flex items-center gap-3 ${selected.has(l.id) ? "bg-blue-50 border-blue-300" : ""}`}>
+              <input
+                type="checkbox"
+                checked={selected.has(l.id)}
+                onChange={() => toggleSelect(l.id)}
+                className="shrink-0"
+              />
               <span className="w-7 h-7 rounded-full bg-green-600 text-white text-sm flex items-center justify-center font-medium shrink-0">
                 {i + 1}
               </span>
@@ -536,7 +616,6 @@ function TourneeModal({
                 <button
                   onClick={() => restaurer(l.id)}
                   disabled={busy === l.id}
-                  title="Restaurer (passe à planifiée)"
                   className="text-emerald-500 hover:text-emerald-700 text-xs whitespace-nowrap"
                 >
                   ↺ restaurer
@@ -545,7 +624,6 @@ function TourneeModal({
                 <button
                   onClick={() => annuler(l.id)}
                   disabled={busy === l.id}
-                  title="Annuler (soft, la donnée est conservée)"
                   className="text-amber-500 hover:text-amber-700 text-xs whitespace-nowrap"
                 >
                   annuler
