@@ -427,7 +427,8 @@ function RappelMailModal({
   const [subject, setSubject] = useState(defaultSubject);
   const [body, setBody] = useState(defaultBody);
 
-  const mailto = `mailto:${encodeURIComponent(client.email ?? "")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  const FROM_EMAIL = "velos-cargo@artisansverts.energy";
+  const gmailUrl = `https://mail.google.com/mail/?authuser=${encodeURIComponent(FROM_EMAIL)}&view=cm&fs=1&to=${encodeURIComponent(client.email ?? "")}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 
   const copyBody = async () => {
     try {
@@ -442,7 +443,7 @@ function RappelMailModal({
           <div>
             <h2 className="text-lg font-semibold">Rappel livraison — {client.entreprise}</h2>
             <p className="text-xs text-gray-500 mt-0.5">
-              Destinataire : {client.email || <span className="text-red-600">aucun email renseigné</span>}
+              De : <span className="font-mono">{FROM_EMAIL}</span> → {client.email || <span className="text-red-600">aucun email renseigné</span>}
             </p>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
@@ -487,11 +488,14 @@ function RappelMailModal({
               Annuler
             </button>
             <a
-              href={mailto}
+              href={gmailUrl}
+              target="_blank"
+              rel="noopener noreferrer"
               onClick={() => setTimeout(onClose, 200)}
+              title={`Ouvre Gmail sur ${FROM_EMAIL}. Si non connecté, Google demandera la connexion.`}
               className={`px-4 py-2 text-sm rounded-lg text-white ${client.email ? "bg-blue-600 hover:bg-blue-700" : "bg-gray-400 pointer-events-none"}`}
             >
-              Ouvrir dans l&apos;app mail
+              Ouvrir dans Gmail (velos-cargo@)
             </a>
           </div>
         </div>
