@@ -1024,121 +1024,183 @@ function syncDriveDocs() {
     updates: [],
     orphans: [],
     fuzzyMatched: [],
+    ambiguousFolders: [],
     unknowns: [],
     aiClassified: 0,
     filesSeen: 0,
     skippedFiles: [],
     skippedFolders: [],
-    timeoutHit: false
+    timeoutHit: false,
+    fatalError: null
   };
 
-  var subFolders;
+  // Pré-passe : on liste tous les sous-dossiers et on compte combien tomberaient sur
+  // le même client par fuzzy match. Si plusieurs (ex. 10 « L'AFRICA PARIS128/102/94… »
+  // visant le même unique client « L'AFRICA PARIS »), on ne fuzzy-match AUCUN d'eux
+  // pour éviter de mélanger les pinceaux entre agences.
+  var folderEntries = []; // { folder, folderName, folderKey, matchInfo }
+  var fuzzyVotes = {}; // clientRowIdx -> count
   try {
-    subFolders = root.getFolders();
-  } catch (err) {
-    return { error: "Impossible de lister les sous-dossiers : " + err.message };
-  }
-
-  while (subFolders.hasNext()) {
-    if (Date.now() - startTime > TIMEOUT_MS) {
-      report.timeoutHit = true;
-      Logger.log("syncDriveDocs : timeout préventif après " + report.filesSeen + " fichiers");
-      break;
-    }
-
-    var folder, folderName, folderKey;
-    try {
-      folder = subFolders.next();
-      folderName = folder.getName();
-      folderKey = normalizeName(folderName);
-    } catch (err) {
-      Logger.log("syncDriveDocs : sous-dossier (next/getName) : " + err.message);
-      report.skippedFolders.push({ folder: folderName || "?", error: String(err.message || err) });
-      continue;
-    }
-
-    var matchInfo = findClientForFolder(folderKey, clientsByKey, clientsKeysSorted);
-    var match = matchInfo ? matchInfo.match : null;
-    if (!match) {
-      report.orphans.push(folderName);
-      continue;
-    }
-    if (matchInfo.by !== "exact") {
-      report.fuzzyMatched.push({ folder: folderName, matched: match.row[iEntreprise], by: matchInfo.by });
-    }
-
-    var files;
-    try {
-      files = folder.getFiles();
-    } catch (err) {
-      Logger.log("syncDriveDocs : getFiles a planté pour " + folderName + " : " + err.message);
-      report.skippedFolders.push({ folder: folderName, error: String(err.message || err) });
-      continue;
-    }
-
-    while (files.hasNext()) {
+    var subFoldersIter1 = root.getFolders();
+    while (subFoldersIter1.hasNext()) {
       if (Date.now() - startTime > TIMEOUT_MS) {
         report.timeoutHit = true;
-        Logger.log("syncDriveDocs : timeout préventif au milieu de " + folderName);
+        break;
+      }
+      var f, fname, fkey;
+      try {
+        f = subFoldersIter1.next();
+        fname = f.getName();
+        fkey = normalizeName(fname);
+      } catch (err) {
+        Logger.log("syncDriveDocs (pré-passe) : " + err.message);
+        report.skippedFolders.push({ folder: "?", error: String(err.message || err) });
+        continue;
+      }
+      var mi = findClientForFolder(fkey, clientsByKey, clientsKeysSorted);
+      folderEntries.push({ folder: f, folderName: fname, folderKey: fkey, matchInfo: mi });
+      if (mi && mi.by !== "exact") {
+        fuzzyVotes[mi.match.rowIdx] = (fuzzyVotes[mi.match.rowIdx] || 0) + 1;
+      }
+    }
+  } catch (err) {
+    Logger.log("syncDriveDocs : pré-passe a planté : " + err.message);
+    report.fatalError = "Pré-passe Drive : " + err.message;
+    return report; // on retourne ce qu'on a, partial > rien
+  }
+
+  // Passe 2 : on parcourt les entries, on traite chaque sous-dossier.
+  // On wrap toute la boucle pour qu'une exception "Service Drive" globale ne tue pas le report.
+  try {
+    for (var fi = 0; fi < folderEntries.length; fi++) {
+      if (Date.now() - startTime > TIMEOUT_MS) {
+        report.timeoutHit = true;
+        Logger.log("syncDriveDocs : timeout préventif après " + report.filesSeen + " fichiers");
         break;
       }
 
-      var file, fileName;
-      try {
-        file = files.next();
-        fileName = file.getName();
-      } catch (err) {
-        Logger.log("syncDriveDocs : fichier (next/getName) dans " + folderName + " : " + err.message);
-        report.skippedFiles.push({ folder: folderName, file: fileName || "?", error: String(err.message || err) });
+      var entry = folderEntries[fi];
+      var folder = entry.folder;
+      var folderName = entry.folderName;
+      var folderKey = entry.folderKey;
+      var matchInfo = entry.matchInfo;
+      var match = matchInfo ? matchInfo.match : null;
+
+      // Détection ambiguïté fuzzy
+      var isAmbiguous = false;
+      if (match && matchInfo.by !== "exact" && fuzzyVotes[match.rowIdx] > 1) {
+        isAmbiguous = true;
+        report.ambiguousFolders.push({
+          folder: folderName,
+          wouldMatch: match.row[iEntreprise],
+          strategy: matchInfo.by,
+          nbCandidates: fuzzyVotes[match.rowIdx]
+        });
+        match = null; // on ne touchera pas la sheet pour ce folder
+      } else if (match && matchInfo.by !== "exact") {
+        report.fuzzyMatched.push({ folder: folderName, matched: match.row[iEntreprise], by: matchInfo.by });
+      }
+
+      if (!match && !isAmbiguous) {
+        report.orphans.push(folderName);
         continue;
       }
 
-      report.filesSeen++;
-
+      var files;
       try {
-        var docType = detectDocTypeByName(fileName);
-        var classifiedBy = "name";
+        files = folder.getFiles();
+      } catch (err) {
+        Logger.log("syncDriveDocs : getFiles a planté pour " + folderName + " : " + err.message);
+        report.skippedFolders.push({ folder: folderName, error: String(err.message || err) });
+        continue;
+      }
 
-        if (!docType || docType === "AUTRE" || !DOC_TYPE_TO_FIELDS[docType]) {
-          report.unknowns.push({
-            folder: folderName,
-            folderKey: folderKey,
-            fileId: file.getId(),
-            file: fileName
-          });
+      while (files.hasNext()) {
+        if (Date.now() - startTime > TIMEOUT_MS) {
+          report.timeoutHit = true;
+          Logger.log("syncDriveDocs : timeout préventif au milieu de " + folderName);
+          break;
+        }
+
+        var file, fileName;
+        try {
+          file = files.next();
+          fileName = file.getName();
+        } catch (err) {
+          Logger.log("syncDriveDocs : fichier (next/getName) dans " + folderName + " : " + err.message);
+          report.skippedFiles.push({ folder: folderName, file: fileName || "?", error: String(err.message || err) });
           continue;
         }
 
-        var fieldSet = DOC_TYPE_TO_FIELDS[docType];
-        var flagCol = headers.indexOf(fieldSet.flag);
-        var linkCol = headers.indexOf(fieldSet.link);
-        if (flagCol === -1) continue;
+        report.filesSeen++;
 
-        var url = file.getUrl();
-        sheet.getRange(match.rowIdx + 1, flagCol + 1).setValue("TRUE");
-        if (linkCol !== -1) {
-          sheet.getRange(match.rowIdx + 1, linkCol + 1).setValue(url);
+        try {
+          var docType = detectDocTypeByName(fileName);
+          var classifiedBy = "name";
+
+          if (!docType || docType === "AUTRE" || !DOC_TYPE_TO_FIELDS[docType]) {
+            // Pour les ambigus, on stocke le fichier en unknowns avec un flag
+            // pour que classifyBatch ne tente pas non plus le match auto.
+            report.unknowns.push({
+              folder: folderName,
+              folderKey: folderKey,
+              fileId: file.getId(),
+              file: fileName,
+              ambiguous: isAmbiguous
+            });
+            continue;
+          }
+
+          if (isAmbiguous) {
+            // Type détecté par nom mais on ne peut pas écrire vu l'ambiguïté
+            // → on log dans skippedFiles avec une raison explicite.
+            report.skippedFiles.push({
+              folder: folderName,
+              file: fileName,
+              error: "Ambigu : plusieurs dossiers Drive visent le même client en fuzzy"
+            });
+            continue;
+          }
+
+          var fieldSet = DOC_TYPE_TO_FIELDS[docType];
+          var flagCol = headers.indexOf(fieldSet.flag);
+          var linkCol = headers.indexOf(fieldSet.link);
+          if (flagCol === -1) continue;
+
+          var url = file.getUrl();
+          sheet.getRange(match.rowIdx + 1, flagCol + 1).setValue("TRUE");
+          if (linkCol !== -1) {
+            sheet.getRange(match.rowIdx + 1, linkCol + 1).setValue(url);
+          }
+
+          report.updates.push({
+            client: match.row[iEntreprise],
+            docType: docType,
+            file: fileName,
+            by: classifiedBy
+          });
+        } catch (err) {
+          Logger.log("syncDriveDocs : traitement " + fileName + " dans " + folderName + " : " + err.message);
+          report.skippedFiles.push({ folder: folderName, file: fileName, error: String(err.message || err) });
         }
-
-        report.updates.push({
-          client: match.row[iEntreprise],
-          docType: docType,
-          file: fileName,
-          by: classifiedBy
-        });
-      } catch (err) {
-        Logger.log("syncDriveDocs : traitement " + fileName + " dans " + folderName + " : " + err.message);
-        report.skippedFiles.push({ folder: folderName, file: fileName, error: String(err.message || err) });
       }
-    }
 
-    if (report.timeoutHit) break;
+      if (report.timeoutHit) break;
+    }
+  } catch (err) {
+    Logger.log("syncDriveDocs : exception globale dans la passe 2 : " + err.message);
+    report.fatalError = "Passe 2 Drive : " + String(err.message || err);
+    // On retombe sur ses pieds : on persiste ce qu'on a déjà collecté.
   }
 
-  PropertiesService.getScriptProperties().setProperty(
-    "AI_QUEUE",
-    JSON.stringify(report.unknowns)
-  );
+  try {
+    PropertiesService.getScriptProperties().setProperty(
+      "AI_QUEUE",
+      JSON.stringify(report.unknowns)
+    );
+  } catch (err) {
+    Logger.log("syncDriveDocs : impossible d'écrire AI_QUEUE : " + err.message);
+  }
   report.aiQueueSize = report.unknowns.length;
   report.elapsedMs = Date.now() - startTime;
 
@@ -1180,10 +1242,28 @@ function classifyBatch(limit) {
   var updates = [];
   var errors = [];
   var classified = 0;
-  var reasons = { ok: 0, noKey: 0, unsupportedMime: 0, tooBig: 0, httpError: 0, labelOther: 0, noClientMatch: 0, exception: 0 };
+  var reasons = { ok: 0, noKey: 0, unsupportedMime: 0, tooBig: 0, httpError: 0, labelOther: 0, noClientMatch: 0, ambiguous: 0, exception: 0 };
+
+  // Pour détecter les ambiguïtés "à la volée" sur la queue : on compte combien
+  // d'items pointent vers le même client par fuzzy. Si > 1 → on skip tout ce groupe.
+  var fuzzyVotes = {};
+  for (var jj = 0; jj < queue.length; jj++) {
+    var qi = queue[jj];
+    var mi0 = findClientForFolder(qi.folderKey, clientsByKey, clientsKeysSorted);
+    if (mi0 && mi0.by !== "exact") {
+      fuzzyVotes[mi0.match.rowIdx] = (fuzzyVotes[mi0.match.rowIdx] || 0) + 1;
+    }
+  }
 
   for (var j = 0; j < batch.length; j++) {
     var item = batch[j];
+
+    // Skip explicite si syncDriveDocs a déjà détecté l'ambiguïté
+    if (item.ambiguous) {
+      reasons.ambiguous++;
+      continue;
+    }
+
     try {
       var file = DriveApp.getFileById(item.fileId);
       var clf = classifyWithGemini(file);
@@ -1198,6 +1278,11 @@ function classifyBatch(limit) {
       var match = matchInfo ? matchInfo.match : null;
       if (!match) {
         reasons.noClientMatch++;
+        continue;
+      }
+      // Anti-mélange : si fuzzy match et plusieurs items visent ce client → skip
+      if (matchInfo.by !== "exact" && (fuzzyVotes[match.rowIdx] || 0) > 1) {
+        reasons.ambiguous++;
         continue;
       }
 

@@ -703,6 +703,7 @@ interface SyncReport {
   updates?: { client: string; docType: string; file: string; by: string }[];
   orphans?: string[];
   fuzzyMatched?: { folder: string; matched: string; by: string }[];
+  ambiguousFolders?: { folder: string; wouldMatch: string; strategy: string; nbCandidates: number }[];
   unknowns?: { folder: string; file: string }[];
   skippedFiles?: { folder: string; file: string; error: string }[];
   skippedFolders?: { folder: string; error: string }[];
@@ -712,9 +713,10 @@ interface SyncReport {
   aiQueueSize?: number;
   filesSeen?: number;
   error?: string;
+  fatalError?: string | null;
 }
 
-type AiReason = "ok" | "noKey" | "unsupportedMime" | "tooBig" | "httpError" | "labelOther" | "noClientMatch" | "exception";
+type AiReason = "ok" | "noKey" | "unsupportedMime" | "tooBig" | "httpError" | "labelOther" | "noClientMatch" | "ambiguous" | "exception";
 
 interface ClassifyProgress {
   total: number;
@@ -733,6 +735,7 @@ const AI_REASON_LABELS: Record<AiReason, string> = {
   httpError: "Erreur HTTP Gemini",
   labelOther: "Classé AUTRE par l'IA",
   noClientMatch: "Pas de client matché",
+  ambiguous: "Ambigu (plusieurs dossiers visent le même client)",
   exception: "Exception inattendue",
 };
 
@@ -757,7 +760,7 @@ function SyncDriveModal({ onClose }: { onClose: () => void }) {
     const total = report?.aiQueueSize ?? report?.unknowns?.length ?? 0;
     if (total === 0) return;
     const emptyReasons: Record<AiReason, number> = {
-      ok: 0, noKey: 0, unsupportedMime: 0, tooBig: 0, httpError: 0, labelOther: 0, noClientMatch: 0, exception: 0,
+      ok: 0, noKey: 0, unsupportedMime: 0, tooBig: 0, httpError: 0, labelOther: 0, noClientMatch: 0, ambiguous: 0, exception: 0,
     };
     setAi({ total, processed: 0, classified: 0, running: true, done: false, reasons: { ...emptyReasons } });
 
@@ -886,6 +889,32 @@ function SyncDriveModal({ onClose }: { onClose: () => void }) {
                   </p>
                 )}
               </div>
+            )}
+
+            {report.fatalError && (
+              <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-800">
+                ⚠ Le scan a planté en cours de route ({report.fatalError}). Le rapport ci-dessous est partiel.
+              </div>
+            )}
+
+            {report.ambiguousFolders && report.ambiguousFolders.length > 0 && (
+              <details className="border border-orange-300 bg-orange-50 rounded-lg p-2" open>
+                <summary className="cursor-pointer font-medium text-orange-900">
+                  ⚠ Ambiguïtés non résolues ({report.ambiguousFolders.length}) — aucun document n&apos;a été associé
+                </summary>
+                <p className="mt-2 text-xs text-orange-800">
+                  Plusieurs dossiers Drive viseraient le même client en fuzzy (ex. dossiers d&apos;agences distinctes).
+                  Pour ne pas mélanger les pinceaux, on n&apos;associe rien automatiquement. Renomme tes dossiers
+                  pour qu&apos;ils matchent un nom client distinct, ou ajoute les agences dans la sheet Clients.
+                </p>
+                <ul className="mt-2 text-xs text-orange-800 space-y-1 max-h-48 overflow-y-auto">
+                  {report.ambiguousFolders.map((m, i) => (
+                    <li key={i}>
+                      • <span className="font-mono">{m.folder}</span> → conflit avec {m.nbCandidates - 1} autre{m.nbCandidates - 1 > 1 ? "s" : ""} sur le client <span className="font-medium">{m.wouldMatch}</span>
+                    </li>
+                  ))}
+                </ul>
+              </details>
             )}
 
             {report.fuzzyMatched && report.fuzzyMatched.length > 0 && (
