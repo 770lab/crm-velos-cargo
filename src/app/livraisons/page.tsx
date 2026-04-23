@@ -18,7 +18,7 @@ interface Tournee {
 }
 
 export default function LivraisonsPage() {
-  const { livraisons, refresh } = useData();
+  const { livraisons, carte, refresh } = useData();
   const [view, setView] = useState<View>("semaine");
   const [refDate, setRefDate] = useState<Date>(() => new Date());
   const [openTournee, setOpenTournee] = useState<Tournee | null>(null);
@@ -27,6 +27,7 @@ export default function LivraisonsPage() {
 
   useEffect(() => {
     refresh("livraisons");
+    refresh("carte");
   }, [refresh]);
 
   const tournees = useMemo(() => groupByTournee(livraisons), [livraisons]);
@@ -47,17 +48,36 @@ export default function LivraisonsPage() {
     );
   }, [livraisons]);
 
+  const clientById = useMemo(() => {
+    const map = new Map<string, typeof carte[number]>();
+    for (const c of carte) map.set(c.id, c);
+    return map;
+  }, [carte]);
+
   const searchQuery = search.trim().toLowerCase();
   const filteredTournees = useMemo(() => {
     if (!searchQuery) return tournees;
     return tournees.filter((t) => {
       const hay = t.livraisons
-        .map((l) => `${l.client.entreprise} ${l.client.ville ?? ""} ${l.client.telephone ?? ""} ${t.tourneeId ?? ""}`)
+        .map((l) => {
+          const full = l.clientId ? clientById.get(l.clientId) : undefined;
+          return [
+            l.client.entreprise,
+            l.client.ville ?? "",
+            l.client.telephone ?? "",
+            l.client.adresse ?? "",
+            l.client.codePostal ?? "",
+            full?.contact ?? "",
+            full?.email ?? "",
+            full?.apporteur ?? "",
+            t.tourneeId ?? "",
+          ].join(" ");
+        })
         .join(" ")
         .toLowerCase();
       return hay.includes(searchQuery);
     });
-  }, [tournees, searchQuery]);
+  }, [tournees, searchQuery, clientById]);
 
   // Auto-navigation : quand une recherche filtre, naviguer à la date de la première tournée trouvée
   useEffect(() => {
