@@ -569,12 +569,12 @@ function PreviewDocModal({
   // a son propre bouton ⬇ qui marche dans tous les cas (cookies + scope).
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
-      <div className="bg-white rounded-xl p-4 w-full max-w-3xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-xl p-4 flex flex-col" style={{ width: "calc(100vw - 2rem)", height: "calc(100vh - 2rem)", maxWidth: "100%", maxHeight: "100%" }} onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-center mb-2">
           <h2 className="text-lg font-semibold">Aperçu du document</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">×</button>
         </div>
-        <div className="flex-1 min-h-0 bg-gray-100 rounded overflow-hidden" style={{ height: "clamp(200px, 60vh, calc(90vh - 120px))" }}>
+        <div className="flex-1 min-h-0 bg-gray-100 rounded overflow-hidden">
           {previewUrl ? (
             <iframe src={previewUrl} className="w-full h-full border-0" allow="autoplay" />
           ) : (
