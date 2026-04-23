@@ -20,6 +20,7 @@ export default function LivraisonsPage() {
   const [view, setView] = useState<View>("semaine");
   const [refDate, setRefDate] = useState<Date>(() => new Date());
   const [openTournee, setOpenTournee] = useState<Tournee | null>(null);
+  const [search, setSearch] = useState("");
 
   useEffect(() => {
     refresh("livraisons");
@@ -27,23 +28,35 @@ export default function LivraisonsPage() {
 
   const tournees = useMemo(() => groupByTournee(livraisons), [livraisons]);
 
+  const searchQuery = search.trim().toLowerCase();
+  const filteredTournees = useMemo(() => {
+    if (!searchQuery) return tournees;
+    return tournees.filter((t) => {
+      const hay = t.livraisons
+        .map((l) => `${l.client.entreprise} ${l.client.ville ?? ""} ${l.client.telephone ?? ""} ${t.tourneeId ?? ""}`)
+        .join(" ")
+        .toLowerCase();
+      return hay.includes(searchQuery);
+    });
+  }, [tournees, searchQuery]);
+
   useEffect(() => {
     if (!openTournee) return;
     const key = (t: Tournee) => (t.tourneeId || "") + "|" + (t.datePrevue ? isoDate(t.datePrevue) : "no-date");
     const target = key(openTournee);
-    setOpenTournee(tournees.find((t) => key(t) === target) || null);
+    setOpenTournee(filteredTournees.find((t) => key(t) === target) || tournees.find((t) => key(t) === target) || null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tournees]);
   const tourneesByDate = useMemo(() => {
     const map = new Map<string, Tournee[]>();
-    for (const t of tournees) {
+    for (const t of filteredTournees) {
       if (!t.datePrevue) continue;
       const key = isoDate(t.datePrevue);
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(t);
     }
     return map;
-  }, [tournees]);
+  }, [filteredTournees]);
 
   const livraisonsSansDate = livraisons.filter((l) => !l.datePrevue);
 
@@ -53,10 +66,17 @@ export default function LivraisonsPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Livraisons</h1>
           <p className="text-gray-500 mt-1">
-            {tournees.length} tournée{tournees.length > 1 ? "s" : ""} · {livraisons.length} livraison{livraisons.length > 1 ? "s" : ""}
+            {filteredTournees.length} tournée{filteredTournees.length > 1 ? "s" : ""} · {livraisons.length} livraison{livraisons.length > 1 ? "s" : ""}
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="Rechercher client, ville, tél..."
+            className="px-3 py-1.5 border-2 border-green-300 rounded-lg text-sm w-56 focus:border-green-500 focus:outline-none"
+          />
           <div className="inline-flex rounded-lg border bg-white overflow-hidden">
             {(["semaine", "mois", "liste"] as View[]).map((v) => (
               <button
@@ -389,6 +409,19 @@ function TourneeModal({
   const [busy, setBusy] = useState<string | null>(null);
   const [monteurs, setMonteurs] = useState(2);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [editingDate, setEditingDate] = useState(false);
+  const [newDate, setNewDate] = useState(tournee.datePrevue ? isoDate(tournee.datePrevue) : "");
+
+  const changeDate = async () => {
+    if (!newDate) return;
+    setBusy("date");
+    for (const l of tournee.livraisons) {
+      await gasPost("updateLivraison", { id: l.id, data: { datePrevue: newDate } });
+    }
+    setEditingDate(false);
+    onChanged();
+    setBusy(null);
+  };
 
   const toggleSelect = (id: string) => {
     const next = new Set(selected);
@@ -541,9 +574,36 @@ function TourneeModal({
                 {isRetrait ? "Retrait client" : "Tournée"} {tournee.tourneeId ? <span className="font-mono">{tournee.tourneeId}</span> : "(sans id)"}
               </span>
             </div>
-            <div className="text-sm text-gray-500 mt-1">
-              {tournee.datePrevue && new Date(tournee.datePrevue).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
-              {` · ${tournee.totalVelos} vélos · ${tournee.livraisons.length} arrêts`}
+            <div className="text-sm text-gray-500 mt-1 flex items-center gap-2 flex-wrap">
+              {editingDate ? (
+                <span className="flex items-center gap-1">
+                  <input
+                    type="date"
+                    value={newDate}
+                    onChange={(e) => setNewDate(e.target.value)}
+                    className="px-2 py-0.5 border border-blue-300 rounded text-sm"
+                  />
+                  <button
+                    onClick={changeDate}
+                    disabled={busy === "date"}
+                    className="px-2 py-0.5 bg-blue-600 text-white rounded text-xs hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {busy === "date" ? "..." : "OK"}
+                  </button>
+                  <button onClick={() => setEditingDate(false)} className="text-gray-400 hover:text-gray-600 text-xs">
+                    annuler
+                  </button>
+                </span>
+              ) : (
+                <button
+                  onClick={() => setEditingDate(true)}
+                  className="hover:text-blue-600 hover:underline cursor-pointer"
+                  title="Modifier la date"
+                >
+                  {tournee.datePrevue ? new Date(tournee.datePrevue).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" }) : "Sans date"}
+                </button>
+              )}
+              <span>· {tournee.totalVelos} vélos · {tournee.livraisons.length} arrêts</span>
             </div>
           </div>
           <div className="flex items-center gap-2">
