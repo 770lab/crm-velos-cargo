@@ -40,6 +40,15 @@ export default function LivraisonsPage() {
     });
   }, [tournees, searchQuery]);
 
+  // Auto-navigation : quand une recherche filtre, naviguer à la date de la première tournée trouvée
+  useEffect(() => {
+    if (!searchQuery || filteredTournees.length === 0) return;
+    const first = filteredTournees.find((t) => t.datePrevue);
+    if (first?.datePrevue) {
+      setRefDate(new Date(first.datePrevue));
+    }
+  }, [searchQuery, filteredTournees]);
+
   useEffect(() => {
     if (!openTournee) return;
     const key = (t: Tournee) => (t.tourneeId || "") + "|" + (t.datePrevue ? isoDate(t.datePrevue) : "no-date");
