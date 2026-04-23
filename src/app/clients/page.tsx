@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { gasGet, gasPost, gasUpload } from "@/lib/gas";
-import { useData } from "@/lib/data-context";
+import { useData, type ClientRow } from "@/lib/data-context";
 import MultiDepSelect from "@/components/multi-dep-select";
 
 const ALL_DOC_FIELDS: DocType[] = [
@@ -11,9 +11,10 @@ const ALL_DOC_FIELDS: DocType[] = [
 ];
 
 export default function ClientsPage() {
-  const { clients: allClients, loading, refresh } = useData();
+  const { clients: allClients, livraisons, loading, refresh } = useData();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
+  const [mailClient, setMailClient] = useState<ClientRow | null>(null);
   const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
   const [codePostal, setCodePostal] = useState("");
   const [showAdd, setShowAdd] = useState(false);
@@ -21,6 +22,22 @@ export default function ClientsPage() {
   const [showSync, setShowSync] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+
+  const nextDeliveryByClient = useMemo(() => {
+    const map = new Map<string, { date: string; nbVelos: number; tourneeId?: string | null; mode?: string | null }>();
+    for (const l of livraisons) {
+      if (!l.clientId || !l.datePrevue) continue;
+      if (l.statut === "annulee" || l.statut === "livree") continue;
+      const current = map.get(l.clientId);
+      const nb = l._count?.velos ?? l.nbVelos ?? 0;
+      if (!current || new Date(l.datePrevue) < new Date(current.date)) {
+        map.set(l.clientId, { date: l.datePrevue, nbVelos: nb, tourneeId: l.tourneeId, mode: l.mode });
+      } else if (current && new Date(l.datePrevue).getTime() === new Date(current.date).getTime()) {
+        current.nbVelos += nb;
+      }
+    }
+    return map;
+  }, [livraisons]);
 
   const clients = useMemo(() => {
     let result = allClients;
@@ -42,9 +59,13 @@ export default function ClientsPage() {
       result = result.filter(
         (c) => ALL_DOC_FIELDS.every((f) => c[f as keyof typeof c])
       );
+    } else if (filter === "livraison_prog") {
+      result = result.filter((c) => nextDeliveryByClient.has(c.id));
+    } else if (filter === "livraison_non_prog") {
+      result = result.filter((c) => !nextDeliveryByClient.has(c.id) && (c.stats.totalVelos - c.stats.livres) > 0);
     }
     return result;
-  }, [allClients, search, filter]);
+  }, [allClients, search, filter, nextDeliveryByClient]);
 
   const departements = Array.from(
     new Set(
@@ -153,6 +174,8 @@ export default function ClientsPage() {
           <option value="all">Tous</option>
           <option value="docs_manquants">Documents manquants</option>
           <option value="prets">Dossiers complets</option>
+          <option value="livraison_prog">Livraison programmée</option>
+          <option value="livraison_non_prog">À programmer (vélos restants)</option>
         </select>
       </div>
 
@@ -194,6 +217,7 @@ export default function ClientsPage() {
               <th className="text-left px-4 py-3 font-medium text-gray-600">Ville</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Dép.</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Vélos</th>
+              <th className="text-center px-4 py-3 font-medium text-gray-600">Livraison</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Dossier</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Devis</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Kbis</th>
@@ -201,6 +225,7 @@ export default function ClientsPage() {
               <th className="text-center px-4 py-3 font-medium text-gray-600">Livrés</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Bicycle</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Facturables</th>
+              <th className="text-center px-4 py-3 font-medium text-gray-600">Mail</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
@@ -235,6 +260,9 @@ export default function ClientsPage() {
                 <td className="text-center px-4 py-3 font-medium">
                   <VelosCell livres={c.stats.livres} total={c.stats.totalVelos} planifies={c.stats.planifies ?? 0} />
                 </td>
+                <td className="text-center px-4 py-3 text-xs">
+                  <DeliveryCell next={nextDeliveryByClient.get(c.id)} />
+                </td>
                 <td className="px-4 py-3">
                   <DocProgress client={c as unknown as Record<string, unknown>} />
                 </td>
@@ -258,11 +286,26 @@ export default function ClientsPage() {
                     {c.stats.facturables}
                   </span>
                 </td>
+                <td className="text-center px-4 py-3">
+                  <button
+                    type="button"
+                    onClick={() => setMailClient(c)}
+                    disabled={!c.email}
+                    title={c.email ? `Envoyer un mail de rappel à ${c.email}` : "Pas d'email"}
+                    className="text-gray-500 hover:text-blue-600 disabled:opacity-30 disabled:cursor-not-allowed"
+                    aria-label="Envoyer un mail"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <rect x="3" y="5" width="18" height="14" rx="2" />
+                      <path d="m3 7 9 6 9-6" />
+                    </svg>
+                  </button>
+                </td>
               </tr>
             ))}
             {filteredClients.length === 0 && (
               <tr>
-                <td colSpan={12} className="px-4 py-12 text-center text-gray-400">
+                <td colSpan={14} className="px-4 py-12 text-center text-gray-400">
                   {clients.length === 0
                     ? (loading ? "Chargement..." : "Aucun client. Importez votre tableau ou ajoutez un client.")
                     : "Aucun client trouvé pour ces filtres."}
@@ -276,6 +319,150 @@ export default function ClientsPage() {
       {showAdd && <AddClientModal onClose={() => { setShowAdd(false); refresh("clients"); }} />}
       {showImport && <ImportModal onClose={() => { setShowImport(false); refresh("clients"); }} />}
       {showSync && <SyncDriveModal onClose={() => { setShowSync(false); refresh("clients"); }} />}
+      {mailClient && (
+        <RappelMailModal
+          client={mailClient}
+          delivery={nextDeliveryByClient.get(mailClient.id)}
+          onClose={() => setMailClient(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function DeliveryCell({ next }: { next?: { date: string; nbVelos: number; mode?: string | null } }) {
+  if (!next) return <span className="text-gray-300">—</span>;
+  const d = new Date(next.date);
+  const label = d.toLocaleDateString("fr-FR", { day: "2-digit", month: "short", year: "2-digit" });
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const isPast = d < now;
+  return (
+    <div className={`leading-tight ${isPast ? "text-red-600" : "text-blue-700"}`}>
+      <div className="font-medium">{label}</div>
+      <div className="text-[10px] text-gray-500">{next.nbVelos}v{next.mode ? ` · ${next.mode}` : ""}</div>
+    </div>
+  );
+}
+
+const DOCS_RAPPEL: { key: keyof ClientRow; label: string }[] = [
+  { key: "devisSignee", label: "Devis signé" },
+  { key: "kbisRecu", label: "Kbis récent (≤ 3 mois)" },
+  { key: "attestationRecue", label: "Liasse fiscale avec effectif" },
+  { key: "signatureOk", label: "Signature de l'engagement" },
+  { key: "inscriptionBicycle", label: "Inscription plateforme Bicycle" },
+  { key: "parcelleCadastrale", label: "Parcelle cadastrale" },
+];
+
+function RappelMailModal({
+  client,
+  delivery,
+  onClose,
+}: {
+  client: ClientRow;
+  delivery?: { date: string; nbVelos: number; mode?: string | null };
+  onClose: () => void;
+}) {
+  const missing = DOCS_RAPPEL.filter((d) => !client[d.key]);
+  const dateLabel = delivery
+    ? new Date(delivery.date).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })
+    : null;
+
+  const defaultSubject = `Vélos Cargo — préparation ${dateLabel ? "de votre livraison du " + dateLabel : "de votre dossier"}`;
+  const defaultBody = [
+    `Bonjour${client.contact ? " " + client.contact : ""},`,
+    ``,
+    dateLabel
+      ? `Nous préparons la livraison de vos ${delivery!.nbVelos} vélo${delivery!.nbVelos > 1 ? "s" : ""} cargo pour le ${dateLabel}.`
+      : `Nous préparons la livraison de vos vélos cargo.`,
+    ``,
+    missing.length > 0
+      ? `Pour finaliser votre dossier CEE, il nous manque les documents suivants :\n${missing.map((m) => "  • " + m.label).join("\n")}\n\nMerci de nous les transmettre en réponse à ce mail avant la date de livraison.`
+      : `Votre dossier est complet — aucun document manquant de notre côté.`,
+    ``,
+    `Rappel du process :`,
+    `  1. Nous livrons les vélos sur place et vérifions leur état avec vous.`,
+    `  2. Vous signez le procès-verbal de livraison.`,
+    `  3. Nous finalisons l'inscription sur la plateforme Bicycle et transmettons votre certificat d'économies d'énergie.`,
+    ``,
+    `Pour toute question, restez en contact, on reste disponibles.`,
+    ``,
+    `Cordialement,`,
+    `L'équipe Artisans Verts Energy`,
+  ].join("\n");
+
+  const [subject, setSubject] = useState(defaultSubject);
+  const [body, setBody] = useState(defaultBody);
+
+  const mailto = `mailto:${encodeURIComponent(client.email ?? "")}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+
+  const copyBody = async () => {
+    try {
+      await navigator.clipboard.writeText(body);
+    } catch {}
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <div>
+            <h2 className="text-lg font-semibold">Rappel livraison — {client.entreprise}</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Destinataire : {client.email || <span className="text-red-600">aucun email renseigné</span>}
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+        </div>
+
+        {missing.length > 0 && (
+          <div className="mb-3 bg-amber-50 border border-amber-200 rounded-lg p-2 text-xs text-amber-800">
+            {missing.length} document{missing.length > 1 ? "s" : ""} manquant{missing.length > 1 ? "s" : ""} :
+            {" " + missing.map((m) => m.label).join(", ")}
+          </div>
+        )}
+
+        <label className="block text-xs font-medium text-gray-600 mb-1">Objet</label>
+        <input
+          type="text"
+          value={subject}
+          onChange={(e) => setSubject(e.target.value)}
+          className="w-full px-3 py-2 border rounded-lg text-sm mb-3"
+        />
+
+        <label className="block text-xs font-medium text-gray-600 mb-1">Corps du mail</label>
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          rows={14}
+          className="w-full px-3 py-2 border rounded-lg text-sm font-mono"
+        />
+
+        <div className="flex justify-between items-center gap-3 mt-4">
+          <button
+            type="button"
+            onClick={copyBody}
+            className="px-3 py-1.5 text-sm bg-gray-100 rounded-lg hover:bg-gray-200"
+          >
+            Copier le corps
+          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800"
+            >
+              Annuler
+            </button>
+            <a
+              href={mailto}
+              onClick={() => setTimeout(onClose, 200)}
+              className={`px-4 py-2 text-sm rounded-lg text-white ${client.email ? "bg-blue-600 hover:bg-blue-700" : "bg-gray-400 pointer-events-none"}`}
+            >
+              Ouvrir dans l&apos;app mail
+            </a>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

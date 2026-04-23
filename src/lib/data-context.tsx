@@ -75,6 +75,7 @@ interface ClientPoint {
 
 interface LivraisonRow {
   id: string;
+  clientId?: string | null;
   datePrevue: string | null;
   dateEffective: string | null;
   statut: string;
