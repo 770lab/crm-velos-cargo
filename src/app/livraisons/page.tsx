@@ -852,7 +852,16 @@ function TourneeModal({
     return segs;
   }, [tournee.livraisons, isRetrait]);
 
-  const totalTrajetMin = segments.reduce((s, seg) => s + seg.trajetMin, 0);
+  const retourSegment = useMemo(() => {
+    if (isRetrait || tournee.livraisons.length === 0) return { distKm: 0, trajetMin: 0 };
+    const last = tournee.livraisons[tournee.livraisons.length - 1].client;
+    if (!last.lat || !last.lng) return { distKm: 0, trajetMin: 0 };
+    const d = haversineKm(last.lat, last.lng, ENTREPOT.lat, ENTREPOT.lng);
+    const routeKm = d * 1.3;
+    return { distKm: Math.round(routeKm * 10) / 10, trajetMin: Math.round(routeKm / 0.5) };
+  }, [tournee.livraisons, isRetrait]);
+
+  const totalTrajetMin = segments.reduce((s, seg) => s + seg.trajetMin, 0) + retourSegment.trajetMin;
   const totalMontageMin = tournee.totalVelos * MINUTES_PAR_VELO;
   const montageAvecEffectif = totalMontageMin / monteurs;
   const totalJourneeSimple = montageAvecEffectif + totalTrajetMin;
@@ -880,6 +889,7 @@ function TourneeModal({
       <FeuilleDeRoute
         tournee={tournee}
         segments={segments}
+        retourSegment={retourSegment}
         monteurs={monteurs}
         onBack={() => setShowPrint(false)}
       />
@@ -1132,6 +1142,12 @@ function TourneeModal({
               </div>
             </div>
           ))}
+          {retourSegment.distKm > 0 && (
+            <div className="flex items-center gap-2 py-1 px-10 text-[10px] text-gray-400">
+              <div className="border-l-2 border-dashed border-gray-300 h-3" />
+              <span>↩ retour {ENTREPOT.label} · {retourSegment.distKm} km · ~{retourSegment.trajetMin} min</span>
+            </div>
+          )}
         </div>
 
         <div className="mt-3">
@@ -1215,17 +1231,19 @@ function TourneeModal({
 function FeuilleDeRoute({
   tournee,
   segments,
+  retourSegment,
   monteurs,
   onBack,
 }: {
   tournee: Tournee;
   segments: { distKm: number; trajetMin: number }[];
+  retourSegment: { distKm: number; trajetMin: number };
   monteurs: number;
   onBack: () => void;
 }) {
-  const totalTrajet = segments.reduce((s, seg) => s + seg.trajetMin, 0);
+  const totalTrajet = segments.reduce((s, seg) => s + seg.trajetMin, 0) + retourSegment.trajetMin;
   const totalMontage = tournee.totalVelos * MINUTES_PAR_VELO;
-  const totalDist = segments.reduce((s, seg) => s + seg.distKm, 0);
+  const totalDist = segments.reduce((s, seg) => s + seg.distKm, 0) + retourSegment.distKm;
   const fmtDuree = (min: number) => {
     const h = Math.floor(min / 60);
     const m = Math.round(min % 60);
@@ -1291,6 +1309,16 @@ function FeuilleDeRoute({
                 </td>
               </tr>
             ))}
+            {retourSegment.distKm > 0 && (
+              <tr className="border-b bg-gray-50">
+                <td className="py-2 text-gray-400">↩</td>
+                <td className="py-2 font-medium text-gray-500" colSpan={2}>Retour entrepôt — {ENTREPOT.label}</td>
+                <td className="py-2 text-center text-gray-400">—</td>
+                <td className="py-2 text-center text-gray-400">—</td>
+                <td className="py-2 text-center text-xs text-gray-500">{retourSegment.distKm}km</td>
+                <td className="py-2" />
+              </tr>
+            )}
           </tbody>
         </table>
 
