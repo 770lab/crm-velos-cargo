@@ -26,6 +26,14 @@ export default function LivraisonsPage() {
   }, [refresh]);
 
   const tournees = useMemo(() => groupByTournee(livraisons), [livraisons]);
+
+  useEffect(() => {
+    if (!openTournee) return;
+    const key = (t: Tournee) => (t.tourneeId || "") + "|" + (t.datePrevue ? isoDate(t.datePrevue) : "no-date");
+    const target = key(openTournee);
+    setOpenTournee(tournees.find((t) => key(t) === target) || null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tournees]);
   const tourneesByDate = useMemo(() => {
     const map = new Map<string, Tournee[]>();
     for (const t of tournees) {
@@ -519,6 +527,7 @@ function parseTourneeFromNotes(notes: string | null): { tourneeId: string | null
 function groupByTournee(livraisons: LivraisonRow[]): Tournee[] {
   const groups = new Map<string, Tournee>();
   for (const l of livraisons) {
+    if (l.statut === "annulee") continue;
     const tidFromCol = l.tourneeId || null;
     const modeFromCol = l.mode || null;
     const fallback = parseTourneeFromNotes(l.notes);
