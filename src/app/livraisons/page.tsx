@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { gasGet, gasPost } from "@/lib/gas";
 import { useData, type LivraisonRow } from "@/lib/data-context";
 import DateLoadPicker, { type DayLoad } from "@/components/date-load-picker";
+import AddClientModal from "@/components/add-client-modal";
 
 type View = "semaine" | "mois" | "liste";
 
@@ -22,6 +23,7 @@ export default function LivraisonsPage() {
   const [refDate, setRefDate] = useState<Date>(() => new Date());
   const [openTournee, setOpenTournee] = useState<Tournee | null>(null);
   const [search, setSearch] = useState("");
+  const [showAddClient, setShowAddClient] = useState(false);
 
   useEffect(() => {
     refresh("livraisons");
@@ -96,6 +98,12 @@ export default function LivraisonsPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <button
+            onClick={() => setShowAddClient(true)}
+            className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium whitespace-nowrap"
+          >
+            + Nouveau client
+          </button>
           <input
             type="text"
             value={search}
@@ -145,6 +153,15 @@ export default function LivraisonsPage() {
           loadByDate={loadByDate}
           onClose={() => setOpenTournee(null)}
           onChanged={() => { refresh("livraisons"); refresh("carte"); }}
+        />
+      )}
+      {showAddClient && (
+        <AddClientModal
+          onClose={() => {
+            setShowAddClient(false);
+            refresh("clients");
+            refresh("carte");
+          }}
         />
       )}
     </div>
@@ -655,11 +672,45 @@ function TourneeModal({
   onClose: () => void;
   onChanged: () => void;
 }) {
+  const { carte: allClients } = useData();
   const [busy, setBusy] = useState<string | null>(null);
   const [monteurs, setMonteurs] = useState(2);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editingDate, setEditingDate] = useState(false);
   const [newDate, setNewDate] = useState(tournee.datePrevue ? isoDate(tournee.datePrevue) : "");
+  const [addingClient, setAddingClient] = useState(false);
+  const [clientSearch, setClientSearch] = useState("");
+
+  const alreadyInTour = useMemo(
+    () => new Set(tournee.livraisons.map((l) => l.clientId).filter((x): x is string => !!x)),
+    [tournee.livraisons]
+  );
+  const eligibleClients = useMemo(() => {
+    const list = allClients.filter((c) => {
+      const reste = c.nbVelos - c.velosLivres - (c.velosPlanifies || 0);
+      return reste > 0 && !alreadyInTour.has(c.id);
+    });
+    const q = clientSearch.trim().toLowerCase();
+    if (!q) return list.slice(0, 30);
+    return list
+      .filter((c) => `${c.entreprise} ${c.ville ?? ""} ${c.codePostal ?? ""} ${c.contact ?? ""}`.toLowerCase().includes(q))
+      .slice(0, 30);
+  }, [allClients, alreadyInTour, clientSearch]);
+
+  const addClient = async (clientId: string, reste: number) => {
+    setBusy("add-" + clientId);
+    await gasPost("createLivraison", {
+      clientId,
+      datePrevue: tournee.datePrevue,
+      tourneeId: tournee.tourneeId,
+      mode: tournee.mode,
+      nbVelos: reste,
+    });
+    onChanged();
+    setClientSearch("");
+    setAddingClient(false);
+    setBusy(null);
+  };
 
   const loadByDateSansTournee = useMemo(() => {
     if (!tournee.datePrevue) return loadByDate;
@@ -1078,6 +1129,63 @@ function TourneeModal({
               </div>
             </div>
           ))}
+        </div>
+
+        <div className="mt-3">
+          {addingClient ? (
+            <div className="border rounded-lg p-3 bg-gray-50 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-sm font-medium text-gray-700">Ajouter un client à cette tournée</span>
+                <button
+                  onClick={() => { setAddingClient(false); setClientSearch(""); }}
+                  className="text-gray-400 hover:text-gray-600 text-xs"
+                >
+                  annuler
+                </button>
+              </div>
+              <input
+                type="text"
+                value={clientSearch}
+                onChange={(e) => setClientSearch(e.target.value)}
+                placeholder="Chercher un client (nom, ville, CP, contact)…"
+                className="w-full px-3 py-1.5 border rounded-lg text-sm"
+                autoFocus
+              />
+              <div className="max-h-48 overflow-y-auto divide-y border rounded-lg bg-white">
+                {eligibleClients.length === 0 && (
+                  <div className="px-3 py-4 text-xs text-gray-400 text-center">
+                    {clientSearch ? "Aucun résultat" : "Aucun client disponible (tous déjà planifiés/livrés)"}
+                  </div>
+                )}
+                {eligibleClients.map((c) => {
+                  const reste = c.nbVelos - c.velosLivres - (c.velosPlanifies || 0);
+                  const loadingRow = busy === "add-" + c.id;
+                  return (
+                    <button
+                      key={c.id}
+                      onClick={() => addClient(c.id, reste)}
+                      disabled={!!busy}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-blue-50 text-left disabled:opacity-50"
+                    >
+                      <span className="flex-1 truncate">
+                        <span className="font-medium">{c.entreprise}</span>
+                        {c.ville && <span className="text-gray-400"> · {c.ville}</span>}
+                      </span>
+                      <span className="text-xs font-medium text-blue-700 whitespace-nowrap">+ {reste}v</span>
+                      {loadingRow && <span className="text-xs text-gray-400">…</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ) : (
+            <button
+              onClick={() => setAddingClient(true)}
+              className="w-full px-3 py-2 border border-dashed border-gray-300 rounded-lg text-sm text-gray-500 hover:bg-gray-50 hover:text-blue-600 hover:border-blue-300"
+            >
+              + Ajouter un client à cette tournée
+            </button>
+          )}
         </div>
 
         <div className="flex justify-between gap-3 mt-4 pt-3 border-t">

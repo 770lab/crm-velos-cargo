@@ -7,6 +7,7 @@ import { gasPost } from "@/lib/gas";
 import { useData } from "@/lib/data-context";
 import MultiDepSelect from "@/components/multi-dep-select";
 import DateLoadPicker, { type DayLoad } from "@/components/date-load-picker";
+import AddClientModal from "@/components/add-client-modal";
 
 const MapView = dynamic(() => import("@/components/map-view"), { ssr: false });
 
@@ -59,6 +60,7 @@ export default function CartePage() {
   const [search, setSearch] = useState("");
   const [tournee, setTournee] = useState<TourneeResult | null>(null);
   const [loading, setLoading] = useState(false);
+  const [showAddClient, setShowAddClient] = useState(false);
 
   const departements = Array.from(
     new Set(
@@ -175,11 +177,19 @@ export default function CartePage() {
       </div>
 
       <div className="w-full lg:w-96 bg-white border-t lg:border-t-0 lg:border-l overflow-y-auto max-h-[50vh] lg:max-h-none">
-        <div className="p-4 border-b">
-          <h2 className="font-semibold text-lg">Planification</h2>
-          <p className="text-sm text-gray-500 mt-1">
-            {clients.length} clients sur la carte
-          </p>
+        <div className="p-4 border-b flex items-start justify-between gap-2">
+          <div>
+            <h2 className="font-semibold text-lg">Planification</h2>
+            <p className="text-sm text-gray-500 mt-1">
+              {clients.length} clients sur la carte
+            </p>
+          </div>
+          <button
+            onClick={() => setShowAddClient(true)}
+            className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-xs font-medium whitespace-nowrap"
+          >
+            + Nouveau client
+          </button>
         </div>
 
         <div className="p-4 border-b space-y-3">
@@ -345,6 +355,15 @@ export default function CartePage() {
         )}
       </div>
       </div>
+      {showAddClient && (
+        <AddClientModal
+          onClose={() => {
+            setShowAddClient(false);
+            refresh("clients");
+            refresh("carte");
+          }}
+        />
+      )}
     </div>
   );
 }
