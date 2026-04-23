@@ -231,6 +231,7 @@ function WeekView({
               {list.map((t) => (
                 <TourneeCard key={t.tourneeId || t.livraisons[0].id} tournee={t} onClick={() => onOpen(t)} compact />
               ))}
+              <DayStaffingSummary tournees={list} />
             </div>
           );
         })}
@@ -335,6 +336,82 @@ function ListView({ tournees, onOpen }: { tournees: Tournee[]; onOpen: (t: Tourn
   );
 }
 
+function DayStaffingSummary({ tournees }: { tournees: Tournee[] }) {
+  const active = tournees.filter((t) => t.statutGlobal !== "annulee" && t.statutGlobal !== "livree");
+  if (active.length === 0) return null;
+
+  type Groupe = { mode: string; tournees: Tournee[]; totalMin: number; totalVelos: number; capacite: number };
+  const byMode = new Map<string, Groupe>();
+  for (const t of active) {
+    const key = t.mode || "autre";
+    if (!byMode.has(key)) {
+      byMode.set(key, {
+        mode: key,
+        tournees: [],
+        totalMin: 0,
+        totalVelos: 0,
+        capacite: CAPACITES[key] ?? 0,
+      });
+    }
+    const g = byMode.get(key)!;
+    g.tournees.push(t);
+    g.totalMin += estimateTourneeMinutes(t);
+    g.totalVelos += t.totalVelos;
+  }
+
+  const groupes = Array.from(byMode.values());
+  const nbEquipes = groupes.length;
+  const nbMonteurs = nbEquipes * MONTEURS_PAR_EQUIPE;
+
+  return (
+    <div className="mt-2 pt-2 border-t border-gray-200 space-y-1.5 text-[10px] leading-tight">
+      <div className="font-semibold text-gray-700">
+        {nbEquipes} équipe{nbEquipes > 1 ? "s" : ""} · {nbMonteurs} monteurs
+      </div>
+      {groupes.map((g, idx) => {
+        const label = MODE_SHORT_LABELS[g.mode] || g.mode;
+        const reste8h = JOURNEE_MIN - g.totalMin;
+        const depasse10h = g.totalMin > JOURNEE_MAX;
+        const capaLibre = g.capacite > 0 ? g.capacite - g.totalVelos : 0;
+        const peutAjouter = reste8h >= 120 && (g.capacite === 0 || capaLibre >= SEUIL_2EME_TOURNEE);
+        const tightPalette = depasse10h
+          ? "text-red-700"
+          : reste8h < 60
+          ? "text-amber-700"
+          : "text-gray-700";
+        return (
+          <div key={g.mode + idx} className="space-y-0.5">
+            <div className={tightPalette}>
+              <span className="font-semibold">É{idx + 1} · {label}</span>
+              <span className="opacity-75"> · {g.totalVelos}v · ~{formatDureeShort(g.totalMin)}</span>
+            </div>
+            <ul className="pl-2 space-y-0.5 text-gray-600">
+              {g.tournees.map((t) => (
+                <li key={t.tourneeId || t.livraisons[0].id} className="truncate">
+                  · {t.livraisons[0]?.client.entreprise}
+                  {t.livraisons.length > 1 ? ` +${t.livraisons.length - 1}` : ""}
+                  <span className="opacity-60"> ({t.totalVelos}v)</span>
+                </li>
+              ))}
+            </ul>
+            {peutAjouter && (
+              <div className="text-green-700 font-medium">
+                + ~{formatDureeShort(reste8h)} libre → 2e tournée possible
+              </div>
+            )}
+            {!peutAjouter && !depasse10h && reste8h < 60 && reste8h >= 0 && (
+              <div className="text-amber-700">journée pleine (~8h)</div>
+            )}
+            {depasse10h && (
+              <div className="text-red-700 font-medium">⚠ dépasse 10h — à split</div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function TourneeCard({
   tournee,
   onClick,
@@ -394,9 +471,52 @@ const MODE_LABELS: Record<string, string> = {
 const CAPACITES: Record<string, number> = { gros: 132, moyen: 54, camionnette: 20 };
 const SEUIL_2EME_TOURNEE = 10;
 
+const MODE_SHORT_LABELS: Record<string, string> = {
+  gros: "Gros",
+  moyen: "Moyen",
+  camionnette: "Camion.",
+  retrait: "Retrait",
+};
+
+const JOURNEE_MIN = 480; // 8h
+const JOURNEE_MAX = 600; // 10h
+const MONTEURS_PAR_EQUIPE = 2;
+
 function capaciteRestante(mode: string | null, totalVelos: number): number {
   const cap = mode ? CAPACITES[mode] ?? 0 : 0;
   return cap > 0 ? Math.max(0, cap - totalVelos) : 0;
+}
+
+function estimateTourneeMinutes(tournee: Tournee, monteurs: number = MONTEURS_PAR_EQUIPE): number {
+  const totalMontage = tournee.totalVelos * MINUTES_PAR_VELO;
+  const eff = Math.max(1, monteurs);
+  if (tournee.mode === "retrait") {
+    return totalMontage / eff;
+  }
+  const segments: { trajetMin: number }[] = [];
+  for (let i = 0; i < tournee.livraisons.length; i++) {
+    const curr = tournee.livraisons[i].client;
+    const prevLat = i === 0 ? ENTREPOT.lat : (tournee.livraisons[i - 1].client.lat ?? 0);
+    const prevLng = i === 0 ? ENTREPOT.lng : (tournee.livraisons[i - 1].client.lng ?? 0);
+    if (prevLat && prevLng && curr.lat && curr.lng) {
+      const km = haversineKm(prevLat, prevLng, curr.lat, curr.lng) * 1.3;
+      segments.push({ trajetMin: Math.round(km / 0.5) });
+    } else {
+      segments.push({ trajetMin: 0 });
+    }
+  }
+  const totalTrajet = segments.reduce((s, seg) => s + seg.trajetMin, 0);
+  const simple = totalMontage / eff + totalTrajet;
+  const plan = computeDeployPlan(tournee.livraisons, segments, monteurs);
+  const hasParallel = plan.steps.some((s) => !s.camionAttend);
+  return hasParallel ? plan.totalElapsed : simple;
+}
+
+function formatDureeShort(min: number): string {
+  if (min <= 0) return "0min";
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  return h > 0 ? `${h}h${m > 0 ? String(m).padStart(2, "0") : ""}` : `${m}min`;
 }
 
 function StatutPill({ statut }: { statut: Tournee["statutGlobal"] }) {
