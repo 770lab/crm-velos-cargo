@@ -574,7 +574,7 @@ function PreviewDocModal({
           <h2 className="text-lg font-semibold">Aperçu du document</h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">×</button>
         </div>
-        <div className="flex-1 min-h-[60vh] bg-gray-100 rounded overflow-hidden">
+        <div className="flex-1 min-h-0 bg-gray-100 rounded overflow-hidden" style={{ height: "clamp(200px, 60vh, calc(90vh - 120px))" }}>
           {previewUrl ? (
             <iframe src={previewUrl} className="w-full h-full border-0" allow="autoplay" />
           ) : (
