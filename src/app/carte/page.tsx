@@ -51,7 +51,7 @@ interface TourneeResult {
 export default function CartePage() {
   const { carte: allClients, refresh } = useData();
   const [selected, setSelected] = useState<string | null>(null);
-  const mode = "sursite";
+  const [mode, setMode] = useState<"gros" | "moyen" | "camionnette">("moyen");
   const [maxDistance, setMaxDistance] = useState(50);
   const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
   const [codePostal, setCodePostal] = useState("");
@@ -164,10 +164,27 @@ export default function CartePage() {
           </div>
           <div>
             <label className="text-xs font-medium text-gray-600 block mb-1">
-              Mode de livraison
+              Type de camion
             </label>
-            <div className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-700">
-              Sur site — 54 vélos/camion (montés)
+            <div className="flex gap-1">
+              {([
+                { key: "gros", label: "Gros", cap: 132 },
+                { key: "moyen", label: "Moyen", cap: 54 },
+                { key: "camionnette", label: "Camionnette", cap: 20 },
+              ] as const).map((opt) => (
+                <button
+                  key={opt.key}
+                  onClick={() => setMode(opt.key)}
+                  className={`flex-1 px-2 py-2 text-xs font-medium rounded-lg transition-colors ${
+                    mode === opt.key
+                      ? "bg-green-600 text-white"
+                      : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                  }`}
+                >
+                  {opt.label}
+                  <span className="block text-[10px] font-normal opacity-80">{opt.cap} vélos</span>
+                </button>
+              ))}
             </div>
           </div>
           <div>

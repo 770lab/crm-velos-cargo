@@ -489,7 +489,8 @@ function suggestTournee(clientId, mode, maxDistance) {
   }
   if (!target) return { error: "Client non trouvé" };
 
-  var capacite = 54;
+  var capacites = { gros: 132, moyen: 54, camionnette: 20 };
+  var capacite = capacites[mode] || 54;
   maxDistance = maxDistance || 50;
 
   // Reste = commandé - livré - déjà planifié (livraisons "planifiee" ou "en_cours")
