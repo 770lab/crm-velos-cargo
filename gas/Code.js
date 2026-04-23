@@ -389,6 +389,8 @@ function getCarte() {
       return {
         id: id,
         entreprise: r[headers.indexOf("entreprise")],
+        contact: r[headers.indexOf("contact")] || null,
+        apporteur: r[headers.indexOf("apporteur")] || null,
         ville: r[headers.indexOf("ville")],
         departement: r[headers.indexOf("departement")],
         adresse: r[headers.indexOf("adresse")],

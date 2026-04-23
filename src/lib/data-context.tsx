@@ -52,6 +52,8 @@ interface ClientRow {
 interface ClientPoint {
   id: string;
   entreprise: string;
+  contact: string | null;
+  apporteur: string | null;
   ville: string | null;
   departement: string | null;
   adresse: string | null;

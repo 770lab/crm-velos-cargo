@@ -49,7 +49,7 @@ interface TourneeResult {
 }
 
 export default function CartePage() {
-  const { carte: allClients, refresh } = useData();
+  const { carte: allClients, livraisons, refresh } = useData();
   const [selected, setSelected] = useState<string | null>(null);
   const [mode, setMode] = useState<"gros" | "moyen" | "camionnette" | "retrait">("moyen");
   const [maxDistance, setMaxDistance] = useState(50);
@@ -77,11 +77,26 @@ export default function CartePage() {
       return false;
     }
     if (searchQuery) {
-      const hay = `${c.entreprise} ${c.ville ?? ""}`.toLowerCase();
+      const hay = `${c.entreprise} ${c.contact ?? ""} ${c.apporteur ?? ""} ${c.ville ?? ""} ${c.email ?? ""}`.toLowerCase();
       if (!hay.includes(searchQuery)) return false;
     }
     return true;
   });
+
+  const dashStats = useMemo(() => {
+    const totalVelos = allClients.reduce((s, c) => s + c.nbVelos, 0);
+    const velosLivres = allClients.reduce((s, c) => s + c.velosLivres, 0);
+    const velosPlanifies = allClients.reduce((s, c) => s + (c.velosPlanifies || 0), 0);
+    const velosRestants = totalVelos - velosLivres - velosPlanifies;
+    const clientsPlanifies = allClients.filter((c) => c.velosPlanifies > 0 || c.velosLivres >= c.nbVelos).length;
+    const clientsRestants = allClients.filter((c) => {
+      const rest = c.nbVelos - c.velosLivres - (c.velosPlanifies || 0);
+      return rest > 0;
+    }).length;
+    const tourneeIds = new Set(livraisons.filter((l) => l.tourneeId && l.statut !== "annulee").map((l) => l.tourneeId));
+    const pct = totalVelos > 0 ? Math.round(((velosLivres + velosPlanifies) / totalVelos) * 100) : 0;
+    return { totalVelos, velosLivres, velosPlanifies, velosRestants, clientsPlanifies, clientsRestants, nbTournees: tourneeIds.size, pct };
+  }, [allClients, livraisons]);
 
   const handleSelectClient = useCallback(
     async (clientId: string) => {
@@ -107,7 +122,29 @@ export default function CartePage() {
   const firstSplitStops = tournee?.splits?.[0]?.stops ?? tournee?.tournee ?? [];
 
   return (
-    <div className="flex flex-col lg:flex-row h-[calc(100vh-5rem)] lg:h-[calc(100vh-4rem)]">
+    <div className="flex flex-col h-[calc(100vh-5rem)] lg:h-[calc(100vh-4rem)]">
+      {/* Dashboard bandeau */}
+      <div className="bg-white border-b px-4 py-3 flex-shrink-0">
+        <div className="flex flex-wrap gap-3 items-center">
+          <DashCard label="Commandés" value={dashStats.totalVelos} unit="vélos" color="gray" />
+          <DashCard label="Livrés" value={dashStats.velosLivres} unit="vélos" color="green" />
+          <DashCard label="Planifiés" value={dashStats.velosPlanifies} unit="vélos" color="blue" />
+          <DashCard label="Restants" value={dashStats.velosRestants} unit="vélos" color={dashStats.velosRestants > 0 ? "orange" : "green"} />
+          <DashCard label="Tournées" value={dashStats.nbTournees} color="purple" />
+          <DashCard label="Clients à livrer" value={dashStats.clientsRestants} color="red" />
+          <div className="flex items-center gap-2 ml-auto">
+            <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-green-500 rounded-full transition-all"
+                style={{ width: `${dashStats.pct}%` }}
+              />
+            </div>
+            <span className="text-xs font-medium text-gray-600">{dashStats.pct}%</span>
+          </div>
+        </div>
+      </div>
+
+      <div className="flex flex-col lg:flex-row flex-1 min-h-0">
       <div className="flex-1 relative min-h-[300px]">
         <MapView
           clients={clients}
@@ -135,32 +172,33 @@ export default function CartePage() {
               type="text"
               value={search}
               onChange={(e) => { setSearch(e.target.value); setSelected(null); setTournee(null); }}
-              placeholder="Nom du client ou ville..."
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+              placeholder="Nom, contact, apporteur, ville..."
+              className="w-full px-3 py-2 border-2 border-green-300 rounded-lg text-sm focus:border-green-500 focus:outline-none"
             />
+            {searchQuery && (
+              <p className="text-xs text-gray-400 mt-1">{clients.length} résultat{clients.length !== 1 ? "s" : ""}</p>
+            )}
           </div>
-          <div>
-            <label className="text-xs font-medium text-gray-600 block mb-1">
-              Filtrer par département
-            </label>
-            <MultiDepSelect
-              value={selectedDeps}
-              onChange={(deps) => { setSelectedDeps(deps); setSelected(null); setTournee(null); }}
-              options={departements}
-            />
-          </div>
-          <div>
-            <label className="text-xs font-medium text-gray-600 block mb-1">
-              Filtrer par code postal
-            </label>
-            <input
-              type="text"
-              inputMode="numeric"
-              value={codePostal}
-              onChange={(e) => { setCodePostal(e.target.value); setSelected(null); setTournee(null); }}
-              placeholder="ex. 75010 ou 750"
-              className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
-            />
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs font-medium text-gray-600 block mb-1">Département</label>
+              <MultiDepSelect
+                value={selectedDeps}
+                onChange={(deps) => { setSelectedDeps(deps); setSelected(null); setTournee(null); }}
+                options={departements}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium text-gray-600 block mb-1">Code postal</label>
+              <input
+                type="text"
+                inputMode="numeric"
+                value={codePostal}
+                onChange={(e) => { setCodePostal(e.target.value); setSelected(null); setTournee(null); }}
+                placeholder="ex. 75010"
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm"
+              />
+            </div>
           </div>
           <div>
             <label className="text-xs font-medium text-gray-600 block mb-1">
@@ -285,6 +323,24 @@ export default function CartePage() {
           </>
         )}
       </div>
+      </div>
+    </div>
+  );
+}
+
+function DashCard({ label, value, unit, color }: { label: string; value: number; unit?: string; color: string }) {
+  const colors: Record<string, string> = {
+    gray: "bg-gray-50 text-gray-700",
+    green: "bg-green-50 text-green-700",
+    blue: "bg-blue-50 text-blue-700",
+    orange: "bg-orange-50 text-orange-700",
+    purple: "bg-purple-50 text-purple-700",
+    red: "bg-red-50 text-red-700",
+  };
+  return (
+    <div className={`px-3 py-1.5 rounded-lg ${colors[color] ?? colors.gray}`}>
+      <div className="text-lg font-bold leading-tight">{value.toLocaleString("fr-FR")}</div>
+      <div className="text-[10px] uppercase tracking-wide opacity-70">{label}{unit ? ` (${unit})` : ""}</div>
     </div>
   );
 }
