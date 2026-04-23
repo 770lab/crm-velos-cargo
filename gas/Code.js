@@ -106,7 +106,22 @@ function handleRequest(e) {
 
 // ---- CLIENTS ----
 
+function ensureClientsColumns() {
+  var sheet = SS.getSheetByName("Clients");
+  if (!sheet) return;
+  var lastCol = sheet.getLastColumn();
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var needed = ["parcelleCadastrale", "parcelleCadastraleLien"];
+  for (var k = 0; k < needed.length; k++) {
+    if (headers.indexOf(needed[k]) === -1) {
+      lastCol++;
+      sheet.getRange(1, lastCol).setValue(needed[k]);
+    }
+  }
+}
+
 function getClients(params) {
+  ensureClientsColumns();
   var sheet = SS.getSheetByName("Clients");
   var data = sheet.getDataRange().getValues();
   var headers = data[0];
@@ -610,8 +625,11 @@ function getLivraisons() {
       ville: clientRow[cHeaders.indexOf("ville")],
       adresse: clientRow[cHeaders.indexOf("adresse")],
       codePostal: clientRow[cHeaders.indexOf("codePostal")],
-      departement: clientRow[cHeaders.indexOf("departement")]
-    } : { entreprise: "?", ville: "", adresse: "" };
+      departement: clientRow[cHeaders.indexOf("departement")],
+      telephone: clientRow[cHeaders.indexOf("telephone")] || null,
+      lat: Number(clientRow[cHeaders.indexOf("latitude")]) || null,
+      lng: Number(clientRow[cHeaders.indexOf("longitude")]) || null
+    } : { entreprise: "?", ville: "", adresse: "", telephone: null, lat: null, lng: null };
     var nbVelos = Number(liv.nbVelos) || 0;
     if (!nbVelos && liv.notes) {
       var m = String(liv.notes).match(/(\d+)\s+vélos?/);

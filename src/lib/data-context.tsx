@@ -82,6 +82,9 @@ interface LivraisonRow {
     adresse: string | null;
     codePostal?: string | null;
     departement?: string | null;
+    telephone?: string | null;
+    lat?: number | null;
+    lng?: number | null;
   };
   _count: { velos: number };
 }

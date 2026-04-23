@@ -477,17 +477,54 @@ function TourneeModal({
   };
 
   const palette = modePalette(tournee.mode);
+  const [showPrint, setShowPrint] = useState(false);
 
-  const totalMinutes = tournee.totalVelos * MINUTES_PAR_VELO;
-  const heuresTotal = totalMinutes / 60;
+  const segments = useMemo(() => {
+    const segs: { distKm: number; trajetMin: number }[] = [];
+    for (let i = 0; i < tournee.livraisons.length; i++) {
+      if (i === 0) {
+        segs.push({ distKm: 0, trajetMin: 0 });
+        continue;
+      }
+      const prev = tournee.livraisons[i - 1].client;
+      const curr = tournee.livraisons[i].client;
+      if (prev.lat && prev.lng && curr.lat && curr.lng) {
+        const d = haversineKm(prev.lat, prev.lng, curr.lat, curr.lng);
+        const routeKm = d * 1.3;
+        segs.push({ distKm: Math.round(routeKm * 10) / 10, trajetMin: Math.round(routeKm / 0.5) });
+      } else {
+        segs.push({ distKm: 0, trajetMin: 0 });
+      }
+    }
+    return segs;
+  }, [tournee.livraisons]);
+
+  const totalTrajetMin = segments.reduce((s, seg) => s + seg.trajetMin, 0);
+  const totalMontageMin = tournee.totalVelos * MINUTES_PAR_VELO;
+  const totalJourneeMin = totalTrajetMin + totalMontageMin;
   const minutesJournee = HEURES_JOURNEE * 60;
   const velosParMonteurJour = Math.floor(minutesJournee / MINUTES_PAR_VELO);
-  const monteursNecessaires = Math.ceil(tournee.totalVelos / velosParMonteurJour);
+  const monteursNecessaires = Math.ceil(totalJourneeMin / minutesJournee);
   const velosAvecEffectif = monteurs * velosParMonteurJour;
-  const faisableEnUnJour = tournee.totalVelos <= velosAvecEffectif;
-  const tempsAvecEffectif = totalMinutes / monteurs;
-  const heuresAvecEffectif = Math.floor(tempsAvecEffectif / 60);
-  const minutesRestantes = Math.round(tempsAvecEffectif % 60);
+  const tempsParMonteur = totalMontageMin / monteurs + totalTrajetMin;
+  const faisableEnUnJour = tempsParMonteur <= minutesJournee;
+
+  const fmtDuree = (min: number) => {
+    const h = Math.floor(min / 60);
+    const m = Math.round(min % 60);
+    return h > 0 ? `${h}h${m > 0 ? String(m).padStart(2, "0") : ""}` : `${m}min`;
+  };
+
+  if (showPrint) {
+    return (
+      <FeuilleDeRoute
+        tournee={tournee}
+        segments={segments}
+        monteurs={monteurs}
+        onBack={() => setShowPrint(false)}
+      />
+    );
+  }
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
@@ -504,20 +541,39 @@ function TourneeModal({
               {` · ${tournee.totalVelos} vélos · ${tournee.livraisons.length} arrêts`}
             </div>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setShowPrint(true)}
+              className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-1"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+              </svg>
+              Feuille de route
+            </button>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+          </div>
         </div>
 
         {/* Estimation temps + effectif */}
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 space-y-2">
           <div className="flex items-center justify-between">
-            <span className="text-sm font-medium text-blue-900">Estimation temps</span>
-            <span className="text-xs text-blue-600">{MINUTES_PAR_VELO} min/vélo (montage + admin)</span>
+            <span className="text-sm font-medium text-blue-900">Estimation journée</span>
+            <span className="text-xs text-blue-600">{MINUTES_PAR_VELO} min/vélo · ~30 km/h en ville</span>
           </div>
-          <div className="text-sm text-blue-800">
-            {tournee.totalVelos} vélos × {MINUTES_PAR_VELO} min = <strong>{Math.floor(heuresTotal)}h{totalMinutes % 60 > 0 ? `${String(totalMinutes % 60).padStart(2, "0")}` : ""}</strong> de travail total
-          </div>
-          <div className="text-xs text-blue-700">
-            Monteurs recommandés : <strong>{monteursNecessaires}</strong> (base {HEURES_JOURNEE}h/jour, {velosParMonteurJour} vélos/monteur)
+          <div className="grid grid-cols-3 gap-2 text-center">
+            <div className="bg-white rounded-lg p-2">
+              <div className="text-lg font-bold text-blue-900">{fmtDuree(totalMontageMin)}</div>
+              <div className="text-[10px] text-blue-600">Montage + admin</div>
+            </div>
+            <div className="bg-white rounded-lg p-2">
+              <div className="text-lg font-bold text-blue-900">{fmtDuree(totalTrajetMin)}</div>
+              <div className="text-[10px] text-blue-600">Trajet route</div>
+            </div>
+            <div className="bg-white rounded-lg p-2">
+              <div className="text-lg font-bold text-blue-900">{fmtDuree(totalJourneeMin)}</div>
+              <div className="text-[10px] text-blue-600">Total journée</div>
+            </div>
           </div>
 
           <div className="flex items-center gap-3 pt-2 border-t border-blue-200">
@@ -531,13 +587,14 @@ function TourneeModal({
               className="w-16 px-2 py-1 text-sm border border-blue-300 rounded-lg text-center bg-white"
             />
             <span className="text-sm text-blue-800">monteur{monteurs > 1 ? "s" : ""}</span>
+            <span className="text-xs text-blue-500 ml-auto">Recommandé : {monteursNecessaires}</span>
           </div>
 
           <div className={`text-sm font-medium rounded-lg px-3 py-2 ${faisableEnUnJour ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
             {faisableEnUnJour ? (
-              <>Faisable en 1 jour — {heuresAvecEffectif}h{minutesRestantes > 0 ? String(minutesRestantes).padStart(2, "0") : ""} de travail par monteur · Capacité : {velosAvecEffectif} vélos</>
+              <>Faisable en 1 jour — {fmtDuree(tempsParMonteur)}/monteur · Capacité : {velosAvecEffectif} vélos</>
             ) : (
-              <>Pas faisable en 1 jour — il faudrait {heuresAvecEffectif}h{minutesRestantes > 0 ? String(minutesRestantes).padStart(2, "0") : ""}/monteur · Capacité : {velosAvecEffectif}/{tournee.totalVelos} vélos</>
+              <>Pas faisable en 1 jour — {fmtDuree(tempsParMonteur)}/monteur dépasse {HEURES_JOURNEE}h · Capacité max : {velosAvecEffectif} vélos</>
             )}
           </div>
         </div>
@@ -582,53 +639,64 @@ function TourneeModal({
 
         <div className="space-y-2">
           {tournee.livraisons.map((l, i) => (
-            <div key={l.id} className={`border rounded-lg p-3 flex items-center gap-3 ${selected.has(l.id) ? "bg-blue-50 border-blue-300" : ""}`}>
-              <input
-                type="checkbox"
-                checked={selected.has(l.id)}
-                onChange={() => toggleSelect(l.id)}
-                className="shrink-0"
-              />
-              <span className="w-7 h-7 rounded-full bg-green-600 text-white text-sm flex items-center justify-center font-medium shrink-0">
-                {i + 1}
-              </span>
-              <div className="flex-1 min-w-0">
-                <div className="font-medium truncate">{l.client.entreprise}</div>
-                <div className="text-xs text-gray-500 truncate">
-                  {[l.client.adresse, l.client.ville, l.client.codePostal].filter(Boolean).join(", ") || "—"}
+            <div key={l.id}>
+              {i > 0 && segments[i].distKm > 0 && (
+                <div className="flex items-center gap-2 py-1 px-10 text-[10px] text-gray-400">
+                  <div className="border-l-2 border-dashed border-gray-300 h-3" />
+                  <span>↓ {segments[i].distKm} km · ~{segments[i].trajetMin} min</span>
                 </div>
-              </div>
-              <span className="text-sm font-medium bg-gray-100 px-2 py-0.5 rounded">
-                {l._count.velos} v.
-              </span>
-              <select
-                value={l.statut}
-                disabled={busy === l.id}
-                onChange={(e) => updateStatut(l.id, e.target.value)}
-                className="text-xs px-2 py-1 border rounded"
-              >
-                <option value="planifiee">Planifiée</option>
-                <option value="en_cours">En cours</option>
-                <option value="livree">Livrée</option>
-                <option value="annulee">Annulée</option>
-              </select>
-              {l.statut === "annulee" ? (
-                <button
-                  onClick={() => restaurer(l.id)}
-                  disabled={busy === l.id}
-                  className="text-emerald-500 hover:text-emerald-700 text-xs whitespace-nowrap"
-                >
-                  ↺ restaurer
-                </button>
-              ) : (
-                <button
-                  onClick={() => annuler(l.id)}
-                  disabled={busy === l.id}
-                  className="text-amber-500 hover:text-amber-700 text-xs whitespace-nowrap"
-                >
-                  annuler
-                </button>
               )}
+              <div className={`border rounded-lg p-3 flex items-center gap-3 ${selected.has(l.id) ? "bg-blue-50 border-blue-300" : ""}`}>
+                <input
+                  type="checkbox"
+                  checked={selected.has(l.id)}
+                  onChange={() => toggleSelect(l.id)}
+                  className="shrink-0"
+                />
+                <span className="w-7 h-7 rounded-full bg-green-600 text-white text-sm flex items-center justify-center font-medium shrink-0">
+                  {i + 1}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="font-medium truncate">{l.client.entreprise}</div>
+                  <div className="text-xs text-gray-500 truncate">
+                    {[l.client.adresse, l.client.ville, l.client.codePostal].filter(Boolean).join(", ") || "—"}
+                  </div>
+                  {l.client.telephone && (
+                    <div className="text-xs text-gray-400">{l.client.telephone}</div>
+                  )}
+                </div>
+                <span className="text-sm font-medium bg-gray-100 px-2 py-0.5 rounded">
+                  {l._count.velos} v.
+                </span>
+                <select
+                  value={l.statut}
+                  disabled={busy === l.id}
+                  onChange={(e) => updateStatut(l.id, e.target.value)}
+                  className="text-xs px-2 py-1 border rounded"
+                >
+                  <option value="planifiee">Planifiée</option>
+                  <option value="en_cours">En cours</option>
+                  <option value="livree">Livrée</option>
+                  <option value="annulee">Annulée</option>
+                </select>
+                {l.statut === "annulee" ? (
+                  <button
+                    onClick={() => restaurer(l.id)}
+                    disabled={busy === l.id}
+                    className="text-emerald-500 hover:text-emerald-700 text-xs whitespace-nowrap"
+                  >
+                    ↺ restaurer
+                  </button>
+                ) : (
+                  <button
+                    onClick={() => annuler(l.id)}
+                    disabled={busy === l.id}
+                    className="text-amber-500 hover:text-amber-700 text-xs whitespace-nowrap"
+                  >
+                    annuler
+                  </button>
+                )}
+              </div>
             </div>
           ))}
         </div>
@@ -652,6 +720,106 @@ function TourneeModal({
       </div>
     </div>
   );
+}
+
+function FeuilleDeRoute({
+  tournee,
+  segments,
+  monteurs,
+  onBack,
+}: {
+  tournee: Tournee;
+  segments: { distKm: number; trajetMin: number }[];
+  monteurs: number;
+  onBack: () => void;
+}) {
+  const totalTrajet = segments.reduce((s, seg) => s + seg.trajetMin, 0);
+  const totalMontage = tournee.totalVelos * MINUTES_PAR_VELO;
+  const totalDist = segments.reduce((s, seg) => s + seg.distKm, 0);
+  const fmtDuree = (min: number) => {
+    const h = Math.floor(min / 60);
+    const m = Math.round(min % 60);
+    return h > 0 ? `${h}h${m > 0 ? String(m).padStart(2, "0") : ""}` : `${m}min`;
+  };
+
+  return (
+    <div className="fixed inset-0 bg-white z-50 overflow-auto">
+      <div className="max-w-3xl mx-auto p-6 print:p-4">
+        <div className="flex items-center justify-between mb-6 print:hidden">
+          <button onClick={onBack} className="text-sm text-gray-500 hover:text-gray-700">← Retour</button>
+          <button
+            onClick={() => window.print()}
+            className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700"
+          >
+            Imprimer / PDF
+          </button>
+        </div>
+
+        <div className="text-center mb-6 border-b pb-4">
+          <h1 className="text-xl font-bold">Feuille de route</h1>
+          <div className="text-sm text-gray-600 mt-1">
+            {tournee.datePrevue && new Date(tournee.datePrevue).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+            {tournee.tourneeId && <span className="ml-2 font-mono text-xs text-gray-400">[{tournee.tourneeId}]</span>}
+          </div>
+          <div className="flex justify-center gap-6 mt-3 text-sm">
+            <span><strong>{tournee.livraisons.length}</strong> arrêts</span>
+            <span><strong>{tournee.totalVelos}</strong> vélos</span>
+            <span><strong>{Math.round(totalDist)}</strong> km</span>
+            <span><strong>{fmtDuree(totalTrajet + totalMontage)}</strong> estimé</span>
+            <span><strong>{monteurs}</strong> monteur{monteurs > 1 ? "s" : ""}</span>
+          </div>
+        </div>
+
+        <table className="w-full text-sm border-collapse">
+          <thead>
+            <tr className="border-b-2 text-left">
+              <th className="py-2 w-8">#</th>
+              <th className="py-2">Client</th>
+              <th className="py-2">Adresse</th>
+              <th className="py-2 w-16 text-center">Tél.</th>
+              <th className="py-2 w-12 text-center">Vélos</th>
+              <th className="py-2 w-16 text-center">Trajet</th>
+              <th className="py-2 w-20 text-center">Fait</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tournee.livraisons.map((l, i) => (
+              <tr key={l.id} className="border-b">
+                <td className="py-2 font-bold">{i + 1}</td>
+                <td className="py-2 font-medium">{l.client.entreprise}</td>
+                <td className="py-2 text-xs text-gray-600">
+                  {[l.client.adresse, l.client.codePostal, l.client.ville].filter(Boolean).join(", ")}
+                </td>
+                <td className="py-2 text-xs text-center">{l.client.telephone || "—"}</td>
+                <td className="py-2 text-center font-medium">{l._count.velos}</td>
+                <td className="py-2 text-center text-xs text-gray-500">
+                  {i > 0 && segments[i].distKm > 0 ? `${segments[i].distKm}km` : "—"}
+                </td>
+                <td className="py-2 text-center">
+                  <div className="w-5 h-5 border-2 border-gray-400 rounded mx-auto" />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+
+        <div className="mt-6 border-t pt-4">
+          <div className="text-sm font-medium mb-2">Notes :</div>
+          <div className="h-24 border border-gray-300 rounded" />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+    Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
 // ---- Helpers ----

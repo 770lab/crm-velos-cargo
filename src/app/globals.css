@@ -11,3 +11,9 @@
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
+
+@media print {
+  nav, aside, .print\\:hidden { display: none !important; }
+  body { background: white !important; }
+  main { padding: 0 !important; margin: 0 !important; }
+}
