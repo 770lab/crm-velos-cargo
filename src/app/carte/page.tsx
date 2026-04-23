@@ -85,6 +85,22 @@ export default function CartePage() {
     return true;
   });
 
+  const loadByDate = useMemo(() => {
+    const map = new Map<string, { velos: number; tournees: Set<string>; modes: Set<string> }>();
+    for (const l of livraisons) {
+      if (l.statut === "annulee" || !l.datePrevue) continue;
+      const iso = toISO(new Date(l.datePrevue));
+      if (!map.has(iso)) map.set(iso, { velos: 0, tournees: new Set(), modes: new Set() });
+      const e = map.get(iso)!;
+      e.velos += l._count?.velos ?? l.nbVelos ?? 0;
+      if (l.tourneeId) e.tournees.add(l.tourneeId);
+      if (l.mode) e.modes.add(l.mode);
+    }
+    return new Map(
+      Array.from(map.entries()).map(([k, v]) => [k, { velos: v.velos, tournees: v.tournees.size, modes: Array.from(v.modes) }])
+    );
+  }, [livraisons]);
+
   const dashStats = useMemo(() => {
     const totalVelos = allClients.reduce((s, c) => s + c.nbVelos, 0);
     const velosLivres = allClients.reduce((s, c) => s + c.velosLivres, 0);
@@ -247,6 +263,7 @@ export default function CartePage() {
         {mode === "retrait" ? (
           <RetraitPanel
             clients={clients}
+            loadByDate={loadByDate}
             onPlanned={() => { refresh("livraisons"); refresh("carte"); }}
           />
         ) : (
@@ -289,6 +306,7 @@ export default function CartePage() {
                 <PlanifierSplits
                   mode={mode}
                   splits={tournee.splits}
+                  loadByDate={loadByDate}
                   onPlanned={() => { refresh("livraisons"); refresh("carte"); }}
                   resetTour={() => handleSelectClient(selected!)}
                 />
@@ -347,11 +365,15 @@ function DashCard({ label, value, unit, color }: { label: string; value: number;
   );
 }
 
+type DayLoad = { velos: number; tournees: number; modes: string[] };
+
 function RetraitPanel({
   clients,
+  loadByDate,
   onPlanned,
 }: {
   clients: { id: string; entreprise: string; ville: string | null; nbVelos: number; velosLivres: number; velosPlanifies: number }[];
+  loadByDate: Map<string, DayLoad>;
   onPlanned: () => void;
 }) {
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -447,7 +469,7 @@ function RetraitPanel({
 
       <div>
         <label className="block text-xs text-gray-500 mb-1">Date du retrait</label>
-        <input type="date" value={date} min={todayISO()} onChange={(e) => setDate(e.target.value)} className="w-full px-3 py-1.5 border rounded-lg text-sm" />
+        <DateLoadPicker value={date} onChange={setDate} minDate={todayISO()} loadByDate={loadByDate} />
       </div>
 
       <div className="flex items-center gap-3">
@@ -561,14 +583,104 @@ function addDaysISO(iso: string, days: number): string {
   return toISO(d);
 }
 
+function DateLoadPicker({
+  value,
+  onChange,
+  minDate,
+  loadByDate,
+}: {
+  value: string;
+  onChange: (iso: string) => void;
+  minDate: string;
+  loadByDate: Map<string, DayLoad>;
+}) {
+  const [weekOffset, setWeekOffset] = useState(0);
+
+  const base = useMemo(() => {
+    const today = todayISO();
+    const anchor = value && value >= today ? value : today;
+    const d = new Date(anchor + "T00:00:00");
+    d.setDate(d.getDate() + weekOffset * 7);
+    const day = d.getDay();
+    const diff = (day + 6) % 7;
+    d.setDate(d.getDate() - diff);
+    return toISO(d);
+  }, [value, weekOffset]);
+
+  const days = useMemo(() => Array.from({ length: 21 }, (_, i) => addDaysISO(base, i)), [base]);
+  const today = todayISO();
+  const dayHeaders = ["L", "M", "M", "J", "V", "S", "D"];
+
+  const firstLabel = new Date(days[0] + "T00:00:00").toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+  const lastLabel = new Date(days[20] + "T00:00:00").toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs text-gray-500">{firstLabel} — {lastLabel}</span>
+        <div className="flex gap-1">
+          <button type="button" onClick={() => setWeekOffset((o) => o - 1)} className="px-1.5 py-0.5 border rounded text-xs hover:bg-gray-50">←</button>
+          <button type="button" onClick={() => setWeekOffset(0)} className="px-1.5 py-0.5 border rounded text-xs hover:bg-gray-50">Auj.</button>
+          <button type="button" onClick={() => setWeekOffset((o) => o + 1)} className="px-1.5 py-0.5 border rounded text-xs hover:bg-gray-50">→</button>
+        </div>
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {dayHeaders.map((d, i) => (
+          <div key={i} className="text-center text-[10px] text-gray-400 font-medium">{d}</div>
+        ))}
+        {days.map((iso) => {
+          const d = new Date(iso + "T00:00:00");
+          const load = loadByDate.get(iso);
+          const isSelected = iso === value;
+          const isDisabled = iso < today || (minDate !== "" && iso < minDate);
+          const hasLoad = !!load && load.velos > 0;
+          const base = isSelected
+            ? "bg-blue-600 text-white border-blue-700 font-semibold"
+            : isDisabled
+            ? "bg-gray-100 text-gray-300 border-gray-100 cursor-not-allowed"
+            : hasLoad
+            ? "bg-amber-50 border-amber-300 text-amber-900 hover:bg-amber-100"
+            : "bg-green-50 border-green-200 text-green-800 hover:bg-green-100";
+          return (
+            <button
+              key={iso}
+              type="button"
+              disabled={isDisabled}
+              onClick={() => onChange(iso)}
+              className={`p-1 rounded border text-center transition-colors ${base}`}
+              title={hasLoad
+                ? `${load!.velos} vélos · ${load!.tournees} tournée${load!.tournees > 1 ? "s" : ""}${load!.modes.length ? ` · ${load!.modes.join(", ")}` : ""}`
+                : isDisabled ? "Passé" : "Libre"}
+            >
+              <div className="text-xs font-bold leading-tight">{d.getDate()}</div>
+              <div className="text-[9px] leading-tight mt-0.5 truncate">
+                {hasLoad ? `${load!.velos}v` : isDisabled ? "" : "libre"}
+              </div>
+            </button>
+          );
+        })}
+      </div>
+      <input
+        type="date"
+        value={value}
+        min={minDate}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full px-3 py-1.5 border rounded-lg text-sm"
+      />
+    </div>
+  );
+}
+
 function PlanifierSplits({
   mode,
   splits,
+  loadByDate,
   onPlanned,
   resetTour,
 }: {
   mode: string;
   splits: TourneeSplit[];
+  loadByDate: Map<string, DayLoad>;
   onPlanned: () => void;
   resetTour: () => void;
 }) {
@@ -727,16 +839,15 @@ function PlanifierSplits({
 
             <div>
               <label className="block text-xs text-gray-500 mb-1">Date prévue</label>
-              <input
-                type="date"
+              <DateLoadPicker
                 value={dates[idx] || ""}
-                min={today}
-                onChange={(e) => {
+                onChange={(iso) => {
                   const next = [...dates];
-                  next[idx] = e.target.value;
+                  next[idx] = iso;
                   setDates(next);
                 }}
-                className="w-full px-3 py-1.5 border rounded-lg text-sm bg-white"
+                minDate={today}
+                loadByDate={loadByDate}
               />
               {dates[idx] && (
                 <p className="text-xs text-gray-500 mt-1 capitalize">{formatFrDate(dates[idx])}</p>
