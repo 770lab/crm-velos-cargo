@@ -70,6 +70,8 @@ export default function CartePage() {
   const cpFilter = codePostal.trim();
   const searchQuery = search.trim().toLowerCase();
   const clients = allClients.filter((c) => {
+    const reste = c.nbVelos - c.velosLivres - (c.velosPlanifies || 0);
+    if (reste <= 0) return false;
     if (selectedDeps.length > 0 && !(c.departement != null && selectedDeps.includes(String(c.departement)))) {
       return false;
     }
