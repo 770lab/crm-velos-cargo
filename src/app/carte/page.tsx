@@ -9,7 +9,7 @@ import MultiDepSelect from "@/components/multi-dep-select";
 
 const MapView = dynamic(() => import("@/components/map-view"), { ssr: false });
 
-interface TourneeClient {
+interface TourneeStop {
   id: string;
   entreprise: string;
   ville: string | null;
@@ -19,10 +19,22 @@ interface TourneeClient {
   distance: number;
 }
 
+interface TourneeSplit {
+  stops: TourneeStop[];
+  totalVelos: number;
+  capacite: number;
+  indexCamion: number;
+  nbCamionsTotal: number;
+}
+
 interface TourneeResult {
   mode: string;
   capacite: number;
-  tournee: TourneeClient[];
+  nbCamions: number;
+  velosClient: number;
+  splits: TourneeSplit[];
+  // compat
+  tournee: TourneeStop[];
   totalVelos: number;
   clientsProches: Array<{
     id: string;
@@ -33,6 +45,7 @@ interface TourneeResult {
     distance: number;
     velosRestants: number;
   }>;
+  error?: string;
 }
 
 export default function CartePage() {
@@ -86,7 +99,12 @@ export default function CartePage() {
   }, [mode, maxDistance, selected, handleSelectClient]);
 
   const selectedClient = clients.find((c) => c.id === selected);
-  const tourneeIds = new Set(tournee?.tournee.map((t) => t.id) || []);
+  const allTourneeIds = new Set<string>();
+  if (tournee?.splits) {
+    tournee.splits.forEach((sp) => sp.stops.forEach((s) => allTourneeIds.add(s.id)));
+  }
+  // Pour la polyline (route map), on prend la 1ère tournée par défaut
+  const firstSplitStops = tournee?.splits?.[0]?.stops ?? tournee?.tournee ?? [];
 
   return (
     <div className="flex flex-col lg:flex-row h-[calc(100vh-5rem)] lg:h-[calc(100vh-4rem)]">
@@ -94,8 +112,8 @@ export default function CartePage() {
         <MapView
           clients={clients}
           selectedId={selected}
-          tourneeIds={tourneeIds}
-          tournee={tournee?.tournee || []}
+          tourneeIds={allTourneeIds}
+          tournee={firstSplitStops}
           onSelectClient={handleSelectClient}
         />
       </div>
@@ -199,76 +217,43 @@ export default function CartePage() {
           </div>
         )}
 
-        {selected && selectedClient && tournee && !loading && (
+        {selected && selectedClient && tournee && tournee.error && !loading && (
+          <div className="p-4">
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+              {tournee.error}
+            </div>
+          </div>
+        )}
+
+        {selected && selectedClient && tournee && !tournee.error && !loading && (
           <div className="p-4 space-y-4">
-            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
-              <div className="font-medium text-blue-900">
-                {selectedClient.entreprise}
-              </div>
-              <div className="text-sm text-blue-700">
-                {selectedClient.ville} ({selectedClient.departement})
-              </div>
-              <div className="text-sm text-blue-600 mt-1">
-                {selectedClient.nbVelos - selectedClient.velosLivres} vélos à
-                livrer
-              </div>
-            </div>
+            <ClientHeader client={selectedClient} tournee={tournee} />
 
-            <div className="bg-green-50 border border-green-200 rounded-lg p-3">
-              <div className="flex justify-between items-center">
-                <span className="font-medium text-green-900">Tournée suggérée</span>
-                <span className="text-sm text-green-700">
-                  {tournee.totalVelos}/{tournee.capacite} vélos
-                </span>
-              </div>
-              <div className="text-xs text-green-600 mt-1">
-                {tournee.tournee.length} arrêt{tournee.tournee.length > 1 ? "s" : ""} —{" "}
-                {mode === "atelier" ? "montage atelier" : "montage sur site"}
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <h3 className="text-sm font-medium text-gray-700">
-                Arrêts de la tournée
-              </h3>
-              {tournee.tournee.map((t, i) => (
-                <div
-                  key={t.id}
-                  className={`flex items-center gap-3 p-2 rounded-lg text-sm ${
-                    i === 0 ? "bg-blue-50" : "bg-gray-50"
-                  }`}
-                >
-                  <span className="w-6 h-6 rounded-full bg-green-600 text-white text-xs flex items-center justify-center font-medium">
-                    {i + 1}
-                  </span>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium truncate">{t.entreprise}</div>
-                    <div className="text-xs text-gray-500">
-                      {t.ville}
-                      {t.distance > 0 && ` — ${t.distance} km`}
-                    </div>
-                  </div>
-                  <span className="text-xs font-medium bg-white px-2 py-1 rounded border">
-                    {t.nbVelos} v.
-                  </span>
+            {tournee.nbCamions > 1 && (
+              <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 text-sm text-orange-900">
+                <div className="font-medium">⚠️ Livraison multi-camions</div>
+                <div className="mt-1">
+                  Ce client commande <strong>{tournee.velosClient} vélos</strong> mais la capacité
+                  est de <strong>{tournee.capacite}/camion</strong>. {tournee.nbCamions} tournées
+                  seront créées pour livrer la totalité.
                 </div>
-              ))}
-            </div>
+              </div>
+            )}
 
-            <PlanifierTournee
+            <PlanifierSplits
               mode={mode}
-              tournee={tournee}
-              onPlanned={() => refresh("livraisons")}
+              splits={tournee.splits}
+              onPlanned={() => { refresh("livraisons"); refresh("carte"); }}
               resetTour={() => handleSelectClient(selected!)}
             />
 
-            {tournee.clientsProches.length > tournee.tournee.length - 1 && (
+            {tournee.clientsProches.length > 0 && (
               <div className="space-y-2">
                 <h3 className="text-sm font-medium text-gray-700">
                   Autres clients proches
                 </h3>
                 {tournee.clientsProches
-                  .filter((c) => !tourneeIds.has(c.id))
+                  .filter((c) => !allTourneeIds.has(c.id))
                   .slice(0, 10)
                   .map((c) => (
                     <button
@@ -296,81 +281,138 @@ export default function CartePage() {
   );
 }
 
+function ClientHeader({
+  client,
+  tournee,
+}: {
+  client: { entreprise: string; ville: string | null; departement: string | null; nbVelos: number; velosLivres: number; velosPlanifies: number };
+  tournee: TourneeResult;
+}) {
+  const restant = client.nbVelos - client.velosLivres - client.velosPlanifies;
+  return (
+    <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 space-y-1">
+      <div className="font-medium text-blue-900">{client.entreprise}</div>
+      <div className="text-sm text-blue-700">
+        {client.ville} ({client.departement})
+      </div>
+      <div className="text-sm text-blue-600">
+        {client.nbVelos} commandés · {client.velosLivres} livrés
+        {client.velosPlanifies > 0 && (
+          <> · <span className="text-orange-700">{client.velosPlanifies} déjà planifiés</span></>
+        )}
+      </div>
+      <div className="text-xs text-blue-500">
+        À planifier maintenant : {tournee.velosClient} vélo{tournee.velosClient > 1 ? "s" : ""}
+        {restant !== tournee.velosClient && ` (reste ${restant} après cette planif)`}
+      </div>
+    </div>
+  );
+}
+
 function nextMondayISO(): string {
   const d = new Date();
   const day = d.getDay();
   const diff = (8 - day) % 7 || 7;
   d.setDate(d.getDate() + diff);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, "0");
-  const dd = String(d.getDate()).padStart(2, "0");
-  return `${yyyy}-${mm}-${dd}`;
+  return toISO(d);
 }
 
 function todayISO(): string {
-  const d = new Date();
+  return toISO(new Date());
+}
+
+function toISO(d: Date): string {
   const yyyy = d.getFullYear();
   const mm = String(d.getMonth() + 1).padStart(2, "0");
   const dd = String(d.getDate()).padStart(2, "0");
   return `${yyyy}-${mm}-${dd}`;
 }
 
-function PlanifierTournee({
+function addDaysISO(iso: string, days: number): string {
+  const d = new Date(iso + "T00:00:00");
+  d.setDate(d.getDate() + days);
+  return toISO(d);
+}
+
+function PlanifierSplits({
   mode,
-  tournee,
+  splits,
   onPlanned,
   resetTour,
 }: {
   mode: "atelier" | "sursite";
-  tournee: TourneeResult;
+  splits: TourneeSplit[];
   onPlanned: () => void;
   resetTour: () => void;
 }) {
-  const [date, setDate] = useState<string>(() => nextMondayISO());
+  const [dates, setDates] = useState<string[]>(() => {
+    const start = nextMondayISO();
+    return splits.map((_, i) => addDaysISO(start, i));
+  });
   const [notes, setNotes] = useState("");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<{ tourneeId: string; created: number; datePrevue: string } | null>(null);
+  const [result, setResult] = useState<{ count: number; tournees: { tourneeId: string; created: number; datePrevue: string }[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  // Re-init dates si le nombre de splits change
+  useEffect(() => {
+    const start = nextMondayISO();
+    setDates(splits.map((_, i) => addDaysISO(start, i)));
+  }, [splits.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
   const today = useMemo(() => todayISO(), []);
-  const isPast = date && date < today;
 
   const formatFrDate = (iso: string) => {
     if (!iso) return "";
-    const [y, m, d] = iso.split("-");
-    return `${d}/${m}/${y}`;
+    const d = new Date(iso + "T00:00:00");
+    return d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
   };
 
-  const weekdayLabel = useMemo(() => {
-    if (!date) return "";
-    const d = new Date(date + "T00:00:00");
-    return d.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
-  }, [date]);
-
   const submit = async () => {
-    if (!date) {
-      setError("Choisis une date");
+    if (dates.some((d) => !d)) {
+      setError("Choisis une date pour chaque tournée");
       return;
     }
     setError(null);
     setLoading(true);
     try {
-      const stops = tournee.tournee.map((t, i) => ({
-        clientId: t.id,
-        ordre: i + 1,
-        nbVelos: t.nbVelos,
-      }));
-      const r = await gasPost("createTournee", {
-        datePrevue: date,
-        notes: notes.trim(),
-        mode,
-        stops,
-      });
-      if (r.error) {
-        setError(r.error);
+      if (splits.length === 1) {
+        const r = await gasPost("createTournee", {
+          datePrevue: dates[0],
+          notes: notes.trim(),
+          mode,
+          stops: splits[0].stops.map((s, i) => ({
+            clientId: s.id,
+            ordre: i + 1,
+            nbVelos: s.nbVelos,
+          })),
+        });
+        if (r.error) {
+          setError(r.error);
+        } else {
+          setResult({ count: 1, tournees: [r] });
+          onPlanned();
+        }
       } else {
-        setResult(r);
-        onPlanned();
+        const tournees = splits.map((sp, idx) => ({
+          datePrevue: dates[idx],
+          mode,
+          notes: notes.trim()
+            ? `${notes.trim()} (camion ${sp.indexCamion}/${sp.nbCamionsTotal})`
+            : `camion ${sp.indexCamion}/${sp.nbCamionsTotal}`,
+          stops: sp.stops.map((s, i) => ({
+            clientId: s.id,
+            ordre: i + 1,
+            nbVelos: s.nbVelos,
+          })),
+        }));
+        const r = await gasPost("createTournees", { tournees, mode, notes: notes.trim() });
+        if (r.error) {
+          setError(r.error);
+        } else {
+          setResult({ count: r.count, tournees: r.tournees });
+          onPlanned();
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erreur inconnue");
@@ -391,12 +433,18 @@ function PlanifierTournee({
         <div className="flex items-start gap-2">
           <span className="text-emerald-600 text-xl leading-none">✓</span>
           <div>
-            <div className="font-medium text-emerald-900">Tournée planifiée</div>
-            <div className="text-sm text-emerald-700">
-              {result.created} livraison{result.created > 1 ? "s" : ""} créée{result.created > 1 ? "s" : ""} pour le{" "}
-              <span className="font-medium">{formatFrDate(result.datePrevue)}</span>
+            <div className="font-medium text-emerald-900">
+              {result.count} tournée{result.count > 1 ? "s" : ""} planifiée{result.count > 1 ? "s" : ""}
             </div>
-            <div className="text-xs text-emerald-600 mt-0.5 font-mono">ID tournée : {result.tourneeId}</div>
+            <ul className="text-xs text-emerald-700 mt-1 space-y-0.5">
+              {result.tournees.map((t, i) => (
+                <li key={t.tourneeId}>
+                  Camion {i + 1} → {t.created} arrêt{t.created > 1 ? "s" : ""} le{" "}
+                  <span className="font-medium">{formatFrDate(t.datePrevue)}</span>{" "}
+                  <span className="font-mono text-emerald-500">[{t.tourneeId}]</span>
+                </li>
+              ))}
+            </ul>
           </div>
         </div>
         <div className="flex gap-2">
@@ -404,7 +452,7 @@ function PlanifierTournee({
             href="/livraisons"
             className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 text-sm"
           >
-            Voir dans Livraisons →
+            Voir l&apos;agenda →
           </Link>
           <button
             onClick={reset}
@@ -418,33 +466,64 @@ function PlanifierTournee({
   }
 
   return (
-    <div className="border-t pt-3 space-y-2">
-      <h3 className="text-sm font-medium text-gray-700">Planifier cette tournée</h3>
+    <div className="border-t pt-3 space-y-3">
+      <h3 className="text-sm font-medium text-gray-700">
+        Planifier {splits.length === 1 ? "cette tournée" : `les ${splits.length} tournées`}
+      </h3>
 
-      <div className="space-y-2">
-        <div>
-          <label className="block text-xs text-gray-500 mb-1">Date prévue</label>
-          <input
-            type="date"
-            value={date}
-            min={today}
-            onChange={(e) => setDate(e.target.value)}
-            className="w-full px-3 py-2 border rounded-lg text-sm"
-          />
-          {date && !isPast && (
-            <p className="text-xs text-gray-500 mt-1 capitalize">{weekdayLabel}</p>
-          )}
-          {isPast && (
-            <p className="text-xs text-amber-700 mt-1">⚠️ Date dans le passé</p>
-          )}
-        </div>
+      <div className="space-y-3">
+        {splits.map((sp, idx) => (
+          <div key={idx} className="border rounded-lg p-3 bg-gray-50 space-y-2">
+            <div className="flex justify-between items-center">
+              <span className="text-sm font-medium text-gray-700">
+                Camion {sp.indexCamion}/{sp.nbCamionsTotal}
+              </span>
+              <span className="text-xs bg-white px-2 py-0.5 rounded border">
+                {sp.totalVelos}/{sp.capacite} vélos · {sp.stops.length} arrêt{sp.stops.length > 1 ? "s" : ""}
+              </span>
+            </div>
+
+            <div className="space-y-1">
+              {sp.stops.map((s, i) => (
+                <div key={`${s.id}-${i}`} className="flex items-center gap-2 text-xs">
+                  <span className="w-5 h-5 rounded-full bg-green-600 text-white flex items-center justify-center font-medium">
+                    {i + 1}
+                  </span>
+                  <div className="flex-1 min-w-0 truncate">
+                    {s.entreprise}
+                    {s.ville && <span className="text-gray-400"> · {s.ville}</span>}
+                  </div>
+                  <span className="text-gray-600 whitespace-nowrap">{s.nbVelos} v.</span>
+                </div>
+              ))}
+            </div>
+
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">Date prévue</label>
+              <input
+                type="date"
+                value={dates[idx] || ""}
+                min={today}
+                onChange={(e) => {
+                  const next = [...dates];
+                  next[idx] = e.target.value;
+                  setDates(next);
+                }}
+                className="w-full px-3 py-1.5 border rounded-lg text-sm bg-white"
+              />
+              {dates[idx] && (
+                <p className="text-xs text-gray-500 mt-1 capitalize">{formatFrDate(dates[idx])}</p>
+              )}
+            </div>
+          </div>
+        ))}
 
         <div>
           <label className="block text-xs text-gray-500 mb-1">Notes (optionnel)</label>
           <textarea
             value={notes}
             onChange={(e) => setNotes(e.target.value)}
-            placeholder="ex. camion 2, conducteur Jean…"
+            placeholder="ex. conducteur Jean, contact sur place…"
             rows={2}
             className="w-full px-3 py-2 border rounded-lg text-sm resize-none"
           />
@@ -458,12 +537,12 @@ function PlanifierTournee({
 
         <button
           onClick={submit}
-          disabled={loading || !date}
+          disabled={loading}
           className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 text-sm font-medium"
         >
           {loading
             ? "Création en cours…"
-            : `Planifier (${tournee.tournee.length} arrêt${tournee.tournee.length > 1 ? "s" : ""} · ${tournee.totalVelos} vélo${tournee.totalVelos > 1 ? "s" : ""})`}
+            : `Planifier ${splits.length} tournée${splits.length > 1 ? "s" : ""} · ${splits.reduce((s, sp) => s + sp.totalVelos, 0)} vélos`}
         </button>
       </div>
     </div>

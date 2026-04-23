@@ -161,8 +161,8 @@ export default function ClientsPage() {
               <th className="text-center px-4 py-3 font-medium text-gray-600">Devis</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Kbis</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Attest.</th>
-              <th className="text-center px-4 py-3 font-medium text-gray-600">Bicycle</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Livrés</th>
+              <th className="text-center px-4 py-3 font-medium text-gray-600">Bicycle</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Facturables</th>
             </tr>
           </thead>
@@ -183,27 +183,25 @@ export default function ClientsPage() {
                 <td className="px-4 py-3 text-gray-600">{c.ville || "-"}</td>
                 <td className="text-center px-4 py-3 text-gray-500">{c.departement || "-"}</td>
                 <td className="text-center px-4 py-3 font-medium">
-                  {c.stats.livres}/{c.stats.totalVelos}
+                  <VelosCell livres={c.stats.livres} total={c.stats.totalVelos} planifies={c.stats.planifies ?? 0} />
                 </td>
                 <td className="px-4 py-3">
                   <DocProgress devis={c.devisSignee} kbis={c.kbisRecu} attestation={c.attestationRecue} signature={c.signatureOk} bicycle={c.inscriptionBicycle} />
                 </td>
                 <td className="text-center px-4 py-3">
-                  <StatusDot ok={c.devisSignee} />
+                  <DocCell ok={c.devisSignee} lien={c.devisLien ?? null} clientId={c.id} docType="devisSignee" onChange={() => refresh("clients")} />
                 </td>
                 <td className="text-center px-4 py-3">
-                  <StatusDot ok={c.kbisRecu} />
+                  <DocCell ok={c.kbisRecu} lien={c.kbisLien ?? null} clientId={c.id} docType="kbisRecu" onChange={() => refresh("clients")} />
                 </td>
                 <td className="text-center px-4 py-3">
-                  <StatusDot ok={c.attestationRecue} />
+                  <DocCell ok={c.attestationRecue} lien={c.attestationLien ?? null} clientId={c.id} docType="attestationRecue" onChange={() => refresh("clients")} />
                 </td>
                 <td className="text-center px-4 py-3">
-                  <StatusDot ok={c.inscriptionBicycle} />
+                  <LivresDot livres={c.stats.livres} total={c.stats.totalVelos} planifies={c.stats.planifies ?? 0} />
                 </td>
                 <td className="text-center px-4 py-3">
-                  <span className={c.stats.livres === c.stats.totalVelos && c.stats.totalVelos > 0 ? "text-green-600 font-medium" : ""}>
-                    {c.stats.livres}
-                  </span>
+                  <DocCell ok={c.inscriptionBicycle} lien={c.bicycleLien ?? null} clientId={c.id} docType="inscriptionBicycle" onChange={() => refresh("clients")} />
                 </td>
                 <td className="text-center px-4 py-3">
                   <span className={c.stats.facturables > 0 ? "text-amber-600 font-medium" : ""}>
@@ -254,6 +252,265 @@ function StatusDot({ ok }: { ok: boolean }) {
       }`}
     />
   );
+}
+
+function VelosCell({ livres, total, planifies }: { livres: number; total: number; planifies: number }) {
+  const reste = Math.max(0, total - livres - planifies);
+  return (
+    <div className="leading-tight" title={`${livres} livrés · ${planifies} planifiés · ${reste} à planifier (sur ${total})`}>
+      <div>{livres}/{total}</div>
+      {planifies > 0 && (
+        <div className="text-[10px] font-normal text-orange-600">+{planifies} planifié{planifies > 1 ? "s" : ""}</div>
+      )}
+    </div>
+  );
+}
+
+function extractDriveId(url: string): string | null {
+  const m1 = url.match(/\/file\/d\/([a-zA-Z0-9_-]{10,})/);
+  if (m1) return m1[1];
+  const m2 = url.match(/[?&]id=([a-zA-Z0-9_-]{10,})/);
+  if (m2) return m2[1];
+  const m3 = url.match(/\/document\/d\/([a-zA-Z0-9_-]{10,})/);
+  if (m3) return m3[1];
+  return null;
+}
+
+type DocType = "devisSignee" | "kbisRecu" | "attestationRecue" | "inscriptionBicycle" | "signatureOk";
+
+function DocCell({
+  ok,
+  lien,
+  clientId,
+  docType,
+  onChange,
+}: {
+  ok: boolean;
+  lien: string | null;
+  clientId: string;
+  docType: DocType;
+  onChange: () => void;
+}) {
+  const [showUpload, setShowUpload] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+
+  const fileId = lien ? extractDriveId(lien) : null;
+  const previewUrl = fileId ? `https://drive.google.com/file/d/${fileId}/preview` : null;
+  const downloadUrl = fileId ? `https://drive.google.com/uc?export=download&id=${fileId}` : null;
+
+  if (!ok || !lien) {
+    return (
+      <>
+        <button
+          type="button"
+          onClick={() => setShowUpload(true)}
+          title="Pas encore de document — cliquer pour uploader"
+          className="inline-block w-3 h-3 rounded-full bg-red-400 hover:bg-red-500 hover:scale-125 transition-all cursor-pointer"
+          aria-label="Uploader un document"
+        />
+        {showUpload && (
+          <UploadDocModal
+            clientId={clientId}
+            docType={docType}
+            onClose={() => setShowUpload(false)}
+            onDone={() => { setShowUpload(false); onChange(); }}
+          />
+        )}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setShowPreview(true)}
+        title="Cliquer pour aperçu / télécharger"
+        className="inline-block w-3 h-3 rounded-full bg-green-500 hover:bg-green-600 hover:scale-125 transition-all cursor-pointer"
+        aria-label="Voir le document"
+      />
+      {showPreview && (
+        <PreviewDocModal
+          previewUrl={previewUrl}
+          downloadUrl={downloadUrl}
+          openUrl={lien}
+          onClose={() => setShowPreview(false)}
+          onReplace={() => { setShowPreview(false); setShowUpload(true); }}
+        />
+      )}
+      {showUpload && (
+        <UploadDocModal
+          clientId={clientId}
+          docType={docType}
+          onClose={() => setShowUpload(false)}
+          onDone={() => { setShowUpload(false); onChange(); }}
+        />
+      )}
+    </>
+  );
+}
+
+const docLabels: Record<DocType, string> = {
+  devisSignee: "Devis",
+  kbisRecu: "Kbis",
+  attestationRecue: "Attestation URSSAF",
+  inscriptionBicycle: "Bicycle",
+  signatureOk: "Signature",
+};
+
+function UploadDocModal({
+  clientId,
+  docType,
+  onClose,
+  onDone,
+}: {
+  clientId: string;
+  docType: DocType;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (!file) return;
+    setBusy(true);
+    setError(null);
+    try {
+      const fileData = await fileToBase64(file);
+      const r = await gasPost("uploadDoc", {
+        clientId,
+        docType,
+        fileName: file.name,
+        fileData,
+        mimeType: file.type || "application/pdf",
+      });
+      if (r.error) setError(r.error);
+      else onDone();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erreur upload");
+    }
+    setBusy(false);
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+        <h2 className="text-lg font-semibold mb-2">Uploader « {docLabels[docType]} »</h2>
+        <p className="text-sm text-gray-500 mb-4">
+          Le fichier sera classé directement dans le bon sous-dossier Drive et la pastille passera au vert.
+        </p>
+        <input
+          type="file"
+          accept="application/pdf,image/*"
+          onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          className="w-full text-sm mb-3"
+        />
+        {file && <div className="text-xs text-gray-500 mb-3">Fichier : {file.name} ({Math.round(file.size / 1024)} Ko)</div>}
+        {error && <div className="bg-red-50 border border-red-200 rounded p-2 text-xs text-red-700 mb-3">{error}</div>}
+        <div className="flex justify-end gap-3">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600">Annuler</button>
+          <button
+            onClick={submit}
+            disabled={!file || busy}
+            className="px-4 py-2 bg-green-600 text-white rounded-lg text-sm hover:bg-green-700 disabled:opacity-50"
+          >
+            {busy ? "Envoi…" : "Uploader"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function PreviewDocModal({
+  previewUrl,
+  downloadUrl,
+  openUrl,
+  onClose,
+  onReplace,
+}: {
+  previewUrl: string | null;
+  downloadUrl: string | null;
+  openUrl: string;
+  onClose: () => void;
+  onReplace: () => void;
+}) {
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl p-4 w-full max-w-3xl max-h-[90vh] flex flex-col" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-center mb-2">
+          <h2 className="text-lg font-semibold">Aperçu du document</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-2xl leading-none">×</button>
+        </div>
+        <div className="flex-1 min-h-[60vh] bg-gray-100 rounded overflow-hidden">
+          {previewUrl ? (
+            <iframe src={previewUrl} className="w-full h-full border-0" allow="autoplay" />
+          ) : (
+            <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+              Aperçu impossible (lien Drive non reconnu).{" "}
+              <a className="text-blue-600 underline ml-1" href={openUrl} target="_blank" rel="noopener noreferrer">Ouvrir directement</a>
+            </div>
+          )}
+        </div>
+        <div className="flex justify-between items-center mt-3 gap-2">
+          <button onClick={onReplace} className="px-3 py-1.5 text-sm border rounded text-gray-700 hover:bg-gray-50">
+            Remplacer
+          </button>
+          <div className="flex gap-2">
+            <a
+              href={openUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="px-3 py-1.5 text-sm border rounded text-blue-700 hover:bg-blue-50"
+            >
+              Ouvrir dans Drive
+            </a>
+            {downloadUrl && (
+              <a
+                href={downloadUrl}
+                className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+              >
+                Télécharger
+              </a>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const result = reader.result as string;
+      // result = "data:mime;base64,xxxx" → on prend juste le base64
+      const idx = result.indexOf(",");
+      resolve(idx === -1 ? result : result.slice(idx + 1));
+    };
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+function LivresDot({ livres, total, planifies }: { livres: number; total: number; planifies: number }) {
+  if (total === 0) {
+    return <span className="inline-block w-3 h-3 rounded-full bg-gray-300" title="Aucun vélo commandé" />;
+  }
+  const tousLivres = livres === total;
+  const partielLivre = livres > 0 && !tousLivres;
+  const planifie = !tousLivres && planifies > 0;
+
+  let cls = "bg-red-400";
+  if (tousLivres) cls = "bg-green-500";
+  else if (partielLivre) cls = "bg-amber-500";
+  else if (planifie) cls = "bg-orange-400 ring-2 ring-orange-200";
+
+  const tooltip = `${livres}/${total} livrés${planifies > 0 ? ` · +${planifies} planifié${planifies > 1 ? "s" : ""}` : ""}`;
+  return <span className={`inline-block w-3 h-3 rounded-full ${cls}`} title={tooltip} />;
 }
 
 function AddClientModal({ onClose }: { onClose: () => void }) {

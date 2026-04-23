@@ -50,12 +50,18 @@ function handleRequest(e) {
       case "createTournee":
         result = createTournee(getBody());
         break;
+      case "createTournees":
+        result = createTournees(getBody());
+        break;
       case "updateLivraison":
         var bodyUL = getBody();
         result = updateLivraison(bodyUL.id || e.parameter.id, bodyUL.data || bodyUL);
         break;
       case "deleteLivraison":
         result = deleteLivraison(e.parameter.id);
+        break;
+      case "restoreLivraison":
+        result = restoreLivraison(e.parameter.id);
         break;
       case "updateVelos":
         var bodyUV = getBody();
@@ -100,6 +106,7 @@ function getClients(params) {
 
   var search = (params && params.search) ? params.search.toLowerCase() : "";
   var filter = (params && params.filter) ? params.filter : "all";
+  var planifiesByClient = computePlanifiesByClient();
 
   var clients = rows.map(function(row) {
     var c = {};
@@ -120,6 +127,7 @@ function getClients(params) {
       certificats: clientVelos.filter(function(v) { return v[velosHeaders.indexOf("certificatRecu")] === true || v[velosHeaders.indexOf("certificatRecu")] === "TRUE"; }).length,
       facturables: clientVelos.filter(function(v) { return v[velosHeaders.indexOf("facturable")] === true || v[velosHeaders.indexOf("facturable")] === "TRUE"; }).length,
       factures: clientVelos.filter(function(v) { return v[velosHeaders.indexOf("facture")] === true || v[velosHeaders.indexOf("facture")] === "TRUE"; }).length,
+      planifies: planifiesByClient[c.id] || 0,
     };
 
     return c;
@@ -293,6 +301,8 @@ function getCarte() {
   var vHeaders = vData[0];
   var vRows = vData.slice(1);
 
+  var planifiesByClient = computePlanifiesByClient();
+
   var isBool = function(val) { return val === true || val === "TRUE"; };
 
   return rows
@@ -315,8 +325,102 @@ function getCarte() {
         email: r[headers.indexOf("email")],
         docsComplets: isBool(r[headers.indexOf("kbisRecu")]) && isBool(r[headers.indexOf("attestationRecue")]) && isBool(r[headers.indexOf("signatureOk")]) && isBool(r[headers.indexOf("devisSignee")]),
         velosLivres: clientVelos.filter(function(v) { return isBool(v[vHeaders.indexOf("photoQrPrise")]); }).length,
+        velosPlanifies: planifiesByClient[id] || 0,
       };
     });
+}
+
+// Lit les livraisons non-livrées/non-annulées et somme les vélos planifiés par client.
+// Tolérant : si la colonne nbVelos n'existe pas encore, parse les notes ("X vélos").
+function computePlanifiesByClient() {
+  var livSheet = SS.getSheetByName("Livraisons");
+  if (!livSheet) return {};
+  var data = livSheet.getDataRange().getValues();
+  if (data.length <= 1) return {};
+  var headers = data[0];
+  var iClientId = headers.indexOf("clientId");
+  var iStatut = headers.indexOf("statut");
+  var iNbVelos = headers.indexOf("nbVelos");
+  var iNotes = headers.indexOf("notes");
+  if (iClientId === -1 || iStatut === -1) return {};
+
+  var byClient = {};
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var statut = String(row[iStatut] || "");
+    if (statut === "livree" || statut === "annulee") continue;
+    var cid = row[iClientId];
+    if (!cid) continue;
+    var nb = 0;
+    if (iNbVelos !== -1) {
+      nb = Number(row[iNbVelos]) || 0;
+    }
+    if (!nb && iNotes !== -1) {
+      var notes = String(row[iNotes] || "");
+      var m = notes.match(/(\d+)\s+vélos?/);
+      if (m) nb = parseInt(m[1], 10);
+    }
+    byClient[cid] = (byClient[cid] || 0) + nb;
+  }
+  return byClient;
+}
+
+// Garantit que la feuille Livraisons a les colonnes nbVelos, tourneeId, mode, ordre.
+// Backfill en parsant les notes existantes pour récupérer "X vélos" et "[xxxxxxxx]".
+// Renvoie l'objet { sheet, headers } à jour.
+function ensureLivraisonsSchema() {
+  var sheet = SS.getSheetByName("Livraisons");
+  if (!sheet) {
+    sheet = SS.insertSheet("Livraisons");
+    sheet.getRange(1, 1, 1, 9).setValues([[
+      "id","clientId","datePrevue","dateEffective","statut","notes",
+      "nbVelos","tourneeId","mode"
+    ]]);
+    return { sheet: sheet, headers: ["id","clientId","datePrevue","dateEffective","statut","notes","nbVelos","tourneeId","mode"] };
+  }
+
+  var lastCol = sheet.getLastColumn();
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var needed = ["nbVelos","tourneeId","mode"];
+  var added = false;
+  for (var k = 0; k < needed.length; k++) {
+    if (headers.indexOf(needed[k]) === -1) {
+      lastCol++;
+      sheet.getRange(1, lastCol).setValue(needed[k]);
+      headers.push(needed[k]);
+      added = true;
+    }
+  }
+
+  if (added) {
+    var iNotes = headers.indexOf("notes");
+    var iNbVelos = headers.indexOf("nbVelos");
+    var iTourneeId = headers.indexOf("tourneeId");
+    var iMode = headers.indexOf("mode");
+    var lastRow = sheet.getLastRow();
+    if (lastRow >= 2 && iNotes !== -1) {
+      var range = sheet.getRange(2, 1, lastRow - 1, headers.length);
+      var values = range.getValues();
+      for (var i = 0; i < values.length; i++) {
+        var notes = String(values[i][iNotes] || "");
+        if (iNbVelos !== -1 && !values[i][iNbVelos]) {
+          var mNb = notes.match(/(\d+)\s+vélos?/);
+          if (mNb) values[i][iNbVelos] = parseInt(mNb[1], 10);
+        }
+        if (iTourneeId !== -1 && !values[i][iTourneeId]) {
+          var mTid = notes.match(/\[([a-f0-9]{8})\]/);
+          if (mTid) values[i][iTourneeId] = mTid[1];
+        }
+        if (iMode !== -1 && !values[i][iMode]) {
+          if (/—\s*atelier\b/.test(notes)) values[i][iMode] = "atelier";
+          else if (/—\s*sur site\b/.test(notes)) values[i][iMode] = "sursite";
+        }
+      }
+      range.setValues(values);
+    }
+  }
+
+  return { sheet: sheet, headers: headers };
 }
 
 function suggestTournee(clientId, mode, maxDistance) {
@@ -330,49 +434,76 @@ function suggestTournee(clientId, mode, maxDistance) {
   var capacite = mode === "sursite" ? 54 : 6;
   maxDistance = maxDistance || 50;
 
+  // Reste = commandé - livré - déjà planifié (livraisons "planifiee" ou "en_cours")
+  var velosTarget = target.nbVelos - target.velosLivres - (target.velosPlanifies || 0);
+  if (velosTarget <= 0) {
+    return { error: "Aucun vélo à planifier pour ce client (tout livré ou déjà planifié)." };
+  }
+
   var nearby = points
     .filter(function(c) { return c.id !== clientId; })
     .map(function(c) {
       c.distance = haversineKm(target.lat, target.lng, c.lat, c.lng);
-      c.velosRestants = c.nbVelos - c.velosLivres;
+      c.velosRestants = c.nbVelos - c.velosLivres - (c.velosPlanifies || 0);
       return c;
     })
     .filter(function(c) { return c.distance <= maxDistance && c.velosRestants > 0; })
     .sort(function(a, b) { return a.distance - b.distance; });
 
-  var velosTarget = target.nbVelos - target.velosLivres;
-  var resteCamion = capacite - velosTarget;
-  var tournee = [{
-    id: target.id,
-    entreprise: target.entreprise,
-    ville: target.ville,
-    lat: target.lat,
-    lng: target.lng,
-    nbVelos: velosTarget,
-    distance: 0
-  }];
+  // On découpe les vélos du client cible en N camions (compact : chaque camion plein avant le suivant).
+  var nbCamions = Math.ceil(velosTarget / capacite);
+  var splits = [];
+  var velosACassign = velosTarget;
 
-  for (var j = 0; j < nearby.length; j++) {
-    if (resteCamion <= 0) break;
-    var c = nearby[j];
-    var nb = Math.min(c.velosRestants, resteCamion);
-    tournee.push({
-      id: c.id,
-      entreprise: c.entreprise,
-      ville: c.ville,
-      lat: c.lat,
-      lng: c.lng,
-      nbVelos: nb,
-      distance: Math.round(c.distance * 10) / 10
+  for (var k = 0; k < nbCamions; k++) {
+    var velosCeCamion = Math.min(velosACassign, capacite);
+    var stops = [{
+      id: target.id,
+      entreprise: target.entreprise,
+      ville: target.ville,
+      lat: target.lat,
+      lng: target.lng,
+      nbVelos: velosCeCamion,
+      distance: 0
+    }];
+
+    var resteCamion = capacite - velosCeCamion;
+    for (var j = 0; j < nearby.length && resteCamion > 0; j++) {
+      var c = nearby[j];
+      if (c.velosRestants <= 0) continue;
+      var nb = Math.min(c.velosRestants, resteCamion);
+      stops.push({
+        id: c.id,
+        entreprise: c.entreprise,
+        ville: c.ville,
+        lat: c.lat,
+        lng: c.lng,
+        nbVelos: nb,
+        distance: Math.round(c.distance * 10) / 10
+      });
+      c.velosRestants -= nb; // évite de surbooker entre camions du même split
+      resteCamion -= nb;
+    }
+
+    splits.push({
+      stops: stops,
+      totalVelos: stops.reduce(function(s, t) { return s + t.nbVelos; }, 0),
+      capacite: capacite,
+      indexCamion: k + 1,
+      nbCamionsTotal: nbCamions
     });
-    resteCamion -= nb;
+    velosACassign -= velosCeCamion;
   }
 
   return {
     mode: mode,
     capacite: capacite,
-    tournee: tournee,
-    totalVelos: tournee.reduce(function(s, t) { return s + t.nbVelos; }, 0),
+    nbCamions: nbCamions,
+    velosClient: velosTarget,
+    splits: splits,
+    // compat ascendante : 1ère tournée à plat
+    tournee: splits[0].stops,
+    totalVelos: splits[0].totalVelos,
     clientsProches: nearby.slice(0, 20).map(function(c) {
       return {
         id: c.id, entreprise: c.entreprise, ville: c.ville,
@@ -397,8 +528,8 @@ function haversineKm(lat1, lng1, lat2, lng2) {
 // ---- LIVRAISONS ----
 
 function getLivraisons() {
-  var sheet = SS.getSheetByName("Livraisons");
-  if (!sheet) return [];
+  var ctx = ensureLivraisonsSchema();
+  var sheet = ctx.sheet;
   var data = sheet.getDataRange().getValues();
   if (data.length <= 1) return [];
   var headers = data[0];
@@ -415,39 +546,64 @@ function getLivraisons() {
     liv.client = clientRow ? {
       entreprise: clientRow[cHeaders.indexOf("entreprise")],
       ville: clientRow[cHeaders.indexOf("ville")],
-      adresse: clientRow[cHeaders.indexOf("adresse")]
+      adresse: clientRow[cHeaders.indexOf("adresse")],
+      codePostal: clientRow[cHeaders.indexOf("codePostal")],
+      departement: clientRow[cHeaders.indexOf("departement")]
     } : { entreprise: "?", ville: "", adresse: "" };
-    liv._count = { velos: 0 };
+    var nbVelos = Number(liv.nbVelos) || 0;
+    if (!nbVelos && liv.notes) {
+      var m = String(liv.notes).match(/(\d+)\s+vélos?/);
+      if (m) nbVelos = parseInt(m[1], 10);
+    }
+    liv._count = { velos: nbVelos };
     return liv;
   });
 }
 
 function createLivraison(body) {
-  var sheet = SS.getSheetByName("Livraisons");
-  if (!sheet) {
-    sheet = SS.insertSheet("Livraisons");
-    sheet.getRange(1, 1, 1, 6).setValues([["id","clientId","datePrevue","dateEffective","statut","notes"]]);
-  }
+  var ctx = ensureLivraisonsSchema();
+  var sheet = ctx.sheet;
+  var headers = ctx.headers;
+
   var id = Utilities.getUuid();
-  sheet.appendRow([id, body.clientId, body.datePrevue || "", "", "planifiee", body.notes || ""]);
+  var row = new Array(headers.length).fill("");
+  row[headers.indexOf("id")] = id;
+  row[headers.indexOf("clientId")] = body.clientId;
+  row[headers.indexOf("datePrevue")] = body.datePrevue || "";
+  row[headers.indexOf("dateEffective")] = "";
+  row[headers.indexOf("statut")] = "planifiee";
+  row[headers.indexOf("notes")] = body.notes || "";
+  if (headers.indexOf("nbVelos") !== -1) row[headers.indexOf("nbVelos")] = body.nbVelos || 0;
+  if (headers.indexOf("tourneeId") !== -1) row[headers.indexOf("tourneeId")] = body.tourneeId || "";
+  if (headers.indexOf("mode") !== -1) row[headers.indexOf("mode")] = body.mode || "";
+  sheet.appendRow(row);
   return { id: id };
 }
 
+// Crée 1 tournée (= N livraisons, une par arrêt, partageant le même tourneeId/datePrevue).
 function createTournee(body) {
-  var sheet = SS.getSheetByName("Livraisons");
-  if (!sheet) {
-    sheet = SS.insertSheet("Livraisons");
-    sheet.getRange(1, 1, 1, 6).setValues([["id","clientId","datePrevue","dateEffective","statut","notes"]]);
-  }
+  var ctx = ensureLivraisonsSchema();
+  var sheet = ctx.sheet;
+  var headers = ctx.headers;
 
   var stops = body.stops || [];
   if (stops.length === 0) return { error: "Aucun arrêt" };
 
-  var tourneeId = Utilities.getUuid().slice(0, 8);
+  var tourneeId = body.tourneeId || Utilities.getUuid().slice(0, 8);
   var total = stops.length;
   var date = body.datePrevue || "";
   var mode = body.mode || "";
   var userNotes = (body.notes || "").trim();
+
+  var iId = headers.indexOf("id");
+  var iClientId = headers.indexOf("clientId");
+  var iDatePrevue = headers.indexOf("datePrevue");
+  var iDateEff = headers.indexOf("dateEffective");
+  var iStatut = headers.indexOf("statut");
+  var iNotes = headers.indexOf("notes");
+  var iNbVelos = headers.indexOf("nbVelos");
+  var iTourneeId = headers.indexOf("tourneeId");
+  var iMode = headers.indexOf("mode");
 
   var rows = stops.map(function(s, i) {
     var ordre = s.ordre || (i + 1);
@@ -460,13 +616,45 @@ function createTournee(body) {
     if (mode) pieces.push(mode === "atelier" ? "atelier" : "sur site");
     if (userNotes) pieces.push(userNotes);
     pieces.push("[" + tourneeId + "]");
-    return [Utilities.getUuid(), s.clientId, date, "", "planifiee", pieces.join(" — ")];
+    var row = new Array(headers.length).fill("");
+    row[iId] = Utilities.getUuid();
+    row[iClientId] = s.clientId;
+    row[iDatePrevue] = date;
+    row[iDateEff] = "";
+    row[iStatut] = "planifiee";
+    row[iNotes] = pieces.join(" — ");
+    if (iNbVelos !== -1) row[iNbVelos] = nbVelos;
+    if (iTourneeId !== -1) row[iTourneeId] = tourneeId;
+    if (iMode !== -1) row[iMode] = mode;
+    return row;
   });
 
-  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, 6).setValues(rows);
+  sheet.getRange(sheet.getLastRow() + 1, 1, rows.length, headers.length).setValues(rows);
   SpreadsheetApp.flush();
 
   return { tourneeId: tourneeId, created: rows.length, datePrevue: date };
+}
+
+// Planifie en bloc N tournées (cas multi-camions). Chaque entrée de body.tournees doit avoir
+// { datePrevue, mode?, notes?, stops: [...] }. Renvoie la liste des résultats individuels.
+function createTournees(body) {
+  var tournees = body.tournees || [];
+  if (tournees.length === 0) return { error: "Aucune tournée" };
+
+  var globalNotes = (body.notes || "").trim();
+  var mode = body.mode || "";
+  var results = [];
+  for (var i = 0; i < tournees.length; i++) {
+    var t = tournees[i];
+    var r = createTournee({
+      stops: t.stops,
+      datePrevue: t.datePrevue || "",
+      mode: t.mode || mode,
+      notes: t.notes || globalNotes
+    });
+    results.push(r);
+  }
+  return { tournees: results, count: results.length };
 }
 
 function updateLivraison(id, data) {
@@ -474,25 +662,122 @@ function updateLivraison(id, data) {
   if (!sheet) return { error: "Pas de feuille Livraisons" };
   var all = sheet.getDataRange().getValues();
   var headers = all[0];
+  var iClientId = headers.indexOf("clientId");
+  var iNbVelos = headers.indexOf("nbVelos");
+  var iStatut = headers.indexOf("statut");
+
   for (var i = 1; i < all.length; i++) {
     if (all[i][0] === id) {
+      var oldStatut = iStatut !== -1 ? all[i][iStatut] : null;
       for (var key in data) {
         var col = headers.indexOf(key);
         if (col > -1) sheet.getRange(i + 1, col + 1).setValue(data[key]);
       }
+
+      // Bonus : si on passe à "livree", marquer N vélos non encore livrés du client.
+      // Si on revient depuis "livree" vers autre chose, on démarque (best effort).
+      var newStatut = data.statut;
+      if (iClientId !== -1 && iNbVelos !== -1 && newStatut && newStatut !== oldStatut) {
+        var clientId = all[i][iClientId];
+        var nbVelos = Number(all[i][iNbVelos]) || 0;
+        if (clientId && nbVelos > 0) {
+          if (newStatut === "livree" && oldStatut !== "livree") {
+            markVelosLivres(clientId, nbVelos);
+          } else if (oldStatut === "livree" && newStatut !== "livree") {
+            unmarkVelosLivres(clientId, nbVelos);
+          }
+        }
+      }
+
       return { ok: true };
     }
   }
   return { error: "Livraison non trouvée" };
 }
 
+// Marque N vélos non livrés d'un client comme livrés (photoQrPrise = TRUE).
+function markVelosLivres(clientId, n) {
+  var velosSheet = SS.getSheetByName("Velos");
+  if (!velosSheet) return 0;
+  var data = velosSheet.getDataRange().getValues();
+  var headers = data[0];
+  var iClientId = headers.indexOf("clientId");
+  var iPhoto = headers.indexOf("photoQrPrise");
+  if (iClientId === -1 || iPhoto === -1) return 0;
+
+  var marked = 0;
+  for (var i = 1; i < data.length && marked < n; i++) {
+    if (data[i][iClientId] !== clientId) continue;
+    var v = data[i][iPhoto];
+    if (v === true || v === "TRUE") continue;
+    velosSheet.getRange(i + 1, iPhoto + 1).setValue("TRUE");
+    marked++;
+  }
+  return marked;
+}
+
+// Démarque les N derniers vélos livrés d'un client (best effort sur rollback).
+function unmarkVelosLivres(clientId, n) {
+  var velosSheet = SS.getSheetByName("Velos");
+  if (!velosSheet) return 0;
+  var data = velosSheet.getDataRange().getValues();
+  var headers = data[0];
+  var iClientId = headers.indexOf("clientId");
+  var iPhoto = headers.indexOf("photoQrPrise");
+  if (iClientId === -1 || iPhoto === -1) return 0;
+
+  var unmarked = 0;
+  for (var i = data.length - 1; i >= 1 && unmarked < n; i--) {
+    if (data[i][iClientId] !== clientId) continue;
+    var v = data[i][iPhoto];
+    if (!(v === true || v === "TRUE")) continue;
+    velosSheet.getRange(i + 1, iPhoto + 1).setValue("FALSE");
+    unmarked++;
+  }
+  return unmarked;
+}
+
+// Soft cancel : on ne supprime JAMAIS la ligne, on passe le statut à "annulee".
+// Les vélos repartent automatiquement dans "à planifier" via computePlanifiesByClient.
+// Si la livraison était "livree", on démarque les vélos (best effort).
 function deleteLivraison(id) {
   var sheet = SS.getSheetByName("Livraisons");
   if (!sheet) return { error: "Pas de feuille Livraisons" };
   var all = sheet.getDataRange().getValues();
+  var headers = all[0];
+  var iStatut = headers.indexOf("statut");
+  var iDateEff = headers.indexOf("dateEffective");
+  var iClientId = headers.indexOf("clientId");
+  var iNbVelos = headers.indexOf("nbVelos");
+  if (iStatut === -1) return { error: "Colonne statut introuvable" };
+
   for (var i = 1; i < all.length; i++) {
     if (all[i][0] === id) {
-      sheet.deleteRow(i + 1);
+      var oldStatut = all[i][iStatut];
+      sheet.getRange(i + 1, iStatut + 1).setValue("annulee");
+      if (iDateEff !== -1) sheet.getRange(i + 1, iDateEff + 1).setValue("");
+
+      if (oldStatut === "livree" && iClientId !== -1 && iNbVelos !== -1) {
+        var nbVelos = Number(all[i][iNbVelos]) || 0;
+        if (nbVelos > 0) unmarkVelosLivres(all[i][iClientId], nbVelos);
+      }
+      return { ok: true, softCancelled: true };
+    }
+  }
+  return { error: "Livraison non trouvée" };
+}
+
+// Restaure une livraison annulée en repassant son statut à "planifiee".
+function restoreLivraison(id) {
+  var sheet = SS.getSheetByName("Livraisons");
+  if (!sheet) return { error: "Pas de feuille Livraisons" };
+  var all = sheet.getDataRange().getValues();
+  var headers = all[0];
+  var iStatut = headers.indexOf("statut");
+  if (iStatut === -1) return { error: "Colonne statut introuvable" };
+  for (var i = 1; i < all.length; i++) {
+    if (all[i][0] === id) {
+      sheet.getRange(i + 1, iStatut + 1).setValue("planifiee");
       return { ok: true };
     }
   }
@@ -670,6 +955,9 @@ function classifyWithGemini(file) {
 }
 
 function syncDriveDocs() {
+  var startTime = Date.now();
+  var TIMEOUT_MS = 5 * 60 * 1000; // arrêt préventif sur les 6 min max GAS
+
   var sheet = SS.getSheetByName("Clients");
   var all = sheet.getDataRange().getValues();
   var headers = all[0];
@@ -693,55 +981,109 @@ function syncDriveDocs() {
     orphans: [],
     unknowns: [],
     aiClassified: 0,
-    filesSeen: 0
+    filesSeen: 0,
+    skippedFiles: [],
+    skippedFolders: [],
+    timeoutHit: false
   };
 
-  var subFolders = root.getFolders();
+  var subFolders;
+  try {
+    subFolders = root.getFolders();
+  } catch (err) {
+    return { error: "Impossible de lister les sous-dossiers : " + err.message };
+  }
+
   while (subFolders.hasNext()) {
-    var folder = subFolders.next();
-    var folderKey = normalizeName(folder.getName());
-    var match = clientsByKey[folderKey];
-    if (!match) {
-      report.orphans.push(folder.getName());
+    if (Date.now() - startTime > TIMEOUT_MS) {
+      report.timeoutHit = true;
+      Logger.log("syncDriveDocs : timeout préventif après " + report.filesSeen + " fichiers");
+      break;
+    }
+
+    var folder, folderName, folderKey;
+    try {
+      folder = subFolders.next();
+      folderName = folder.getName();
+      folderKey = normalizeName(folderName);
+    } catch (err) {
+      Logger.log("syncDriveDocs : sous-dossier (next/getName) : " + err.message);
+      report.skippedFolders.push({ folder: folderName || "?", error: String(err.message || err) });
       continue;
     }
 
-    var files = folder.getFiles();
+    var match = clientsByKey[folderKey];
+    if (!match) {
+      report.orphans.push(folderName);
+      continue;
+    }
+
+    var files;
+    try {
+      files = folder.getFiles();
+    } catch (err) {
+      Logger.log("syncDriveDocs : getFiles a planté pour " + folderName + " : " + err.message);
+      report.skippedFolders.push({ folder: folderName, error: String(err.message || err) });
+      continue;
+    }
+
     while (files.hasNext()) {
-      var file = files.next();
-      report.filesSeen++;
+      if (Date.now() - startTime > TIMEOUT_MS) {
+        report.timeoutHit = true;
+        Logger.log("syncDriveDocs : timeout préventif au milieu de " + folderName);
+        break;
+      }
 
-      var docType = detectDocTypeByName(file.getName());
-      var classifiedBy = "name";
-
-      if (!docType || docType === "AUTRE" || !DOC_TYPE_TO_FIELDS[docType]) {
-        report.unknowns.push({
-          folder: folder.getName(),
-          folderKey: folderKey,
-          fileId: file.getId(),
-          file: file.getName()
-        });
+      var file, fileName;
+      try {
+        file = files.next();
+        fileName = file.getName();
+      } catch (err) {
+        Logger.log("syncDriveDocs : fichier (next/getName) dans " + folderName + " : " + err.message);
+        report.skippedFiles.push({ folder: folderName, file: fileName || "?", error: String(err.message || err) });
         continue;
       }
 
-      var fieldSet = DOC_TYPE_TO_FIELDS[docType];
-      var flagCol = headers.indexOf(fieldSet.flag);
-      var linkCol = headers.indexOf(fieldSet.link);
-      if (flagCol === -1) continue;
+      report.filesSeen++;
 
-      var url = file.getUrl();
-      sheet.getRange(match.rowIdx + 1, flagCol + 1).setValue("TRUE");
-      if (linkCol !== -1) {
-        sheet.getRange(match.rowIdx + 1, linkCol + 1).setValue(url);
+      try {
+        var docType = detectDocTypeByName(fileName);
+        var classifiedBy = "name";
+
+        if (!docType || docType === "AUTRE" || !DOC_TYPE_TO_FIELDS[docType]) {
+          report.unknowns.push({
+            folder: folderName,
+            folderKey: folderKey,
+            fileId: file.getId(),
+            file: fileName
+          });
+          continue;
+        }
+
+        var fieldSet = DOC_TYPE_TO_FIELDS[docType];
+        var flagCol = headers.indexOf(fieldSet.flag);
+        var linkCol = headers.indexOf(fieldSet.link);
+        if (flagCol === -1) continue;
+
+        var url = file.getUrl();
+        sheet.getRange(match.rowIdx + 1, flagCol + 1).setValue("TRUE");
+        if (linkCol !== -1) {
+          sheet.getRange(match.rowIdx + 1, linkCol + 1).setValue(url);
+        }
+
+        report.updates.push({
+          client: match.row[iEntreprise],
+          docType: docType,
+          file: fileName,
+          by: classifiedBy
+        });
+      } catch (err) {
+        Logger.log("syncDriveDocs : traitement " + fileName + " dans " + folderName + " : " + err.message);
+        report.skippedFiles.push({ folder: folderName, file: fileName, error: String(err.message || err) });
       }
-
-      report.updates.push({
-        client: match.row[iEntreprise],
-        docType: docType,
-        file: file.getName(),
-        by: classifiedBy
-      });
     }
+
+    if (report.timeoutHit) break;
   }
 
   PropertiesService.getScriptProperties().setProperty(
@@ -749,6 +1091,7 @@ function syncDriveDocs() {
     JSON.stringify(report.unknowns)
   );
   report.aiQueueSize = report.unknowns.length;
+  report.elapsedMs = Date.now() - startTime;
 
   return report;
 }

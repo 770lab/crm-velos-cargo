@@ -31,6 +31,11 @@ interface ClientRow {
   attestationRecue: boolean;
   signatureOk: boolean;
   inscriptionBicycle: boolean;
+  devisLien?: string | null;
+  kbisLien?: string | null;
+  attestationLien?: string | null;
+  signatureLien?: string | null;
+  bicycleLien?: string | null;
   nbVelosCommandes: number;
   stats: {
     totalVelos: number;
@@ -38,6 +43,7 @@ interface ClientRow {
     certificats: number;
     facturables: number;
     factures: number;
+    planifies?: number;
   };
 }
 
@@ -56,6 +62,7 @@ interface ClientPoint {
   email: string | null;
   docsComplets: boolean;
   velosLivres: number;
+  velosPlanifies: number;
 }
 
 interface LivraisonRow {
@@ -64,7 +71,16 @@ interface LivraisonRow {
   dateEffective: string | null;
   statut: string;
   notes: string | null;
-  client: { entreprise: string; ville: string | null; adresse: string | null };
+  nbVelos?: number;
+  tourneeId?: string | null;
+  mode?: string | null;
+  client: {
+    entreprise: string;
+    ville: string | null;
+    adresse: string | null;
+    codePostal?: string | null;
+    departement?: string | null;
+  };
   _count: { velos: number };
 }
 

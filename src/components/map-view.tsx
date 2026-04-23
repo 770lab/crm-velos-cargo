@@ -20,6 +20,7 @@ interface ClientPoint {
   lng: number;
   nbVelos: number;
   velosLivres: number;
+  velosPlanifies: number;
   docsComplets: boolean;
 }
 
@@ -102,37 +103,53 @@ export default function MapView({
         />
       )}
 
-      {clients.map((c) => (
-        <CircleMarker
-          key={c.id}
-          center={[c.lat, c.lng]}
-          radius={getRadius(c.nbVelos)}
-          pathOptions={{
-            fillColor: getColor(c, selectedId, tourneeIds),
-            color: c.id === selectedId ? "#1d4ed8" : "#fff",
-            weight: c.id === selectedId ? 3 : 1,
-            fillOpacity: 0.85,
-          }}
-          eventHandlers={{
-            click: () => onSelectClient(c.id),
-          }}
-        >
-          <Popup>
-            <div className="text-sm">
-              <div className="font-bold">{c.entreprise}</div>
-              <div className="text-gray-600">
-                {c.ville} ({c.departement})
+      {clients.map((c) => {
+        const reste = c.nbVelos - c.velosLivres - c.velosPlanifies;
+        const partielPlanifie = c.velosPlanifies > 0 && reste > 0;
+        const isSelected = c.id === selectedId;
+        const ringColor = isSelected
+          ? "#1d4ed8"
+          : partielPlanifie
+          ? "#f97316"
+          : "#fff";
+        return (
+          <CircleMarker
+            key={c.id}
+            center={[c.lat, c.lng]}
+            radius={getRadius(c.nbVelos)}
+            pathOptions={{
+              fillColor: getColor(c, selectedId, tourneeIds),
+              color: ringColor,
+              weight: isSelected ? 3 : partielPlanifie ? 2.5 : 1,
+              fillOpacity: 0.85,
+            }}
+            eventHandlers={{
+              click: () => onSelectClient(c.id),
+            }}
+          >
+            <Popup>
+              <div className="text-sm">
+                <div className="font-bold">{c.entreprise}</div>
+                <div className="text-gray-600">
+                  {c.ville} ({c.departement})
+                </div>
+                <div className="mt-1">
+                  {c.nbVelos} vélos — {c.velosLivres} livrés
+                  {c.velosPlanifies > 0 && (
+                    <> — <span className="text-orange-600">{c.velosPlanifies} planifiés</span></>
+                  )}
+                </div>
+                {reste > 0 && (
+                  <div className="text-xs text-gray-500">{reste} restant{reste > 1 ? "s" : ""} à planifier</div>
+                )}
+                <div className="mt-1">
+                  Docs: {c.docsComplets ? "complets" : "incomplets"}
+                </div>
               </div>
-              <div className="mt-1">
-                {c.nbVelos} vélos — {c.velosLivres} livrés
-              </div>
-              <div className="mt-1">
-                Docs: {c.docsComplets ? "complets" : "incomplets"}
-              </div>
-            </div>
-          </Popup>
-        </CircleMarker>
-      ))}
+            </Popup>
+          </CircleMarker>
+        );
+      })}
     </MapContainer>
   );
 }
