@@ -32,12 +32,16 @@ interface ClientRow {
   signatureOk: boolean;
   inscriptionBicycle: boolean;
   parcelleCadastrale: boolean;
+  effectifMentionne: boolean;
   devisLien?: string | null;
   kbisLien?: string | null;
   attestationLien?: string | null;
   signatureLien?: string | null;
   bicycleLien?: string | null;
   parcelleCadastraleLien?: string | null;
+  kbisDate?: string | null;
+  dateEngagement?: string | null;
+  liasseFiscaleDate?: string | null;
   nbVelosCommandes: number;
   stats: {
     totalVelos: number;

@@ -242,10 +242,10 @@ export default function ClientsPage() {
                   <DocCell ok={c.devisSignee} lien={c.devisLien ?? null} clientId={c.id} docType="devisSignee" onChange={() => refresh("clients")} />
                 </td>
                 <td className="text-center px-4 py-3">
-                  <DocCell ok={c.kbisRecu} lien={c.kbisLien ?? null} clientId={c.id} docType="kbisRecu" onChange={() => refresh("clients")} />
+                  {(() => { const w = kbisWarning(c); return <DocCell ok={c.kbisRecu} lien={c.kbisLien ?? null} clientId={c.id} docType="kbisRecu" onChange={() => refresh("clients")} warning={w.warn} warningTitle={w.title} />; })()}
                 </td>
                 <td className="text-center px-4 py-3">
-                  <DocCell ok={c.attestationRecue} lien={c.attestationLien ?? null} clientId={c.id} docType="attestationRecue" onChange={() => refresh("clients")} />
+                  {(() => { const w = liasseWarning(c); return <DocCell ok={c.attestationRecue} lien={c.attestationLien ?? null} clientId={c.id} docType="attestationRecue" onChange={() => refresh("clients")} warning={w.warn} warningTitle={w.title} />; })()}
                 </td>
                 <td className="text-center px-4 py-3">
                   <LivresDot livres={c.stats.livres} total={c.stats.totalVelos} planifies={c.stats.planifies ?? 0} />
@@ -409,12 +409,16 @@ function DocCell({
   clientId,
   docType,
   onChange,
+  warning,
+  warningTitle,
 }: {
   ok: boolean;
   lien: string | null;
   clientId: string;
   docType: DocType;
   onChange: () => void;
+  warning?: boolean;
+  warningTitle?: string;
 }) {
   const [showUpload, setShowUpload] = useState(false);
   const [showPreview, setShowPreview] = useState(false);
@@ -445,13 +449,17 @@ function DocCell({
     );
   }
 
+  const dotColor = warning
+    ? "bg-orange-400 hover:bg-orange-500"
+    : "bg-green-500 hover:bg-green-600";
+
   return (
     <>
       <button
         type="button"
         onClick={() => setShowPreview(true)}
-        title="Cliquer pour aperçu / télécharger"
-        className="inline-block w-3 h-3 rounded-full bg-green-500 hover:bg-green-600 hover:scale-125 transition-all cursor-pointer"
+        title={warningTitle || "Cliquer pour aperçu / télécharger"}
+        className={`inline-block w-3 h-3 rounded-full ${dotColor} hover:scale-125 transition-all cursor-pointer`}
         aria-label="Voir le document"
       />
       {showPreview && (
@@ -483,6 +491,38 @@ const docLabels: Record<DocType, string> = {
   inscriptionBicycle: "Bicycle",
   parcelleCadastrale: "Parcelle",
 };
+
+function isDateOlderThan(dateStr: string | null | undefined, refDateStr: string | null | undefined, months: number): boolean {
+  if (!dateStr) return true;
+  const docDate = new Date(dateStr + "T00:00:00");
+  const ref = refDateStr ? new Date(refDateStr + "T00:00:00") : new Date();
+  const limit = new Date(ref);
+  limit.setMonth(limit.getMonth() - months);
+  return docDate < limit;
+}
+
+function kbisWarning(c: { kbisRecu: boolean; kbisDate?: string | null; dateEngagement?: string | null }): { warn: boolean; title: string } {
+  if (!c.kbisRecu) return { warn: false, title: "" };
+  if (!c.kbisDate) return { warn: true, title: "Date du KBIS non renseignée" };
+  if (isDateOlderThan(c.kbisDate, c.dateEngagement, 3)) {
+    return { warn: true, title: `KBIS de plus de 3 mois (${c.kbisDate})` };
+  }
+  return { warn: false, title: "" };
+}
+
+function liasseWarning(c: { attestationRecue: boolean; liasseFiscaleDate?: string | null; dateEngagement?: string | null; effectifMentionne: boolean }): { warn: boolean; title: string } {
+  if (!c.attestationRecue) return { warn: false, title: "" };
+  const reasons: string[] = [];
+  if (!c.liasseFiscaleDate) {
+    reasons.push("Date du document non renseignée");
+  } else if (isDateOlderThan(c.liasseFiscaleDate, c.dateEngagement, 12)) {
+    reasons.push(`Document de plus d'1 an (${c.liasseFiscaleDate})`);
+  }
+  if (!c.effectifMentionne) {
+    reasons.push("Nombre de salariés non mentionné");
+  }
+  return { warn: reasons.length > 0, title: reasons.join(" · ") };
+}
 
 function UploadDocModal({
   clientId,

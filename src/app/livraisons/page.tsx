@@ -396,6 +396,7 @@ function StatutPill({ statut }: { statut: Tournee["statutGlobal"] }) {
 
 const MINUTES_PAR_VELO = 8;
 const HEURES_JOURNEE = 8;
+const ENTREPOT = { lat: 48.9417, lng: 2.4614, label: "Entrepôt (Le Blanc-Mesnil)" };
 
 function TourneeModal({
   tournee,
@@ -517,21 +518,19 @@ function TourneeModal({
   const isRetrait = tournee.mode === "retrait";
 
   const segments = useMemo(() => {
-    if (isRetrait) return tournee.livraisons.map(() => ({ distKm: 0, trajetMin: 0 }));
-    const segs: { distKm: number; trajetMin: number }[] = [];
+    if (isRetrait) return tournee.livraisons.map(() => ({ distKm: 0, trajetMin: 0, fromLabel: "" }));
+    const segs: { distKm: number; trajetMin: number; fromLabel: string }[] = [];
     for (let i = 0; i < tournee.livraisons.length; i++) {
-      if (i === 0) {
-        segs.push({ distKm: 0, trajetMin: 0 });
-        continue;
-      }
-      const prev = tournee.livraisons[i - 1].client;
       const curr = tournee.livraisons[i].client;
-      if (prev.lat && prev.lng && curr.lat && curr.lng) {
-        const d = haversineKm(prev.lat, prev.lng, curr.lat, curr.lng);
+      const prevLat = i === 0 ? ENTREPOT.lat : (tournee.livraisons[i - 1].client.lat ?? 0);
+      const prevLng = i === 0 ? ENTREPOT.lng : (tournee.livraisons[i - 1].client.lng ?? 0);
+      const fromLabel = i === 0 ? ENTREPOT.label : "";
+      if (prevLat && prevLng && curr.lat && curr.lng) {
+        const d = haversineKm(prevLat, prevLng, curr.lat, curr.lng);
         const routeKm = d * 1.3;
-        segs.push({ distKm: Math.round(routeKm * 10) / 10, trajetMin: Math.round(routeKm / 0.5) });
+        segs.push({ distKm: Math.round(routeKm * 10) / 10, trajetMin: Math.round(routeKm / 0.5), fromLabel });
       } else {
-        segs.push({ distKm: 0, trajetMin: 0 });
+        segs.push({ distKm: 0, trajetMin: 0, fromLabel });
       }
     }
     return segs;
@@ -539,13 +538,13 @@ function TourneeModal({
 
   const totalTrajetMin = segments.reduce((s, seg) => s + seg.trajetMin, 0);
   const totalMontageMin = tournee.totalVelos * MINUTES_PAR_VELO;
-  const totalJourneeMin = totalTrajetMin + totalMontageMin;
+  const montageAvecEffectif = totalMontageMin / monteurs;
+  const totalJourneeEffectif = montageAvecEffectif + totalTrajetMin;
   const minutesJournee = HEURES_JOURNEE * 60;
   const velosParMonteurJour = Math.floor(minutesJournee / MINUTES_PAR_VELO);
-  const monteursNecessaires = Math.ceil(totalJourneeMin / minutesJournee);
+  const monteursNecessaires = Math.ceil((totalMontageMin + totalTrajetMin) / minutesJournee);
   const velosAvecEffectif = monteurs * velosParMonteurJour;
-  const tempsParMonteur = totalMontageMin / monteurs + totalTrajetMin;
-  const faisableEnUnJour = tempsParMonteur <= minutesJournee;
+  const faisableEnUnJour = totalJourneeEffectif <= minutesJournee;
 
   const fmtDuree = (min: number) => {
     const h = Math.floor(min / 60);
@@ -628,8 +627,8 @@ function TourneeModal({
           </div>
           <div className={`grid gap-2 text-center ${isRetrait ? "grid-cols-1" : "grid-cols-3"}`}>
             <div className="bg-white rounded-lg p-2">
-              <div className="text-lg font-bold text-blue-900">{fmtDuree(totalMontageMin)}</div>
-              <div className="text-[10px] text-blue-600">{isRetrait ? "Préparation + admin" : "Montage + admin"}</div>
+              <div className="text-lg font-bold text-blue-900">{fmtDuree(montageAvecEffectif)}</div>
+              <div className="text-[10px] text-blue-600">{isRetrait ? "Préparation + admin" : "Montage + admin"}{monteurs > 1 ? ` (${monteurs} mont.)` : ""}</div>
             </div>
             {!isRetrait && (
               <>
@@ -638,7 +637,7 @@ function TourneeModal({
                   <div className="text-[10px] text-blue-600">Trajet route</div>
                 </div>
                 <div className="bg-white rounded-lg p-2">
-                  <div className="text-lg font-bold text-blue-900">{fmtDuree(totalJourneeMin)}</div>
+                  <div className="text-lg font-bold text-blue-900">{fmtDuree(totalJourneeEffectif)}</div>
                   <div className="text-[10px] text-blue-600">Total journée</div>
                 </div>
               </>
@@ -661,9 +660,9 @@ function TourneeModal({
 
           <div className={`text-sm font-medium rounded-lg px-3 py-2 ${faisableEnUnJour ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
             {faisableEnUnJour ? (
-              <>Faisable en 1 jour — {fmtDuree(tempsParMonteur)}/monteur · Capacité : {velosAvecEffectif} vélos</>
+              <>Faisable en 1 jour — {fmtDuree(totalJourneeEffectif)} avec {monteurs} monteur{monteurs > 1 ? "s" : ""} · Capacité : {velosAvecEffectif} vélos</>
             ) : (
-              <>Pas faisable en 1 jour — {fmtDuree(tempsParMonteur)}/monteur dépasse {HEURES_JOURNEE}h · Capacité max : {velosAvecEffectif} vélos</>
+              <>Pas faisable en 1 jour — {fmtDuree(totalJourneeEffectif)} dépasse {HEURES_JOURNEE}h · Capacité max : {velosAvecEffectif} vélos</>
             )}
           </div>
         </div>
@@ -709,10 +708,10 @@ function TourneeModal({
         <div className="space-y-2">
           {tournee.livraisons.map((l, i) => (
             <div key={l.id}>
-              {i > 0 && segments[i].distKm > 0 && (
+              {segments[i].distKm > 0 && (
                 <div className="flex items-center gap-2 py-1 px-10 text-[10px] text-gray-400">
                   <div className="border-l-2 border-dashed border-gray-300 h-3" />
-                  <span>↓ {segments[i].distKm} km · ~{segments[i].trajetMin} min</span>
+                  <span>{i === 0 ? `📍 ${ENTREPOT.label} → ` : "↓ "}{segments[i].distKm} km · ~{segments[i].trajetMin} min</span>
                 </div>
               )}
               <div className={`border rounded-lg p-3 flex items-center gap-3 ${selected.has(l.id) ? "bg-blue-50 border-blue-300" : ""}`}>
@@ -830,6 +829,7 @@ function FeuilleDeRoute({
             {tournee.datePrevue && new Date(tournee.datePrevue).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
             {tournee.tourneeId && <span className="ml-2 font-mono text-xs text-gray-400">[{tournee.tourneeId}]</span>}
           </div>
+          <div className="text-xs text-gray-500 mt-1">Départ : {ENTREPOT.label}</div>
           <div className="flex justify-center gap-6 mt-3 text-sm">
             <span><strong>{tournee.livraisons.length}</strong> arrêts</span>
             <span><strong>{tournee.totalVelos}</strong> vélos</span>

@@ -111,7 +111,7 @@ function ensureClientsColumns() {
   if (!sheet) return;
   var lastCol = sheet.getLastColumn();
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  var needed = ["parcelleCadastrale", "parcelleCadastraleLien"];
+  var needed = ["parcelleCadastrale", "parcelleCadastraleLien", "kbisDate", "dateEngagement", "liasseFiscaleDate", "effectifMentionne"];
   for (var k = 0; k < needed.length; k++) {
     if (headers.indexOf(needed[k]) === -1) {
       lastCol++;
@@ -139,9 +139,18 @@ function getClients(params) {
   var clients = rows.map(function(row) {
     var c = {};
     headers.forEach(function(h, i) { c[h] = row[i]; });
-    ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle","parcelleCadastrale"
+    ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle","parcelleCadastrale","effectifMentionne"
     ].forEach(function(f) {
       c[f] = c[f] === true || c[f] === "TRUE";
+    });
+    ["kbisDate","dateEngagement","liasseFiscaleDate"].forEach(function(f) {
+      if (c[f] instanceof Date) {
+        c[f] = Utilities.formatDate(c[f], Session.getScriptTimeZone(), "yyyy-MM-dd");
+      } else if (c[f]) {
+        c[f] = String(c[f]);
+      } else {
+        c[f] = null;
+      }
     });
 
     var clientVelos = velosRows.filter(function(v) {
@@ -198,9 +207,18 @@ function getClient(id) {
 
   if (!client) return { error: "Client non trouvé" };
 
-  ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle","parcelleCadastrale"
+  ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle","parcelleCadastrale","effectifMentionne"
   ].forEach(function(f) {
     client[f] = client[f] === true || client[f] === "TRUE";
+  });
+  ["kbisDate","dateEngagement","liasseFiscaleDate"].forEach(function(f) {
+    if (client[f] instanceof Date) {
+      client[f] = Utilities.formatDate(client[f], Session.getScriptTimeZone(), "yyyy-MM-dd");
+    } else if (client[f]) {
+      client[f] = String(client[f]);
+    } else {
+      client[f] = null;
+    }
   });
 
   var velosSheet = SS.getSheetByName("Velos");

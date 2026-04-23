@@ -46,14 +46,27 @@ interface ClientDetail {
   signatureOk: boolean;
   inscriptionBicycle: boolean;
   parcelleCadastrale: boolean;
+  effectifMentionne: boolean;
   devisLien: string | null;
   kbisLien: string | null;
   attestationLien: string | null;
   signatureLien: string | null;
   bicycleLien: string | null;
   parcelleCadastraleLien: string | null;
+  kbisDate: string | null;
+  dateEngagement: string | null;
+  liasseFiscaleDate: string | null;
   notes: string | null;
   velos: Velo[];
+}
+
+function isDocExpired(dateStr: string | null, refDateStr: string | null, months: number): boolean {
+  if (!dateStr) return false;
+  const docDate = new Date(dateStr + "T00:00:00");
+  const ref = refDateStr ? new Date(refDateStr + "T00:00:00") : new Date();
+  const limit = new Date(ref);
+  limit.setMonth(limit.getMonth() - months);
+  return docDate < limit;
 }
 
 const DOC_CONFIG = [
@@ -220,6 +233,64 @@ function ClientDetailPage() {
             />
           );
         })}
+      </div>
+
+      {/* Dates de validité et effectif */}
+      <div className="bg-white rounded-xl border p-4 mb-8 space-y-3">
+        <h3 className="font-semibold text-sm text-gray-700">Dates de validité</h3>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Date engagement (devis)</label>
+            <input
+              type="date"
+              value={client.dateEngagement || ""}
+              onChange={(e) => updateField("dateEngagement", e.target.value || "")}
+              className="w-full px-2 py-1.5 border rounded-lg text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Date du KBIS</label>
+            <input
+              type="date"
+              value={client.kbisDate || ""}
+              onChange={(e) => updateField("kbisDate", e.target.value || "")}
+              className={`w-full px-2 py-1.5 border rounded-lg text-sm ${
+                client.kbisDate && client.kbisRecu && isDocExpired(client.kbisDate, client.dateEngagement, 3)
+                  ? "border-orange-400 bg-orange-50" : ""
+              }`}
+            />
+            {client.kbisDate && client.kbisRecu && isDocExpired(client.kbisDate, client.dateEngagement, 3) && (
+              <p className="text-[10px] text-orange-600 mt-0.5">KBIS de plus de 3 mois</p>
+            )}
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Date liasse / registre</label>
+            <input
+              type="date"
+              value={client.liasseFiscaleDate || ""}
+              onChange={(e) => updateField("liasseFiscaleDate", e.target.value || "")}
+              className={`w-full px-2 py-1.5 border rounded-lg text-sm ${
+                client.liasseFiscaleDate && client.attestationRecue && isDocExpired(client.liasseFiscaleDate, client.dateEngagement, 12)
+                  ? "border-orange-400 bg-orange-50" : ""
+              }`}
+            />
+            {client.liasseFiscaleDate && client.attestationRecue && isDocExpired(client.liasseFiscaleDate, client.dateEngagement, 12) && (
+              <p className="text-[10px] text-orange-600 mt-0.5">Document de plus d&apos;1 an</p>
+            )}
+          </div>
+          <div className="flex items-end">
+            <label className="flex items-center gap-2 px-2 py-1.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={client.effectifMentionne || false}
+                onChange={(e) => updateField("effectifMentionne", e.target.checked)}
+              />
+              <span className={`text-sm ${!client.effectifMentionne && client.attestationRecue ? "text-orange-600 font-medium" : "text-gray-700"}`}>
+                Effectif mentionné
+              </span>
+            </label>
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-4 mb-8">
