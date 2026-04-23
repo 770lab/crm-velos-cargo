@@ -344,6 +344,7 @@ function modePalette(mode: string | null) {
   if (mode === "gros") return { bg: "bg-indigo-100", border: "border-indigo-300", text: "text-indigo-900" };
   if (mode === "moyen") return { bg: "bg-orange-100", border: "border-orange-300", text: "text-orange-900" };
   if (mode === "camionnette") return { bg: "bg-teal-100", border: "border-teal-300", text: "text-teal-900" };
+  if (mode === "retrait") return { bg: "bg-purple-100", border: "border-purple-300", text: "text-purple-900" };
   return { bg: "bg-gray-100", border: "border-gray-300", text: "text-gray-800" };
 }
 
@@ -351,6 +352,7 @@ const MODE_LABELS: Record<string, string> = {
   gros: "Gros camion (132)",
   moyen: "Moyen (54)",
   camionnette: "Camionnette (20)",
+  retrait: "Retrait client",
 };
 
 function StatutPill({ statut }: { statut: Tournee["statutGlobal"] }) {
@@ -479,7 +481,10 @@ function TourneeModal({
   const palette = modePalette(tournee.mode);
   const [showPrint, setShowPrint] = useState(false);
 
+  const isRetrait = tournee.mode === "retrait";
+
   const segments = useMemo(() => {
+    if (isRetrait) return tournee.livraisons.map(() => ({ distKm: 0, trajetMin: 0 }));
     const segs: { distKm: number; trajetMin: number }[] = [];
     for (let i = 0; i < tournee.livraisons.length; i++) {
       if (i === 0) {
@@ -497,7 +502,7 @@ function TourneeModal({
       }
     }
     return segs;
-  }, [tournee.livraisons]);
+  }, [tournee.livraisons, isRetrait]);
 
   const totalTrajetMin = segments.reduce((s, seg) => s + seg.trajetMin, 0);
   const totalMontageMin = tournee.totalVelos * MINUTES_PAR_VELO;
@@ -533,7 +538,7 @@ function TourneeModal({
           <div>
             <div className={`inline-flex items-center gap-2 ${palette.text}`}>
               <span className="text-lg font-semibold">
-                Tournée {tournee.tourneeId ? <span className="font-mono">{tournee.tourneeId}</span> : "(sans id)"}
+                {isRetrait ? "Retrait client" : "Tournée"} {tournee.tourneeId ? <span className="font-mono">{tournee.tourneeId}</span> : "(sans id)"}
               </span>
             </div>
             <div className="text-sm text-gray-500 mt-1">
@@ -559,21 +564,25 @@ function TourneeModal({
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium text-blue-900">Estimation journée</span>
-            <span className="text-xs text-blue-600">{MINUTES_PAR_VELO} min/vélo · ~30 km/h en ville</span>
+            <span className="text-xs text-blue-600">{MINUTES_PAR_VELO} min/vélo{!isRetrait ? " · ~30 km/h en ville" : ""}</span>
           </div>
-          <div className="grid grid-cols-3 gap-2 text-center">
+          <div className={`grid gap-2 text-center ${isRetrait ? "grid-cols-1" : "grid-cols-3"}`}>
             <div className="bg-white rounded-lg p-2">
               <div className="text-lg font-bold text-blue-900">{fmtDuree(totalMontageMin)}</div>
-              <div className="text-[10px] text-blue-600">Montage + admin</div>
+              <div className="text-[10px] text-blue-600">{isRetrait ? "Préparation + admin" : "Montage + admin"}</div>
             </div>
-            <div className="bg-white rounded-lg p-2">
-              <div className="text-lg font-bold text-blue-900">{fmtDuree(totalTrajetMin)}</div>
-              <div className="text-[10px] text-blue-600">Trajet route</div>
-            </div>
-            <div className="bg-white rounded-lg p-2">
-              <div className="text-lg font-bold text-blue-900">{fmtDuree(totalJourneeMin)}</div>
-              <div className="text-[10px] text-blue-600">Total journée</div>
-            </div>
+            {!isRetrait && (
+              <>
+                <div className="bg-white rounded-lg p-2">
+                  <div className="text-lg font-bold text-blue-900">{fmtDuree(totalTrajetMin)}</div>
+                  <div className="text-[10px] text-blue-600">Trajet route</div>
+                </div>
+                <div className="bg-white rounded-lg p-2">
+                  <div className="text-lg font-bold text-blue-900">{fmtDuree(totalJourneeMin)}</div>
+                  <div className="text-[10px] text-blue-600">Total journée</div>
+                </div>
+              </>
+            )}
           </div>
 
           <div className="flex items-center gap-3 pt-2 border-t border-blue-200">

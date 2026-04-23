@@ -51,7 +51,7 @@ interface TourneeResult {
 export default function CartePage() {
   const { carte: allClients, refresh } = useData();
   const [selected, setSelected] = useState<string | null>(null);
-  const [mode, setMode] = useState<"gros" | "moyen" | "camionnette">("moyen");
+  const [mode, setMode] = useState<"gros" | "moyen" | "camionnette" | "retrait">("moyen");
   const [maxDistance, setMaxDistance] = useState(50);
   const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
   const [codePostal, setCodePostal] = useState("");
@@ -168,9 +168,10 @@ export default function CartePage() {
             </label>
             <div className="flex gap-1">
               {([
-                { key: "gros", label: "Gros", cap: 132 },
-                { key: "moyen", label: "Moyen", cap: 54 },
-                { key: "camionnette", label: "Camionnette", cap: 20 },
+                { key: "gros", label: "Gros", cap: "132 v." },
+                { key: "moyen", label: "Moyen", cap: "54 v." },
+                { key: "camionnette", label: "Camion.", cap: "20 v." },
+                { key: "retrait", label: "Retrait", cap: "client" },
               ] as const).map((opt) => (
                 <button
                   key={opt.key}
@@ -182,7 +183,7 @@ export default function CartePage() {
                   }`}
                 >
                   {opt.label}
-                  <span className="block text-[10px] font-normal opacity-80">{opt.cap} vélos</span>
+                  <span className="block text-[10px] font-normal opacity-80">{opt.cap}</span>
                 </button>
               ))}
             </div>

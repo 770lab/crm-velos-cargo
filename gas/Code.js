@@ -507,14 +507,22 @@ function suggestTournee(clientId, mode, maxDistance) {
   }
   if (!target) return { error: "Client non trouvé" };
 
-  var capacites = { gros: 132, moyen: 54, camionnette: 20 };
+  var capacites = { gros: 132, moyen: 54, camionnette: 20, retrait: 9999 };
   var capacite = capacites[mode] || 54;
   maxDistance = maxDistance || 50;
 
-  // Reste = commandé - livré - déjà planifié (livraisons "planifiee" ou "en_cours")
   var velosTarget = target.nbVelos - target.velosLivres - (target.velosPlanifies || 0);
   if (velosTarget <= 0) {
     return { error: "Aucun vélo à planifier pour ce client (tout livré ou déjà planifié)." };
+  }
+
+  if (mode === "retrait") {
+    var retStops = [{ id: target.id, entreprise: target.entreprise, ville: target.ville, lat: target.lat, lng: target.lng, nbVelos: velosTarget, distance: 0 }];
+    return {
+      mode: "retrait", capacite: velosTarget, nbCamions: 1, velosClient: velosTarget,
+      splits: [{ stops: retStops, totalVelos: velosTarget, capacite: velosTarget, indexCamion: 1, nbCamionsTotal: 1 }],
+      tournee: retStops, totalVelos: velosTarget, clientsProches: []
+    };
   }
 
   var nearby = points
