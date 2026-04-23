@@ -866,10 +866,6 @@ function TourneeModal({
     const segs: { distKm: number; trajetMin: number; fromLabel: string }[] = [];
     for (let i = 0; i < tournee.livraisons.length; i++) {
       const curr = tournee.livraisons[i].client;
-      if (isRetrait && i === 0) {
-        segs.push({ distKm: 0, trajetMin: 0, fromLabel: "" });
-        continue;
-      }
       const prevLat = i === 0 ? ENTREPOT.lat : (tournee.livraisons[i - 1].client.lat ?? 0);
       const prevLng = i === 0 ? ENTREPOT.lng : (tournee.livraisons[i - 1].client.lng ?? 0);
       const fromLabel = i === 0 ? ENTREPOT.label : "";
@@ -882,16 +878,16 @@ function TourneeModal({
       }
     }
     return segs;
-  }, [tournee.livraisons, isRetrait]);
+  }, [tournee.livraisons]);
 
   const retourSegment = useMemo(() => {
-    if (isRetrait || tournee.livraisons.length === 0) return { distKm: 0, trajetMin: 0 };
+    if (tournee.livraisons.length === 0) return { distKm: 0, trajetMin: 0 };
     const last = tournee.livraisons[tournee.livraisons.length - 1].client;
     if (!last.lat || !last.lng) return { distKm: 0, trajetMin: 0 };
     const d = haversineKm(last.lat, last.lng, ENTREPOT.lat, ENTREPOT.lng);
     const routeKm = d * 1.3;
     return { distKm: Math.round(routeKm * 10) / 10, trajetMin: Math.round(routeKm / 0.5) };
-  }, [tournee.livraisons, isRetrait]);
+  }, [tournee.livraisons]);
 
   const totalTrajetMin = segments.reduce((s, seg) => s + seg.trajetMin, 0) + retourSegment.trajetMin;
   const totalMontageMin = tournee.totalVelos * MINUTES_PAR_VELO;
@@ -999,25 +995,25 @@ function TourneeModal({
         <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-sm font-medium text-blue-900">Estimation journée</span>
-            <span className="text-xs text-blue-600">{MINUTES_PAR_VELO} min/vélo{!isRetrait ? " · ~30 km/h en ville" : ""}</span>
+            <span className="text-xs text-blue-600">{MINUTES_PAR_VELO} min/vélo · ~30 km/h en ville</span>
           </div>
-          <div className={`grid gap-2 text-center ${isRetrait ? "grid-cols-1" : "grid-cols-3"}`}>
+          <div className="text-[10px] text-blue-700 flex items-center gap-1">
+            <span>📍</span>
+            <span className="truncate">Départ : {ENTREPOT.label}</span>
+          </div>
+          <div className="grid gap-2 text-center grid-cols-3">
             <div className="bg-white rounded-lg p-2">
               <div className="text-lg font-bold text-blue-900">{fmtDuree(montageAvecEffectif)}</div>
               <div className="text-[10px] text-blue-600">{isRetrait ? "Préparation + admin" : "Montage + admin"}{monteurs > 1 ? ` (${monteurs} mont.)` : ""}</div>
             </div>
-            {!isRetrait && (
-              <>
-                <div className="bg-white rounded-lg p-2">
-                  <div className="text-lg font-bold text-blue-900">{fmtDuree(totalTrajetMin)}</div>
-                  <div className="text-[10px] text-blue-600">Trajet route</div>
-                </div>
-                <div className="bg-white rounded-lg p-2">
-                  <div className="text-lg font-bold text-blue-900">{fmtDuree(totalJourneeEffectif)}</div>
-                  <div className="text-[10px] text-blue-600">Total journée</div>
-                </div>
-              </>
-            )}
+            <div className="bg-white rounded-lg p-2">
+              <div className="text-lg font-bold text-blue-900">{fmtDuree(totalTrajetMin)}</div>
+              <div className="text-[10px] text-blue-600">Trajet route</div>
+            </div>
+            <div className="bg-white rounded-lg p-2">
+              <div className="text-lg font-bold text-blue-900">{fmtDuree(totalJourneeEffectif)}</div>
+              <div className="text-[10px] text-blue-600">Total journée</div>
+            </div>
           </div>
 
           <div className="flex items-center gap-3 pt-2 border-t border-blue-200">
