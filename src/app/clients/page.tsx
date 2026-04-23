@@ -858,10 +858,44 @@ const AI_REASON_LABELS: Record<AiReason, string> = {
   exception: "Exception inattendue",
 };
 
+type GeminiTestResult = {
+  apiKeyPresent: boolean;
+  apiKeyLength: number;
+  model: string;
+  urlObfuscated: string | null;
+  source: string | null;
+  fileName: string | null;
+  fileId: string | null;
+  mimeType: string | null;
+  httpCode: number | null;
+  body: string | null;
+  label: string | null;
+  error: string | null;
+};
+
 function SyncDriveModal({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(false);
   const [report, setReport] = useState<SyncReport | null>(null);
   const [ai, setAi] = useState<ClassifyProgress | null>(null);
+  const [geminiTest, setGeminiTest] = useState<GeminiTestResult | null>(null);
+  const [geminiTesting, setGeminiTesting] = useState(false);
+
+  const runGeminiTest = async () => {
+    setGeminiTesting(true);
+    setGeminiTest(null);
+    try {
+      const data = await gasGet("testGemini", {});
+      setGeminiTest(data);
+    } catch (err) {
+      setGeminiTest({
+        apiKeyPresent: false, apiKeyLength: 0, model: "", urlObfuscated: null,
+        source: null, fileName: null, fileId: null, mimeType: null,
+        httpCode: null, body: null, label: null,
+        error: err instanceof Error ? err.message : "Erreur inconnue",
+      });
+    }
+    setGeminiTesting(false);
+  };
 
   const run = async () => {
     setLoading(true);
@@ -920,12 +954,48 @@ function SyncDriveModal({ onClose }: { onClose: () => void }) {
         </p>
 
         {!report && !loading && (
-          <button
-            onClick={run}
-            className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
-          >
-            Lancer la synchronisation
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={run}
+              className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
+            >
+              Lancer la synchronisation
+            </button>
+            <button
+              onClick={runGeminiTest}
+              disabled={geminiTesting}
+              className="px-4 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm disabled:opacity-50"
+            >
+              {geminiTesting ? "Test en cours…" : "Tester Gemini"}
+            </button>
+          </div>
+        )}
+
+        {geminiTest && (
+          <div className={`mt-3 border rounded-lg p-3 text-xs font-mono whitespace-pre-wrap break-all ${
+            geminiTest.httpCode === 200
+              ? "bg-emerald-50 border-emerald-200 text-emerald-900"
+              : "bg-red-50 border-red-200 text-red-900"
+          }`}>
+            <div className="font-sans font-semibold mb-2 text-sm">
+              {geminiTest.httpCode === 200 ? "✓ Gemini OK" : `✗ Gemini KO (HTTP ${geminiTest.httpCode ?? "—"})`}
+            </div>
+            <div>apiKey : {geminiTest.apiKeyPresent ? `présente (${geminiTest.apiKeyLength} chars)` : "ABSENTE"}</div>
+            <div>model : {geminiTest.model}</div>
+            {geminiTest.urlObfuscated && <div>url : {geminiTest.urlObfuscated}</div>}
+            {geminiTest.source && <div>source fichier : {geminiTest.source}</div>}
+            {geminiTest.fileName && <div>fichier : {geminiTest.fileName}</div>}
+            {geminiTest.mimeType && <div>mimeType : {geminiTest.mimeType}</div>}
+            <div>httpCode : {geminiTest.httpCode ?? "—"}</div>
+            {geminiTest.label && <div>label IA : {geminiTest.label}</div>}
+            {geminiTest.error && <div className="mt-2">error : {geminiTest.error}</div>}
+            {geminiTest.body && (
+              <details className="mt-2">
+                <summary className="cursor-pointer font-sans">body réponse</summary>
+                <pre className="mt-1">{geminiTest.body}</pre>
+              </details>
+            )}
+          </div>
         )}
 
         {loading && (

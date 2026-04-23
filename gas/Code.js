@@ -84,6 +84,9 @@ function handleRequest(e) {
       case "classifyStatus":
         result = classifyStatus();
         break;
+      case "testGemini":
+        result = testGemini();
+        break;
       default:
         result = { error: "Action inconnue: " + action };
     }
@@ -1435,4 +1438,124 @@ function debugDriveFolder() {
   Logger.log("Fichiers à la racine : " + fileCount);
 
   Logger.log("Utilisateur exécuteur : " + Session.getActiveUser().getEmail());
+}
+
+// Appelé depuis le bouton "Tester Gemini" du modal de sync côté front.
+// Fait UN seul appel Gemini sur un fichier PDF/image (pris dans AI_QUEUE si dispo,
+// sinon le premier PDF/image trouvé dans DOSSIER VELO) et renvoie le détail brut
+// (httpCode, body tronqué, fileName, mimeType, url obfusquée) pour diagnostic.
+function testGemini() {
+  var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
+  var diag = {
+    apiKeyPresent: !!apiKey,
+    apiKeyLength: apiKey ? apiKey.length : 0,
+    model: "gemini-2.5-flash",
+    urlObfuscated: null,
+    source: null,
+    fileName: null,
+    fileId: null,
+    mimeType: null,
+    httpCode: null,
+    body: null,
+    label: null,
+    error: null
+  };
+
+  if (!apiKey) {
+    diag.error = "GEMINI_API_KEY absente dans Script Properties";
+    return diag;
+  }
+
+  var file = null;
+  var raw = PropertiesService.getScriptProperties().getProperty("AI_QUEUE");
+  var queue = raw ? JSON.parse(raw) : [];
+  for (var q = 0; q < queue.length && !file; q++) {
+    try {
+      var f = DriveApp.getFileById(queue[q].fileId);
+      var m = f.getMimeType();
+      if (m === "application/pdf" || m.indexOf("image/") === 0) {
+        file = f;
+        diag.source = "AI_QUEUE";
+      }
+    } catch (err) { /* fichier inaccessible, on continue */ }
+  }
+
+  if (!file) {
+    try {
+      var root = DriveApp.getFolderById(DRIVE_DOSSIER_VELO_ID);
+      var subs = root.getFolders();
+      while (subs.hasNext() && !file) {
+        var sub = subs.next();
+        var fs = sub.getFiles();
+        while (fs.hasNext()) {
+          var ff = fs.next();
+          var mm = ff.getMimeType();
+          if (mm === "application/pdf" || mm.indexOf("image/") === 0) {
+            file = ff;
+            diag.source = "DriveScan:" + sub.getName();
+            break;
+          }
+        }
+      }
+    } catch (err2) {
+      diag.error = "Drive inaccessible : " + err2.message;
+      return diag;
+    }
+  }
+
+  if (!file) {
+    diag.error = "Aucun PDF/image trouvé (AI_QUEUE vide et DOSSIER VELO sans PDF/image)";
+    return diag;
+  }
+
+  diag.fileName = file.getName();
+  diag.fileId = file.getId();
+  diag.mimeType = file.getMimeType();
+
+  var blob;
+  try { blob = file.getBlob(); } catch (errB) {
+    diag.error = "getBlob a planté : " + errB.message;
+    return diag;
+  }
+  if (blob.getBytes().length > 18 * 1024 * 1024) {
+    diag.error = "Fichier > 18 Mo (on skip pour éviter de fausser le diag)";
+    return diag;
+  }
+
+  var base64 = Utilities.base64Encode(blob.getBytes());
+  var payload = {
+    contents: [{
+      parts: [
+        { text: "Classe ce document en un mot parmi : DEVIS, KBIS, ATTESTATION_URSSAF, BICYCLE, AUTRE." },
+        { inline_data: { mime_type: diag.mimeType, data: base64 } }
+      ]
+    }],
+    generationConfig: { temperature: 0, maxOutputTokens: 10 }
+  };
+
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
+  diag.urlObfuscated = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=***" + apiKey.slice(-4);
+
+  try {
+    var res = UrlFetchApp.fetch(url, {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+    diag.httpCode = res.getResponseCode();
+    var body = res.getContentText();
+    diag.body = body.length > 1000 ? body.slice(0, 1000) + "..." : body;
+    if (diag.httpCode === 200) {
+      try {
+        var data = JSON.parse(body);
+        var text = (((data.candidates || [])[0] || {}).content || {}).parts;
+        if (text && text[0]) diag.label = String(text[0].text || "").trim();
+      } catch (errP) { /* parse OK non critique pour le diag */ }
+    }
+  } catch (errF) {
+    diag.error = "UrlFetchApp a planté : " + errF.message;
+  }
+
+  return diag;
 }
