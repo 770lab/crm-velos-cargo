@@ -345,6 +345,8 @@ function TourneeCard({
   compact?: boolean;
 }) {
   const palette = modePalette(tournee.mode);
+  const libre = capaciteRestante(tournee.mode, tournee.totalVelos);
+  const peutAjouter = libre >= SEUIL_2EME_TOURNEE && tournee.statutGlobal !== "livree" && tournee.statutGlobal !== "annulee";
   return (
     <button
       onClick={onClick}
@@ -359,6 +361,11 @@ function TourneeCard({
         </span>
         <span className="font-mono opacity-70 whitespace-nowrap">{tournee.totalVelos}v</span>
       </div>
+      {peutAjouter && (
+        <div className="mt-0.5 inline-flex items-center gap-1 px-1 rounded bg-green-100 text-green-800 text-[9px] font-semibold leading-tight">
+          +{libre}v libre · 2e tournée possible
+        </div>
+      )}
       {!compact && (
         <div className="text-[10px] opacity-75 truncate">
           {tournee.tourneeId ? `🚛 ${tournee.tourneeId}` : ""}
@@ -383,6 +390,14 @@ const MODE_LABELS: Record<string, string> = {
   camionnette: "Camionnette (20)",
   retrait: "Retrait client",
 };
+
+const CAPACITES: Record<string, number> = { gros: 132, moyen: 54, camionnette: 20 };
+const SEUIL_2EME_TOURNEE = 10;
+
+function capaciteRestante(mode: string | null, totalVelos: number): number {
+  const cap = mode ? CAPACITES[mode] ?? 0 : 0;
+  return cap > 0 ? Math.max(0, cap - totalVelos) : 0;
+}
 
 function StatutPill({ statut }: { statut: Tournee["statutGlobal"] }) {
   const map: Record<string, string> = {
@@ -694,6 +709,16 @@ function TourneeModal({
                 </button>
               )}
               <span>· {tournee.totalVelos} vélos · {tournee.livraisons.length} arrêts</span>
+              {(() => {
+                const libre = capaciteRestante(tournee.mode, tournee.totalVelos);
+                if (libre < SEUIL_2EME_TOURNEE || tournee.statutGlobal === "livree" || tournee.statutGlobal === "annulee") return null;
+                const cap = tournee.mode ? CAPACITES[tournee.mode] : 0;
+                return (
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-green-100 text-green-800 text-[10px] font-semibold">
+                    +{libre}v libre sur {cap} · 2e tournée possible
+                  </span>
+                );
+              })()}
             </div>
           </div>
           <div className="flex items-center gap-2">
