@@ -497,20 +497,27 @@ function TourneeCard({
     >
       <div className="flex items-start justify-between gap-1">
         <div className="min-w-0 flex-1">
-          {tournee.livraisons.map((l, i) => (
-            <div key={l.id} className="font-medium truncate leading-tight">
-              {compact ? (
-                <>
-                  <span className="opacity-60">{i + 1}.</span> {l.client.entreprise}
-                </>
-              ) : (
-                <>
-                  <span className="opacity-60">{i + 1}.</span> {l.client.entreprise}
-                  <span className="opacity-60 font-mono"> · {l._count.velos}v</span>
-                </>
-              )}
-            </div>
-          ))}
+          {tournee.livraisons.map((l, i) => {
+            const fullText = compact
+              ? `${i + 1}. ${l.client.entreprise}`
+              : `${i + 1}. ${l.client.entreprise} · ${l._count.velos}v`;
+            const len = fullText.length;
+            const sizeClass = len <= 14 ? "text-[11px]" : len <= 20 ? "text-[10px]" : len <= 28 ? "text-[9px]" : "text-[8px]";
+            return (
+              <div key={l.id} className={`font-medium leading-tight break-words ${sizeClass}`} title={l.client.entreprise}>
+                {compact ? (
+                  <>
+                    <span className="opacity-60">{i + 1}.</span> {l.client.entreprise}
+                  </>
+                ) : (
+                  <>
+                    <span className="opacity-60">{i + 1}.</span> {l.client.entreprise}
+                    <span className="opacity-60 font-mono"> · {l._count.velos}v</span>
+                  </>
+                )}
+              </div>
+            );
+          })}
         </div>
         <span className="font-mono opacity-70 whitespace-nowrap">{tournee.totalVelos}v/{tournee.livraisons.length}A</span>
       </div>
