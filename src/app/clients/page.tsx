@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Link from "next/link";
-import { gasGet, gasPost } from "@/lib/gas";
+import { gasGet, gasPost, gasUpload } from "@/lib/gas";
 import { useData } from "@/lib/data-context";
 import MultiDepSelect from "@/components/multi-dep-select";
 
@@ -157,7 +157,9 @@ export default function ClientsPage() {
         busy={bulkBusy}
         onApply={async (data) => {
           setBulkBusy(true);
-          await gasPost("bulkUpdateClients", { clientIds: [...selectedIds], data });
+          // gasUpload (POST body) au lieu de gasPost (URL params) car l'URL
+          // dépasse vite la limite avec >100 IDs.
+          await gasUpload("bulkUpdateClients", { clientIds: [...selectedIds], data });
           await refresh("clients");
           setBulkBusy(false);
         }}

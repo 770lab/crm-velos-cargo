@@ -222,6 +222,8 @@ function updateClient(id, data) {
 
 // Met à jour le même set de champs sur plusieurs clients d'un coup.
 // data : { devisSignee: true, kbisRecu: false, ... } — booléens écrits comme "TRUE"/"FALSE".
+// Optimisé : setValues batch par colonne (1 call par colonne) au lieu de N×M setValue,
+// pour éviter les timeouts sur de gros lots (>100 clients).
 function bulkUpdateClients(clientIds, data) {
   if (!clientIds || clientIds.length === 0) return { error: "Aucun client sélectionné" };
   if (!data || Object.keys(data).length === 0) return { error: "Aucun champ à mettre à jour" };
@@ -229,28 +231,39 @@ function bulkUpdateClients(clientIds, data) {
   var sheet = SS.getSheetByName("Clients");
   var all = sheet.getDataRange().getValues();
   var headers = all[0];
-  var idxByCol = {};
+  var nbRows = all.length - 1;
+  if (nbRows <= 0) return { ok: true, updated: 0 };
+
+  var keysWithCol = [];
   var keys = Object.keys(data);
   for (var k = 0; k < keys.length; k++) {
     var col = headers.indexOf(keys[k]);
     if (col === -1) continue;
-    idxByCol[keys[k]] = col;
+    var v = data[keys[k]];
+    if (typeof v === "boolean") v = v ? "TRUE" : "FALSE";
+    keysWithCol.push({ key: keys[k], col: col, val: v });
   }
-  if (Object.keys(idxByCol).length === 0) return { error: "Aucune colonne valide" };
+  if (keysWithCol.length === 0) return { error: "Aucune colonne valide" };
 
   var ids = {};
   for (var x = 0; x < clientIds.length; x++) ids[clientIds[x]] = true;
 
+  // Pour chaque colonne ciblée, on lit toute la colonne, on patch les lignes, on réécrit en bloc.
   var updated = 0;
-  for (var i = 1; i < all.length; i++) {
-    if (!ids[all[i][0]]) continue;
-    for (var key2 in idxByCol) {
-      var c = idxByCol[key2];
-      var val2 = data[key2];
-      if (typeof val2 === "boolean") val2 = val2 ? "TRUE" : "FALSE";
-      sheet.getRange(i + 1, c + 1).setValue(val2);
+  for (var p = 0; p < keysWithCol.length; p++) {
+    var c2 = keysWithCol[p].col;
+    var val = keysWithCol[p].val;
+    var rng = sheet.getRange(2, c2 + 1, nbRows, 1);
+    var values = rng.getValues();
+    var changedThisCol = 0;
+    for (var i = 0; i < nbRows; i++) {
+      if (ids[all[i + 1][0]]) {
+        values[i][0] = val;
+        changedThisCol++;
+      }
     }
-    updated++;
+    if (changedThisCol > 0) rng.setValues(values);
+    if (p === 0) updated = changedThisCol;
   }
   SpreadsheetApp.flush();
   return { ok: true, updated: updated };
