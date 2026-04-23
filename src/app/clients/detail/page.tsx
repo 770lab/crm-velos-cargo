@@ -45,52 +45,82 @@ interface ClientDetail {
   attestationRecue: boolean;
   signatureOk: boolean;
   inscriptionBicycle: boolean;
+  attestationHonneur: boolean;
+  declarationHonneur: boolean;
+  cadreContribution: boolean;
+  factureRecue: boolean;
+  parcelleCadastrale: boolean;
+  etatRecapitulatif: boolean;
+  rapportConformite: boolean;
+  docTechnique: boolean;
+  conformiteCE: boolean;
   devisLien: string | null;
   kbisLien: string | null;
   attestationLien: string | null;
   signatureLien: string | null;
   bicycleLien: string | null;
+  attestationHonneurLien: string | null;
+  declarationHonneurLien: string | null;
+  cadreContributionLien: string | null;
+  factureRecueLien: string | null;
+  parcelleCadastraleLien: string | null;
+  etatRecapitulatifLien: string | null;
+  rapportConformiteLien: string | null;
+  docTechniqueLien: string | null;
+  conformiteCELien: string | null;
   notes: string | null;
   velos: Velo[];
 }
 
-const DOC_CONFIG = [
+interface DocGroup {
+  title: string;
+  color: string;
+  docs: { field: string; lienField: string; label: string; description: string; source: string }[];
+}
+
+const DOC_GROUPS: DocGroup[] = [
   {
-    field: "devisSignee",
-    lienField: "devisLien",
-    label: "Devis signée",
-    description: "Le client signe le devis. Maria reçoit le document dans son Drive.",
-    step: 1,
+    title: "Documents CRM externe (Korp / Axdis)",
+    color: "text-blue-700",
+    docs: [
+      { field: "devisSignee", lienField: "devisLien", label: "Devis signé", description: "Devis complété et signé par le client.", source: "Korp" },
+      { field: "cadreContribution", lienField: "cadreContributionLien", label: "Cadre de contribution", description: "Cadre de contribution complété.", source: "Korp" },
+      { field: "factureRecue", lienField: "factureRecueLien", label: "Facture", description: "Facture de l'opération remise au client final.", source: "Korp" },
+      { field: "signatureOk", lienField: "signatureLien", label: "Signature contrat", description: "Contrat signé électroniquement via la plateforme.", source: "Axdis" },
+      { field: "etatRecapitulatif", lienField: "etatRecapitulatifLien", label: "État récapitulatif", description: "État récapitulatif mentionnant les caractéristiques des vélos achetés ou loués.", source: "Korp" },
+    ],
   },
   {
-    field: "kbisRecu",
-    lienField: "kbisLien",
-    label: "Kbis",
-    description: "Extrait Kbis de moins de 3 mois. Le client l'envoie par email ou Drive.",
-    step: 2,
+    title: "Documents client",
+    color: "text-purple-700",
+    docs: [
+      { field: "kbisRecu", lienField: "kbisLien", label: "Extrait K / Kbis / RNE", description: "Extrait Kbis, RNE, JOAFE ou équivalent de moins de 3 mois.", source: "Client" },
+      { field: "attestationRecue", lienField: "attestationLien", label: "Liasse fiscale / Effectifs", description: "Liasse fiscale du dernier exercice, registre du personnel ou attestation d'effectifs (ETP).", source: "Client" },
+      { field: "parcelleCadastrale", lienField: "parcelleCadastraleLien", label: "Parcelle cadastrale / Géoportail", description: "Parcelle cadastrale ou Géoportail du lieu de livraison au client final.", source: "Client" },
+    ],
   },
   {
-    field: "attestationRecue",
-    lienField: "attestationLien",
-    label: "Attestation salariés",
-    description: "Attestation du nombre de salariés. Document fourni par le client.",
-    step: 3,
+    title: "Documents terrain (Installateur)",
+    color: "text-green-700",
+    docs: [
+      { field: "attestationHonneur", lienField: "attestationHonneurLien", label: "Attestation sur l'honneur", description: "Attestation sur l'honneur de fin de chantier, complétée et signée.", source: "Terrain" },
+      { field: "declarationHonneur", lienField: "declarationHonneurLien", label: "Déclaration sur l'honneur", description: "Déclaration sur l'honneur prouvant la livraison des vélos-cargos, signée.", source: "Terrain" },
+      { field: "inscriptionBicycle", lienField: "bicycleLien", label: "Certificat Bicycle / FNUCI", description: "Certificat d'identification du vélo au nom de l'acquéreur (plateforme Bicycle).", source: "FNUCI" },
+    ],
   },
   {
-    field: "signatureOk",
-    lienField: "signatureLien",
-    label: "Signature électronique",
-    description: "Contrat signé électroniquement via la plateforme de signature.",
-    step: 4,
-  },
-  {
-    field: "inscriptionBicycle",
-    lienField: "bicycleLien",
-    label: "Inscription Bicycle",
-    description: "Le client s'inscrit sur Bicycle pour les certificats d'homologation.",
-    step: 5,
+    title: "Documents fournisseur / fabricant",
+    color: "text-amber-700",
+    docs: [
+      { field: "rapportConformite", lienField: "rapportConformiteLien", label: "Rapport de conformité", description: "Rapport de tests démontrant que le poids total maximal ≥ 175 kg (charge + conducteur).", source: "Fournisseur" },
+      { field: "docTechnique", lienField: "docTechniqueLien", label: "Documentation technique", description: "Photo du modèle, batterie, cadre, dimensions, roues, freins, poids autorisé.", source: "Fournisseur" },
+      { field: "conformiteCE", lienField: "conformiteCELien", label: "Conformité CE", description: "Déclaration CE du fabricant (EN 15194, NF R30050, DIN 79010).", source: "Fabricant" },
+    ],
   },
 ];
+
+const ALL_DOC_FIELDS = DOC_GROUPS.flatMap((g) => g.docs.map((d) => d.field));
+const TOTAL_DOCS = ALL_DOC_FIELDS.length;
 
 function ClientDetailPage() {
   const searchParams = useSearchParams();
@@ -135,7 +165,7 @@ function ClientDetailPage() {
   const velosLivres = client.velos.filter((v) => v.photoQrPrise).length;
   const certRecus = client.velos.filter((v) => v.certificatRecu).length;
   const facturables = client.velos.filter((v) => v.facturable).length;
-  const docsValides = [client.devisSignee, client.kbisRecu, client.attestationRecue, client.signatureOk, client.inscriptionBicycle].filter(Boolean).length;
+  const docsValides = ALL_DOC_FIELDS.filter((f) => client[f as keyof ClientDetail] as boolean).length;
 
   const toggleAll = () => {
     if (selected.size === client.velos.length) {
@@ -185,55 +215,63 @@ function ClientDetailPage() {
       <div className="bg-white rounded-xl border p-4 mb-6">
         <div className="flex items-center justify-between mb-2">
           <h2 className="font-semibold text-gray-900">Dossier administratif</h2>
-          <span className="text-sm font-medium text-gray-600">{docsValides}/5 validés</span>
+          <span className="text-sm font-medium text-gray-600">{docsValides}/{TOTAL_DOCS} validés</span>
         </div>
         <div className="w-full bg-gray-200 rounded-full h-2">
           <div
             className="bg-green-500 h-2 rounded-full transition-all"
-            style={{ width: `${(docsValides / 5) * 100}%` }}
+            style={{ width: `${(docsValides / TOTAL_DOCS) * 100}%` }}
           />
         </div>
         <p className="text-xs text-gray-400 mt-2">
-          Chaque document arrive dans le Google Drive partagé. Collez le lien Drive ci-dessous puis cliquez &quot;Valider&quot; pour confirmer la réception.
+          Checklist dossier CEE complet (process TRA-EQ-131). Uploadez ou collez le lien Drive de chaque document.
         </p>
       </div>
 
-      {/* Document cards */}
-      <div className="space-y-3 mb-8">
-        {DOC_CONFIG.map((doc) => {
-          const isValid = client[doc.field as keyof ClientDetail] as boolean;
-          const lien = (client[doc.lienField as keyof ClientDetail] as string) || "";
-          return (
-            <DocCardExpanded
-              key={doc.field}
-              step={doc.step}
-              label={doc.label}
-              description={doc.description}
-              validated={isValid}
-              lien={lien}
-              saving={saving === doc.field || saving === doc.lienField}
-              onToggle={() => updateField(doc.field, !isValid)}
-              onSaveLien={(url) => updateField(doc.lienField, url)}
-              onUpload={async (file) => {
-                setSaving(doc.field);
-                const reader = new FileReader();
-                const base64 = await new Promise<string>((resolve) => {
-                  reader.onload = () => resolve((reader.result as string).split(",")[1]);
-                  reader.readAsDataURL(file);
-                });
-                await gasUpload("uploadDoc", {
-                  clientId: id,
-                  docType: doc.field,
-                  fileName: file.name,
-                  fileData: base64,
-                  mimeType: file.type,
-                });
-                load();
-                setSaving(null);
-              }}
-            />
-          );
-        })}
+      {/* Document cards grouped by category */}
+      <div className="space-y-6 mb-8">
+        {DOC_GROUPS.map((group) => (
+          <div key={group.title}>
+            <h3 className={`text-sm font-semibold mb-2 ${group.color}`}>{group.title}</h3>
+            <div className="space-y-3">
+              {group.docs.map((doc, idx) => {
+                const isValid = client[doc.field as keyof ClientDetail] as boolean;
+                const lien = (client[doc.lienField as keyof ClientDetail] as string) || "";
+                return (
+                  <DocCardExpanded
+                    key={doc.field}
+                    step={idx + 1}
+                    label={doc.label}
+                    description={doc.description}
+                    source={doc.source}
+                    validated={isValid}
+                    lien={lien}
+                    saving={saving === doc.field || saving === doc.lienField}
+                    onToggle={() => updateField(doc.field, !isValid)}
+                    onSaveLien={(url) => updateField(doc.lienField, url)}
+                    onUpload={async (file) => {
+                      setSaving(doc.field);
+                      const reader = new FileReader();
+                      const base64 = await new Promise<string>((resolve) => {
+                        reader.onload = () => resolve((reader.result as string).split(",")[1]);
+                        reader.readAsDataURL(file);
+                      });
+                      await gasUpload("uploadDoc", {
+                        clientId: id,
+                        docType: doc.field,
+                        fileName: file.name,
+                        fileData: base64,
+                        mimeType: file.type,
+                      });
+                      load();
+                      setSaving(null);
+                    }}
+                  />
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </div>
 
       <div className="grid grid-cols-3 gap-4 mb-8">
@@ -360,6 +398,7 @@ function DocCardExpanded({
   step,
   label,
   description,
+  source,
   validated,
   lien,
   saving,
@@ -370,6 +409,7 @@ function DocCardExpanded({
   step: number;
   label: string;
   description: string;
+  source?: string;
   validated: boolean;
   lien: string;
   saving: boolean;
@@ -418,7 +458,10 @@ function DocCardExpanded({
               {saving ? "..." : validated ? "Validé — annuler ?" : "Valider"}
             </button>
           </div>
-          <p className="text-xs text-gray-500 mt-1">{description}</p>
+          <p className="text-xs text-gray-500 mt-1">
+            {description}
+            {source && <span className="ml-1 text-gray-400">— {source}</span>}
+          </p>
 
           {/* Upload ou lien Drive */}
           <div className="mt-3">

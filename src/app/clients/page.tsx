@@ -6,6 +6,12 @@ import { gasGet, gasPost, gasUpload } from "@/lib/gas";
 import { useData } from "@/lib/data-context";
 import MultiDepSelect from "@/components/multi-dep-select";
 
+const ALL_DOC_FIELDS: DocType[] = [
+  "devisSignee", "kbisRecu", "attestationRecue", "signatureOk", "inscriptionBicycle",
+  "attestationHonneur", "declarationHonneur", "cadreContribution", "factureRecue",
+  "parcelleCadastrale", "etatRecapitulatif", "rapportConformite", "docTechnique", "conformiteCE",
+];
+
 export default function ClientsPage() {
   const { clients: allClients, loading, refresh } = useData();
   const [search, setSearch] = useState("");
@@ -32,11 +38,11 @@ export default function ClientsPage() {
     }
     if (filter === "docs_manquants") {
       result = result.filter(
-        (c) => !c.devisSignee || !c.kbisRecu || !c.attestationRecue || !c.signatureOk || !c.inscriptionBicycle
+        (c) => ALL_DOC_FIELDS.some((f) => !c[f as keyof typeof c])
       );
     } else if (filter === "prets") {
       result = result.filter(
-        (c) => c.devisSignee && c.kbisRecu && c.attestationRecue && c.signatureOk && c.inscriptionBicycle
+        (c) => ALL_DOC_FIELDS.every((f) => c[f as keyof typeof c])
       );
     }
     return result;
@@ -62,11 +68,12 @@ export default function ClientsPage() {
   });
 
   const exportCSV = () => {
-    const headers = ["Entreprise", "Contact", "Email", "Téléphone", "Ville", "Département", "SIREN", "Apporteur", "Vélos commandés", "Vélos livrés", "Certificats", "Facturables", "Facturés", "Devis", "Kbis", "Attestation", "Signature", "Bicycle"];
+    const docHeaders = ALL_DOC_FIELDS.map((f) => docLabels[f]);
+    const headers = ["Entreprise", "Contact", "Email", "Téléphone", "Ville", "Département", "SIREN", "Apporteur", "Vélos commandés", "Vélos livrés", "Certificats", "Facturables", "Facturés", ...docHeaders];
     const rows = filteredClients.map((c) => [
       c.entreprise, c.contact || "", c.email || "", c.telephone || "", c.ville || "", c.departement || "", c.siren || "", c.apporteur || "",
       c.stats.totalVelos, c.stats.livres, c.stats.certificats, c.stats.facturables, c.stats.factures,
-      c.devisSignee ? "Oui" : "Non", c.kbisRecu ? "Oui" : "Non", c.attestationRecue ? "Oui" : "Non", c.signatureOk ? "Oui" : "Non", c.inscriptionBicycle ? "Oui" : "Non",
+      ...ALL_DOC_FIELDS.map((f) => (c[f as keyof typeof c] ? "Oui" : "Non")),
     ]);
     const csv = [headers, ...rows].map((r) => r.map((v) => `"${String(v).replace(/"/g, '""')}"`).join(";")).join("\n");
     const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
@@ -192,7 +199,7 @@ export default function ClientsPage() {
               <th className="text-center px-4 py-3 font-medium text-gray-600">Dossier</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Devis</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Kbis</th>
-              <th className="text-center px-4 py-3 font-medium text-gray-600">Attest.</th>
+              <th className="text-center px-4 py-3 font-medium text-gray-600">Liasse</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Livrés</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Bicycle</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Facturables</th>
@@ -231,7 +238,7 @@ export default function ClientsPage() {
                   <VelosCell livres={c.stats.livres} total={c.stats.totalVelos} planifies={c.stats.planifies ?? 0} />
                 </td>
                 <td className="px-4 py-3">
-                  <DocProgress devis={c.devisSignee} kbis={c.kbisRecu} attestation={c.attestationRecue} signature={c.signatureOk} bicycle={c.inscriptionBicycle} />
+                  <DocProgress client={c as unknown as Record<string, unknown>} />
                 </td>
                 <td className="text-center px-4 py-3">
                   <DocCell ok={c.devisSignee} lien={c.devisLien ?? null} clientId={c.id} docType="devisSignee" onChange={() => refresh("clients")} />
@@ -275,16 +282,17 @@ export default function ClientsPage() {
   );
 }
 
-function DocProgress({ devis, kbis, attestation, signature, bicycle }: { devis: boolean; kbis: boolean; attestation: boolean; signature: boolean; bicycle: boolean }) {
-  const count = [devis, kbis, attestation, signature, bicycle].filter(Boolean).length;
-  const pct = (count / 5) * 100;
-  const color = count === 5 ? "bg-green-500" : count >= 3 ? "bg-blue-500" : count >= 1 ? "bg-amber-500" : "bg-gray-300";
+function DocProgress({ client }: { client: Record<string, unknown> }) {
+  const count = ALL_DOC_FIELDS.filter((f) => (client as Record<string, unknown>)[f]).length;
+  const total = ALL_DOC_FIELDS.length;
+  const pct = (count / total) * 100;
+  const color = count === total ? "bg-green-500" : count >= 10 ? "bg-blue-500" : count >= 5 ? "bg-amber-500" : count >= 1 ? "bg-orange-400" : "bg-gray-300";
   return (
     <div className="flex items-center gap-2 min-w-[80px]">
       <div className="flex-1 bg-gray-200 rounded-full h-2">
         <div className={`${color} h-2 rounded-full transition-all`} style={{ width: `${pct}%` }} />
       </div>
-      <span className="text-xs text-gray-500 whitespace-nowrap">{count}/5</span>
+      <span className="text-xs text-gray-500 whitespace-nowrap">{count}/{total}</span>
     </div>
   );
 }
@@ -301,12 +309,7 @@ function BulkActionBar({
   busy: boolean;
 }) {
   if (selectedIds.size === 0) return null;
-  const FIELDS: { key: string; label: string }[] = [
-    { key: "devisSignee", label: "Devis" },
-    { key: "kbisRecu", label: "Kbis" },
-    { key: "attestationRecue", label: "Attest." },
-    { key: "inscriptionBicycle", label: "Bicycle" },
-  ];
+  const FIELDS: { key: string; label: string }[] = ALL_DOC_FIELDS.map((f) => ({ key: f, label: docLabels[f] }));
   const setAll = (val: boolean) => {
     const data: Record<string, boolean> = {};
     FIELDS.forEach((f) => (data[f.key] = val));
@@ -400,7 +403,9 @@ function extractDriveId(url: string): string | null {
   return null;
 }
 
-type DocType = "devisSignee" | "kbisRecu" | "attestationRecue" | "inscriptionBicycle" | "signatureOk";
+type DocType = "devisSignee" | "kbisRecu" | "attestationRecue" | "inscriptionBicycle" | "signatureOk"
+  | "attestationHonneur" | "declarationHonneur" | "cadreContribution" | "factureRecue"
+  | "parcelleCadastrale" | "etatRecapitulatif" | "rapportConformite" | "docTechnique" | "conformiteCE";
 
 function DocCell({
   ok,
@@ -477,9 +482,18 @@ function DocCell({
 const docLabels: Record<DocType, string> = {
   devisSignee: "Devis",
   kbisRecu: "Kbis",
-  attestationRecue: "Attestation URSSAF",
+  attestationRecue: "Liasse fiscale",
   inscriptionBicycle: "Bicycle",
   signatureOk: "Signature",
+  attestationHonneur: "Att. honneur",
+  declarationHonneur: "Décl. honneur",
+  cadreContribution: "Cadre contrib.",
+  factureRecue: "Facture",
+  parcelleCadastrale: "Parcelle",
+  etatRecapitulatif: "État récap.",
+  rapportConformite: "Rapp. conformité",
+  docTechnique: "Doc technique",
+  conformiteCE: "Conformité CE",
 };
 
 function UploadDocModal({
@@ -945,7 +959,7 @@ function SyncDriveModal({ onClose }: { onClose: () => void }) {
         <h2 className="text-lg font-semibold mb-2">Synchroniser les documents Drive</h2>
         <p className="text-sm text-gray-500 mb-4">
           Scanne les sous-dossiers de <strong>DOSSIER VELO</strong>, associe chaque fichier au client
-          correspondant et coche automatiquement les cases (Devis, Kbis, Attestation, Bicycle).
+          correspondant et coche automatiquement les 14 cases du dossier CEE.
           Les fichiers non reconnus par leur nom sont classés par IA.
         </p>
 

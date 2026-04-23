@@ -118,11 +118,12 @@ function getClients(params) {
   var clients = rows.map(function(row) {
     var c = {};
     headers.forEach(function(h, i) { c[h] = row[i]; });
-    c.devisSignee = c.devisSignee === true || c.devisSignee === "TRUE";
-    c.kbisRecu = c.kbisRecu === true || c.kbisRecu === "TRUE";
-    c.attestationRecue = c.attestationRecue === true || c.attestationRecue === "TRUE";
-    c.signatureOk = c.signatureOk === true || c.signatureOk === "TRUE";
-    c.inscriptionBicycle = c.inscriptionBicycle === true || c.inscriptionBicycle === "TRUE";
+    ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle",
+     "attestationHonneur","declarationHonneur","cadreContribution","factureRecue",
+     "parcelleCadastrale","etatRecapitulatif","rapportConformite","docTechnique","conformiteCE"
+    ].forEach(function(f) {
+      c[f] = c[f] === true || c[f] === "TRUE";
+    });
 
     var clientVelos = velosRows.filter(function(v) {
       return v[velosHeaders.indexOf("clientId")] === c.id;
@@ -178,7 +179,10 @@ function getClient(id) {
 
   if (!client) return { error: "Client non trouvé" };
 
-  ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle"].forEach(function(f) {
+  ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle",
+   "attestationHonneur","declarationHonneur","cadreContribution","factureRecue",
+   "parcelleCadastrale","etatRecapitulatif","rapportConformite","docTechnique","conformiteCE"
+  ].forEach(function(f) {
     client[f] = client[f] === true || client[f] === "TRUE";
   });
 
@@ -323,10 +327,11 @@ function getStats() {
   var velosFacturables = vRows.filter(function(v) { return isBool(v[vHeaders.indexOf("facturable")]); }).length;
   var velosFactures = vRows.filter(function(v) { return isBool(v[vHeaders.indexOf("facture")]); }).length;
 
+  var docFields = ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle",
+    "attestationHonneur","declarationHonneur","cadreContribution","factureRecue",
+    "parcelleCadastrale","etatRecapitulatif","rapportConformite","docTechnique","conformiteCE"];
   var clientsDocsComplets = cRows.filter(function(c) {
-    return isBool(c[cHeaders.indexOf("kbisRecu")]) &&
-           isBool(c[cHeaders.indexOf("attestationRecue")]) &&
-           isBool(c[cHeaders.indexOf("signatureOk")]);
+    return docFields.every(function(f) { return isBool(c[cHeaders.indexOf(f)]); });
   }).length;
 
   var progression = totalVelos > 0 ? Math.round((velosLivres / totalVelos) * 100) : 0;
@@ -885,9 +890,18 @@ function uploadDoc(body) {
   var docLabels = {
     devisSignee: "Devis",
     kbisRecu: "Kbis",
-    attestationRecue: "Attestation",
+    attestationRecue: "Liasse fiscale",
     signatureOk: "Signature",
-    inscriptionBicycle: "Bicycle"
+    inscriptionBicycle: "Bicycle",
+    attestationHonneur: "Attestation honneur",
+    declarationHonneur: "Declaration honneur",
+    cadreContribution: "Cadre contribution",
+    factureRecue: "Facture",
+    parcelleCadastrale: "Parcelle cadastrale",
+    etatRecapitulatif: "Etat recapitulatif",
+    rapportConformite: "Rapport conformite",
+    docTechnique: "Doc technique",
+    conformiteCE: "Conformite CE"
   };
   var docLabel = docLabels[docType] || docType;
   var ext = fileName.split(".").pop() || "pdf";
@@ -905,7 +919,16 @@ function uploadDoc(body) {
     kbisRecu: "kbisLien",
     attestationRecue: "attestationLien",
     signatureOk: "signatureLien",
-    inscriptionBicycle: "bicycleLien"
+    inscriptionBicycle: "bicycleLien",
+    attestationHonneur: "attestationHonneurLien",
+    declarationHonneur: "declarationHonneurLien",
+    cadreContribution: "cadreContributionLien",
+    factureRecue: "factureRecueLien",
+    parcelleCadastrale: "parcelleCadastraleLien",
+    etatRecapitulatif: "etatRecapitulatifLien",
+    rapportConformite: "rapportConformiteLien",
+    docTechnique: "docTechniqueLien",
+    conformiteCE: "conformiteCELien"
   };
 
   var lienField = lienFields[docType];
@@ -924,12 +947,21 @@ function uploadDoc(body) {
 var DRIVE_DOSSIER_VELO_ID = "1cAycg2vUSZbcj6FqJnpmB_hHYCgCBmSR";
 
 var DOC_TYPE_TO_FIELDS = {
-  DEVIS:             { flag: "devisSignee",        link: "devisLien" },
-  KBIS:              { flag: "kbisRecu",           link: "kbisLien" },
-  ATTESTATION_URSSAF:{ flag: "attestationRecue",   link: "attestationLien" },
-  DSN:               { flag: "attestationRecue",   link: "attestationLien" },
-  BICYCLE:           { flag: "inscriptionBicycle", link: "bicycleLien" },
-  SIGNATURE:         { flag: "signatureOk",        link: "signatureLien" }
+  DEVIS:              { flag: "devisSignee",        link: "devisLien" },
+  KBIS:               { flag: "kbisRecu",           link: "kbisLien" },
+  ATTESTATION_URSSAF: { flag: "attestationRecue",   link: "attestationLien" },
+  DSN:                { flag: "attestationRecue",   link: "attestationLien" },
+  BICYCLE:            { flag: "inscriptionBicycle", link: "bicycleLien" },
+  SIGNATURE:          { flag: "signatureOk",        link: "signatureLien" },
+  ATTESTATION_HONNEUR:{ flag: "attestationHonneur", link: "attestationHonneurLien" },
+  DECLARATION_HONNEUR:{ flag: "declarationHonneur", link: "declarationHonneurLien" },
+  CADRE_CONTRIBUTION: { flag: "cadreContribution",  link: "cadreContributionLien" },
+  FACTURE:            { flag: "factureRecue",        link: "factureRecueLien" },
+  PARCELLE:           { flag: "parcelleCadastrale",  link: "parcelleCadastraleLien" },
+  ETAT_RECAPITULATIF: { flag: "etatRecapitulatif",   link: "etatRecapitulatifLien" },
+  RAPPORT_CONFORMITE: { flag: "rapportConformite",   link: "rapportConformiteLien" },
+  DOC_TECHNIQUE:      { flag: "docTechnique",        link: "docTechniqueLien" },
+  CONFORMITE_CE:      { flag: "conformiteCE",        link: "conformiteCELien" }
 };
 
 function normalizeName(s) {
@@ -949,12 +981,44 @@ function detectDocTypeByName(fileName) {
   if (/\bDSN\b/.test(n) || /\bDNS\b/.test(n) || /^SALARIES\b/.test(n)) return "DSN";
   if (/\bATT(ESTATION)?\b.*\bURSSAF\b/.test(n) || /^URSSAF\b/.test(n)) return "ATTESTATION_URSSAF";
   if (/\bBICYCLE\b/.test(n)) return "BICYCLE";
+  if (/\bATT(ESTATION)?\s+(SUR\s+L\s*)?HONNEUR\b/.test(n)) return "ATTESTATION_HONNEUR";
+  if (/\bDECLARATION\s+(SUR\s+L\s*)?HONNEUR\b/.test(n)) return "DECLARATION_HONNEUR";
+  if (/\bCADRE\s+(DE\s+)?CONTRIBUTION\b/.test(n)) return "CADRE_CONTRIBUTION";
+  if (/\bFACTURE\b/.test(n)) return "FACTURE";
+  if (/\bPARCELLE\b/.test(n) || /\bCADASTR/.test(n) || /\bGEOPORTAIL\b/.test(n)) return "PARCELLE";
+  if (/\bETAT\s+RECAPITULATIF\b/.test(n) || /\bRECAPITULATIF\b/.test(n)) return "ETAT_RECAPITULATIF";
+  if (/\bRAPPORT\s+(DE\s+)?CONFORMITE\b/.test(n) || /\bTEST\s+(DE\s+)?CONFORMITE\b/.test(n)) return "RAPPORT_CONFORMITE";
+  if (/\bDOC(UMENTATION)?\s+TECHNIQUE\b/.test(n) || /\bFICHE\s+TECHNIQUE\b/.test(n)) return "DOC_TECHNIQUE";
+  if (/\bCONFORMITE\s+CE\b/.test(n) || /\bEN\s*15194\b/.test(n) || /\bDECLARATION\s+(DE\s+)?CONFORMITE\b/.test(n)) return "CONFORMITE_CE";
   if (/\bSIGN(ATURE|E)\b/.test(n)) return "SIGNATURE";
   return null;
 }
 
-// Renvoie { label, reason } pour permettre à classifyBatch de tracer pourquoi un fichier
-// n'est pas classé. reason ∈ { ok, noKey, unsupportedMime, tooBig, httpError, labelOther, exception }.
+function buildClassifyPrompt() {
+  return "Tu classes un document administratif français d'une entreprise dans le cadre d'un dossier CEE vélos cargo. " +
+    "Réponds UNIQUEMENT par un seul label parmi : DEVIS, KBIS, ATTESTATION_URSSAF, DSN, BICYCLE, SIGNATURE, " +
+    "ATTESTATION_HONNEUR, DECLARATION_HONNEUR, CADRE_CONTRIBUTION, FACTURE, PARCELLE, ETAT_RECAPITULATIF, " +
+    "RAPPORT_CONFORMITE, DOC_TECHNIQUE, CONFORMITE_CE, AUTRE. " +
+    "Règles : " +
+    "- DEVIS = un devis commercial (émis ou signé). " +
+    "- KBIS = tout justificatif officiel d'immatriculation : extrait Kbis, RCS, K (EI), avis SIRENE, fiche INSEE, extrait D1, certificat d'immatriculation. " +
+    "- ATTESTATION_URSSAF = attestation de vigilance URSSAF ou paiement cotisations. " +
+    "- DSN = Déclaration Sociale Nominative (effectif salariés), liasse fiscale, registre du personnel. " +
+    "- BICYCLE = document d'inscription à la plateforme Bicycle ou certificat d'identification vélo. " +
+    "- SIGNATURE = contrat signé électroniquement. " +
+    "- ATTESTATION_HONNEUR = attestation sur l'honneur de fin de chantier signée. " +
+    "- DECLARATION_HONNEUR = déclaration sur l'honneur prouvant la livraison. " +
+    "- CADRE_CONTRIBUTION = cadre de contribution complété. " +
+    "- FACTURE = facture de l'opération. " +
+    "- PARCELLE = parcelle cadastrale ou document Géoportail du lieu de livraison. " +
+    "- ETAT_RECAPITULATIF = état récapitulatif des vélos achetés ou loués. " +
+    "- RAPPORT_CONFORMITE = rapport de tests de conformité (poids ≥ 175 kg). " +
+    "- DOC_TECHNIQUE = documentation technique du vélo-cargo (photo modèle, batterie, dimensions). " +
+    "- CONFORMITE_CE = déclaration de conformité CE du fabricant (EN 15194, NF R30050). " +
+    "- AUTRE = tout le reste. " +
+    "Aucun autre texte dans ta réponse.";
+}
+
 function classifyWithGemini(file) {
   var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
   if (!apiKey) return { label: null, reason: "noKey" };
@@ -980,17 +1044,7 @@ function classifyWithGemini(file) {
   }
 
   var base64 = Utilities.base64Encode(blob.getBytes());
-  var prompt = "Tu classes un document administratif français d'une entreprise. " +
-    "Réponds UNIQUEMENT par un seul label parmi : DEVIS, KBIS, ATTESTATION_URSSAF, DSN, BICYCLE, SIGNATURE, AUTRE. " +
-    "Règles : " +
-    "- DEVIS = un devis commercial (émis ou signé). " +
-    "- KBIS = tout justificatif officiel d'immatriculation de l'entreprise : extrait Kbis, extrait RCS, extrait K (EI), avis de situation SIRENE (insee.fr), fiche INSEE, extrait D1 du répertoire des métiers, certificat d'immatriculation. En résumé, tout document officiel attestant que l'entreprise existe légalement (personne morale ou micro-entrepreneur). " +
-    "- ATTESTATION_URSSAF = attestation de vigilance URSSAF ou de paiement cotisations. " +
-    "- DSN = Déclaration Sociale Nominative (effectif salariés). " +
-    "- BICYCLE = document d'inscription à la plateforme Bicycle. " +
-    "- SIGNATURE = attestation sur l'honneur ou document de signature isolé. " +
-    "- AUTRE = tout le reste. " +
-    "Aucun autre texte dans ta réponse.";
+  var prompt = buildClassifyPrompt();
 
   var payload = {
     contents: [{
@@ -1049,17 +1103,7 @@ function debugClassifyFile(fileId) {
   var bytes = blob.getBytes();
   Logger.log("Fichier : " + file.getName() + " | mime=" + mimeType + " | size=" + bytes.length);
   var base64 = Utilities.base64Encode(bytes);
-  var prompt = "Tu classes un document administratif français d'une entreprise. " +
-    "Réponds UNIQUEMENT par un seul label parmi : DEVIS, KBIS, ATTESTATION_URSSAF, DSN, BICYCLE, SIGNATURE, AUTRE. " +
-    "Règles : " +
-    "- DEVIS = un devis commercial (émis ou signé). " +
-    "- KBIS = tout justificatif officiel d'immatriculation de l'entreprise : extrait Kbis, extrait RCS, extrait K (EI), avis de situation SIRENE (insee.fr), fiche INSEE, extrait D1 du répertoire des métiers, certificat d'immatriculation. En résumé, tout document officiel attestant que l'entreprise existe légalement (personne morale ou micro-entrepreneur). " +
-    "- ATTESTATION_URSSAF = attestation de vigilance URSSAF ou de paiement cotisations. " +
-    "- DSN = Déclaration Sociale Nominative (effectif salariés). " +
-    "- BICYCLE = document d'inscription à la plateforme Bicycle. " +
-    "- SIGNATURE = attestation sur l'honneur ou document de signature isolé. " +
-    "- AUTRE = tout le reste. " +
-    "Aucun autre texte dans ta réponse.";
+  var prompt = buildClassifyPrompt();
   Logger.log("Prompt actif : " + prompt.slice(0, 300) + "...");
   var payload = {
     contents: [{ parts: [ { text: prompt }, { inline_data: { mime_type: mimeType, data: base64 } } ] }],
