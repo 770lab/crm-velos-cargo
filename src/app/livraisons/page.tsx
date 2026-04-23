@@ -585,7 +585,7 @@ function StatutPill({ statut }: { statut: Tournee["statutGlobal"] }) {
 const MINUTES_PAR_VELO = 8;
 const HEURES_JOURNEE = 8;
 const SEUIL_SPLIT_MIN = 90;
-const ENTREPOT = { lat: 48.9417, lng: 2.4614, label: "Entrepôt (Le Blanc-Mesnil)" };
+const ENTREPOT = { lat: 48.9545398, lng: 2.4557494, label: "AXDIS PRO – 2 Rue des Frères Lumière, 93150 Le Blanc-Mesnil" };
 
 interface DeployStep {
   stopIndex: number;
