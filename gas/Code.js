@@ -984,7 +984,7 @@ function classifyWithGemini(file) {
     "Réponds UNIQUEMENT par un seul label parmi : DEVIS, KBIS, ATTESTATION_URSSAF, DSN, BICYCLE, SIGNATURE, AUTRE. " +
     "Règles : " +
     "- DEVIS = un devis commercial (émis ou signé). " +
-    "- KBIS = extrait Kbis ou extrait d'immatriculation RCS. " +
+    "- KBIS = tout justificatif officiel d'immatriculation de l'entreprise : extrait Kbis, extrait RCS, extrait K (EI), avis de situation SIRENE (insee.fr), fiche INSEE, extrait D1 du répertoire des métiers, certificat d'immatriculation. En résumé, tout document officiel attestant que l'entreprise existe légalement (personne morale ou micro-entrepreneur). " +
     "- ATTESTATION_URSSAF = attestation de vigilance URSSAF ou de paiement cotisations. " +
     "- DSN = Déclaration Sociale Nominative (effectif salariés). " +
     "- BICYCLE = document d'inscription à la plateforme Bicycle. " +
@@ -1003,28 +1003,39 @@ function classifyWithGemini(file) {
   };
 
   var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
-  try {
-    var res = UrlFetchApp.fetch(url, {
-      method: "post",
-      contentType: "application/json",
-      payload: JSON.stringify(payload),
-      muteHttpExceptions: true
-    });
-    var code = res.getResponseCode();
-    if (code !== 200) {
-      Logger.log("classifyWithGemini : HTTP " + code + " sur " + file.getName() + " : " + res.getContentText().slice(0, 200));
-      return { label: null, reason: "httpError", httpCode: code };
+  // Retry avec backoff exponentiel sur 503 (model overloaded côté Google) et 429
+  // (rate limit bursty malgré Tier 1). 3 tentatives max : t+0, t+2s, t+5s.
+  var retryDelays = [0, 2000, 5000];
+  var lastCode = null;
+  var lastBody = "";
+  for (var attempt = 0; attempt < retryDelays.length; attempt++) {
+    if (retryDelays[attempt] > 0) Utilities.sleep(retryDelays[attempt]);
+    try {
+      var res = UrlFetchApp.fetch(url, {
+        method: "post",
+        contentType: "application/json",
+        payload: JSON.stringify(payload),
+        muteHttpExceptions: true
+      });
+      lastCode = res.getResponseCode();
+      if (lastCode === 200) {
+        var data = JSON.parse(res.getContentText());
+        var text = (((data.candidates || [])[0] || {}).content || {}).parts;
+        if (!text || !text[0]) return { label: null, reason: "labelOther", rawLabel: "" };
+        var label = String(text[0].text || "").trim().toUpperCase().replace(/[^A-Z_]/g, "");
+        if (DOC_TYPE_TO_FIELDS[label]) return { label: label, reason: "ok" };
+        return { label: null, reason: "labelOther", rawLabel: label };
+      }
+      lastBody = res.getContentText();
+      // Retry uniquement sur codes transitoires Google
+      if (lastCode !== 503 && lastCode !== 429 && lastCode !== 500) break;
+    } catch (err) {
+      Logger.log("classifyWithGemini : exception sur " + file.getName() + " : " + err.message);
+      return { label: null, reason: "exception" };
     }
-    var data = JSON.parse(res.getContentText());
-    var text = (((data.candidates || [])[0] || {}).content || {}).parts;
-    if (!text || !text[0]) return { label: null, reason: "labelOther", rawLabel: "" };
-    var label = String(text[0].text || "").trim().toUpperCase().replace(/[^A-Z_]/g, "");
-    if (DOC_TYPE_TO_FIELDS[label]) return { label: label, reason: "ok" };
-    return { label: null, reason: "labelOther", rawLabel: label };
-  } catch (err) {
-    Logger.log("classifyWithGemini : exception sur " + file.getName() + " : " + err.message);
-    return { label: null, reason: "exception" };
   }
+  Logger.log("classifyWithGemini : HTTP " + lastCode + " (après retry) sur " + file.getName() + " : " + lastBody.slice(0, 200));
+  return { label: null, reason: "httpError", httpCode: lastCode };
 }
 
 // Cherche le client correspondant à un dossier Drive.
