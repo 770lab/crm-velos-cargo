@@ -358,9 +358,12 @@ function DayStaffingSummary({ tournees }: { tournees: Tournee[] }) {
   const active = tournees.filter((t) => t.statutGlobal !== "annulee" && t.statutGlobal !== "livree");
   if (active.length === 0) return null;
 
+  const retraits = active.filter((t) => t.mode === "retrait");
+  const internes = active.filter((t) => t.mode !== "retrait");
+
   type Groupe = { mode: string; tournees: Tournee[]; totalMin: number; totalVelos: number; capacite: number };
   const byMode = new Map<string, Groupe>();
-  for (const t of active) {
+  for (const t of internes) {
     const key = t.mode || "autre";
     if (!byMode.has(key)) {
       byMode.set(key, {
@@ -381,11 +384,16 @@ function DayStaffingSummary({ tournees }: { tournees: Tournee[] }) {
   const nbEquipes = groupes.length;
   const nbMonteurs = nbEquipes * MONTEURS_PAR_EQUIPE;
 
+  const retraitTotalVelos = retraits.reduce((s, t) => s + t.totalVelos, 0);
+  const retraitClientsCount = retraits.reduce((s, t) => s + t.livraisons.length, 0);
+
   return (
     <div className="mt-2 pt-2 border-t border-gray-200 space-y-1.5 text-[10px] leading-tight">
-      <div className="font-semibold text-gray-700">
-        {nbEquipes} équipe{nbEquipes > 1 ? "s" : ""} · {nbMonteurs} monteurs
-      </div>
+      {groupes.length > 0 && (
+        <div className="font-semibold text-gray-700">
+          {nbEquipes} équipe{nbEquipes > 1 ? "s" : ""} · {nbMonteurs} monteurs
+        </div>
+      )}
       {groupes.map((g, idx) => {
         const label = MODE_SHORT_LABELS[g.mode] || g.mode;
         const reste8h = JOURNEE_MIN - g.totalMin;
@@ -426,6 +434,38 @@ function DayStaffingSummary({ tournees }: { tournees: Tournee[] }) {
           </div>
         );
       })}
+      {retraits.length > 0 && (() => {
+        const montageTotal = retraitTotalVelos * MINUTES_PAR_VELO;
+        const dureeAvec2 = montageTotal / MONTEURS_PAR_EQUIPE;
+        const monteursReco = Math.max(MONTEURS_PAR_EQUIPE, Math.ceil(montageTotal / JOURNEE_MIN));
+        const tropAvec2 = dureeAvec2 > JOURNEE_MIN;
+        return (
+          <div className="text-purple-700 space-y-0.5 pt-1 border-t border-purple-200/50">
+            <div className="font-semibold">
+              Retrait entrepôt · {retraitClientsCount} client{retraitClientsCount > 1 ? "s" : ""} · {retraitTotalVelos}v
+            </div>
+            <ul className="pl-2 space-y-0.5 text-purple-700/80">
+              {retraits.map((t) => (
+                <li key={t.tourneeId || t.livraisons[0].id} className="truncate">
+                  · {t.livraisons[0]?.client.entreprise}
+                  {t.livraisons.length > 1 ? ` +${t.livraisons.length - 1}` : ""}
+                  <span className="opacity-60"> ({t.totalVelos}v)</span>
+                </li>
+              ))}
+            </ul>
+            {tropAvec2 ? (
+              <div className="text-red-700 font-medium">
+                ⚠ {formatDureeShort(montageTotal)} de montage → prévoir {monteursReco} monteurs + 1 chef admin
+              </div>
+            ) : (
+              <div>
+                Prévoir {MONTEURS_PAR_EQUIPE} monteurs (~{formatDureeShort(dureeAvec2)}) + 1 chef admin
+              </div>
+            )}
+            <div className="opacity-70 italic">hors timing tournées internes</div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
