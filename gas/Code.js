@@ -87,6 +87,9 @@ function handleRequest(e) {
       case "testGemini":
         result = testGemini();
         break;
+      case "fetchParcelle":
+        result = fetchParcelle(e.parameter.id);
+        break;
       default:
         result = { error: "Action inconnue: " + action };
     }
@@ -1552,4 +1555,84 @@ function testGemini() {
   }
 
   return diag;
+}
+
+// ---- PARCELLE CADASTRALE AUTO ----
+
+function fetchParcelle(clientId) {
+  if (!clientId) return { error: "ID client manquant" };
+
+  var sheet = SS.getSheetByName("Clients");
+  var all = sheet.getDataRange().getValues();
+  var headers = all[0];
+  var clientRow = null;
+  var clientRowIdx = -1;
+  for (var i = 1; i < all.length; i++) {
+    if (all[i][0] === clientId) {
+      clientRow = all[i];
+      clientRowIdx = i;
+      break;
+    }
+  }
+  if (!clientRow) return { error: "Client non trouvé" };
+
+  var adresse = clientRow[headers.indexOf("adresse")] || "";
+  var codePostal = clientRow[headers.indexOf("codePostal")] || "";
+  var ville = clientRow[headers.indexOf("ville")] || "";
+
+  var q = [adresse, codePostal, ville].filter(Boolean).join(" ");
+  if (!q.trim()) return { error: "Adresse client vide — renseignez l'adresse, le code postal et la ville." };
+
+  // 1) Géocodage via api-adresse.data.gouv.fr
+  var geoUrl = "https://api-adresse.data.gouv.fr/search/?q=" + encodeURIComponent(q) + "&limit=1";
+  var geoRes = UrlFetchApp.fetch(geoUrl, { muteHttpExceptions: true });
+  if (geoRes.getResponseCode() !== 200) return { error: "Erreur géocodage : HTTP " + geoRes.getResponseCode() };
+
+  var geoData = JSON.parse(geoRes.getContentText());
+  if (!geoData.features || geoData.features.length === 0) return { error: "Adresse introuvable sur api-adresse.data.gouv.fr" };
+
+  var coords = geoData.features[0].geometry.coordinates;
+  var lng = coords[0];
+  var lat = coords[1];
+
+  // 2) Requête cadastre via apicarto.ign.fr
+  var cadastreUrl = "https://apicarto.ign.fr/api/cadastre/parcelle?geom=" +
+    encodeURIComponent('{"type":"Point","coordinates":[' + lng + ',' + lat + ']}') +
+    "&_limit=1";
+  var cadRes = UrlFetchApp.fetch(cadastreUrl, { muteHttpExceptions: true });
+  if (cadRes.getResponseCode() !== 200) return { error: "Erreur API cadastre : HTTP " + cadRes.getResponseCode() };
+
+  var cadData = JSON.parse(cadRes.getContentText());
+  if (!cadData.features || cadData.features.length === 0) return { error: "Aucune parcelle trouvée pour ces coordonnées." };
+
+  var props = cadData.features[0].properties;
+  var codeCommune = props.code_com || props.commune || "";
+  var section = props.section || "";
+  var numero = props.numero || "";
+  var contenance = props.contenance || "";
+  var codeArr = props.code_arr || codeCommune;
+
+  var refParcelle = codeCommune + " " + section + " " + numero;
+
+  // 3) Lien Géoportail centré sur la parcelle
+  var geoPortailUrl = "https://www.geoportail.gouv.fr/carte?c=" + lng + "," + lat + "&z=18&l0=CADASTRALPARCELS.PARCELLAIRE_EXPRESS::GEOPORTAIL:OGC:WMTS(1)";
+
+  // 4) Mise à jour du client dans la feuille
+  var colFlag = headers.indexOf("parcelleCadastrale");
+  var colLien = headers.indexOf("parcelleCadastraleLien");
+  if (colFlag > -1) sheet.getRange(clientRowIdx + 1, colFlag + 1).setValue("TRUE");
+  if (colLien > -1) sheet.getRange(clientRowIdx + 1, colLien + 1).setValue(geoPortailUrl);
+  SpreadsheetApp.flush();
+
+  return {
+    ok: true,
+    parcelle: refParcelle,
+    section: section,
+    numero: numero,
+    commune: codeCommune,
+    contenance: contenance ? Number(contenance) : null,
+    lat: lat,
+    lng: lng,
+    geoportailUrl: geoPortailUrl
+  };
 }

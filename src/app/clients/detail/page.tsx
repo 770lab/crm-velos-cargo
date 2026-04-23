@@ -206,6 +206,17 @@ function ClientDetailPage() {
                 load();
                 setSaving(null);
               }}
+              onAutoFetch={doc.field === "parcelleCadastrale" ? async () => {
+                setSaving(doc.field);
+                const res = await gasGet("fetchParcelle", { id });
+                if (res.error) {
+                  alert("Erreur : " + res.error);
+                } else {
+                  alert("Parcelle trouvée : " + res.parcelle + (res.contenance ? " (" + res.contenance + " m²)" : ""));
+                }
+                load();
+                setSaving(null);
+              } : undefined}
             />
           );
         })}
@@ -342,6 +353,7 @@ function DocCardExpanded({
   onToggle,
   onSaveLien,
   onUpload,
+  onAutoFetch,
 }: {
   step: number;
   label: string;
@@ -353,6 +365,7 @@ function DocCardExpanded({
   onToggle: () => void;
   onSaveLien: (url: string) => void;
   onUpload: (file: File) => void;
+  onAutoFetch?: () => void;
 }) {
   const [editLien, setEditLien] = useState(lien);
   const [editing, setEditing] = useState(false);
@@ -399,6 +412,20 @@ function DocCardExpanded({
             {description}
             {source && <span className="ml-1 text-gray-400">— {source}</span>}
           </p>
+
+          {/* Auto-fetch (parcelle cadastrale) */}
+          {onAutoFetch && !validated && (
+            <button
+              onClick={onAutoFetch}
+              disabled={saving}
+              className="mt-2 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-amber-700 bg-amber-50 hover:bg-amber-100 rounded-lg transition-colors disabled:opacity-50"
+            >
+              <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+              </svg>
+              {saving ? "Recherche en cours..." : "Récupérer automatiquement via cadastre.gouv.fr"}
+            </button>
+          )}
 
           {/* Upload ou lien Drive */}
           <div className="mt-3">
