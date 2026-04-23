@@ -495,11 +495,23 @@ function TourneeCard({
         compact ? "px-1.5 py-1 text-[11px]" : "px-2 py-1.5 text-xs"
       } hover:opacity-90 transition-opacity`}
     >
-      <div className="flex items-center justify-between gap-1">
-        <span className="font-medium truncate">
-          {tournee.livraisons[0]?.client.entreprise}
-          {tournee.livraisons.length > 1 && ` +${tournee.livraisons.length - 1}`}
-        </span>
+      <div className="flex items-start justify-between gap-1">
+        <div className="min-w-0 flex-1">
+          {tournee.livraisons.map((l, i) => (
+            <div key={l.id} className="font-medium truncate leading-tight">
+              {compact ? (
+                <>
+                  <span className="opacity-60">{i + 1}.</span> {l.client.entreprise}
+                </>
+              ) : (
+                <>
+                  <span className="opacity-60">{i + 1}.</span> {l.client.entreprise}
+                  <span className="opacity-60 font-mono"> · {l._count.velos}v</span>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
         <span className="font-mono opacity-70 whitespace-nowrap">{tournee.totalVelos}v/{tournee.livraisons.length}A</span>
       </div>
       {peutAjouter && (
