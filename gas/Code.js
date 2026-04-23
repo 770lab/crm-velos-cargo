@@ -999,7 +999,7 @@ function classifyWithGemini(file) {
         { inline_data: { mime_type: mimeType, data: base64 } }
       ]
     }],
-    generationConfig: { temperature: 0, maxOutputTokens: 10 }
+    generationConfig: { temperature: 0, maxOutputTokens: 20, thinkingConfig: { thinkingBudget: 0 } }
   };
 
   var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
@@ -1036,6 +1036,58 @@ function classifyWithGemini(file) {
   }
   Logger.log("classifyWithGemini : HTTP " + lastCode + " (après retry) sur " + file.getName() + " : " + lastBody.slice(0, 200));
   return { label: null, reason: "httpError", httpCode: lastCode };
+}
+
+// A lancer depuis l'editeur Apps Script pour diagnostiquer pourquoi un fichier
+// bascule en AUTRE. Donne fileId (recuperable via l'URL Drive) et lit les logs.
+function debugClassifyFile(fileId) {
+  var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
+  if (!apiKey) { Logger.log("Pas de cle GEMINI_API_KEY"); return; }
+  var file = DriveApp.getFileById(fileId);
+  var mimeType = file.getMimeType();
+  var blob = file.getBlob();
+  var bytes = blob.getBytes();
+  Logger.log("Fichier : " + file.getName() + " | mime=" + mimeType + " | size=" + bytes.length);
+  var base64 = Utilities.base64Encode(bytes);
+  var prompt = "Tu classes un document administratif français d'une entreprise. " +
+    "Réponds UNIQUEMENT par un seul label parmi : DEVIS, KBIS, ATTESTATION_URSSAF, DSN, BICYCLE, SIGNATURE, AUTRE. " +
+    "Règles : " +
+    "- DEVIS = un devis commercial (émis ou signé). " +
+    "- KBIS = tout justificatif officiel d'immatriculation de l'entreprise : extrait Kbis, extrait RCS, extrait K (EI), avis de situation SIRENE (insee.fr), fiche INSEE, extrait D1 du répertoire des métiers, certificat d'immatriculation. En résumé, tout document officiel attestant que l'entreprise existe légalement (personne morale ou micro-entrepreneur). " +
+    "- ATTESTATION_URSSAF = attestation de vigilance URSSAF ou de paiement cotisations. " +
+    "- DSN = Déclaration Sociale Nominative (effectif salariés). " +
+    "- BICYCLE = document d'inscription à la plateforme Bicycle. " +
+    "- SIGNATURE = attestation sur l'honneur ou document de signature isolé. " +
+    "- AUTRE = tout le reste. " +
+    "Aucun autre texte dans ta réponse.";
+  Logger.log("Prompt actif : " + prompt.slice(0, 300) + "...");
+  var payload = {
+    contents: [{ parts: [ { text: prompt }, { inline_data: { mime_type: mimeType, data: base64 } } ] }],
+    generationConfig: { temperature: 0, maxOutputTokens: 20, thinkingConfig: { thinkingBudget: 0 } }
+  };
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
+  var delays = [0, 3000, 7000, 15000, 30000];
+  for (var i = 0; i < delays.length; i++) {
+    if (delays[i] > 0) { Logger.log("Attente " + (delays[i] / 1000) + "s avant retry..."); Utilities.sleep(delays[i]); }
+    var res = UrlFetchApp.fetch(url, {
+      method: "post", contentType: "application/json",
+      payload: JSON.stringify(payload), muteHttpExceptions: true
+    });
+    var code = res.getResponseCode();
+    Logger.log("Tentative " + (i + 1) + " : HTTP " + code);
+    if (code === 200) { Logger.log("Reponse brute : " + res.getContentText()); return; }
+    Logger.log("Body : " + res.getContentText().slice(0, 300));
+    if (code !== 503 && code !== 429 && code !== 500) return;
+  }
+  Logger.log("Echec apres 5 tentatives : Gemini sature");
+}
+
+function debugClassifyKbis() {
+  var it = DriveApp.searchFiles("title contains 'Kbis0001' and trashed = false");
+  if (!it.hasNext()) { Logger.log("Aucun fichier 'Kbis0001' trouve dans Drive"); return; }
+  var f = it.next();
+  Logger.log("Match Drive : " + f.getName() + " (" + f.getId() + ")");
+  debugClassifyFile(f.getId());
 }
 
 // Cherche le client correspondant à un dossier Drive.
