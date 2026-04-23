@@ -7,9 +7,7 @@ import { useData } from "@/lib/data-context";
 import MultiDepSelect from "@/components/multi-dep-select";
 
 const ALL_DOC_FIELDS: DocType[] = [
-  "devisSignee", "kbisRecu", "attestationRecue", "signatureOk", "inscriptionBicycle",
-  "attestationHonneur", "declarationHonneur", "cadreContribution", "factureRecue",
-  "parcelleCadastrale", "etatRecapitulatif", "rapportConformite", "docTechnique", "conformiteCE",
+  "devisSignee", "kbisRecu", "attestationRecue", "signatureOk", "inscriptionBicycle", "parcelleCadastrale",
 ];
 
 export default function ClientsPage() {
@@ -403,9 +401,7 @@ function extractDriveId(url: string): string | null {
   return null;
 }
 
-type DocType = "devisSignee" | "kbisRecu" | "attestationRecue" | "inscriptionBicycle" | "signatureOk"
-  | "attestationHonneur" | "declarationHonneur" | "cadreContribution" | "factureRecue"
-  | "parcelleCadastrale" | "etatRecapitulatif" | "rapportConformite" | "docTechnique" | "conformiteCE";
+type DocType = "devisSignee" | "kbisRecu" | "attestationRecue" | "inscriptionBicycle" | "signatureOk" | "parcelleCadastrale";
 
 function DocCell({
   ok,
@@ -483,17 +479,9 @@ const docLabels: Record<DocType, string> = {
   devisSignee: "Devis",
   kbisRecu: "Kbis",
   attestationRecue: "Liasse fiscale",
-  inscriptionBicycle: "Bicycle",
   signatureOk: "Signature",
-  attestationHonneur: "Att. honneur",
-  declarationHonneur: "Décl. honneur",
-  cadreContribution: "Cadre contrib.",
-  factureRecue: "Facture",
+  inscriptionBicycle: "Bicycle",
   parcelleCadastrale: "Parcelle",
-  etatRecapitulatif: "État récap.",
-  rapportConformite: "Rapp. conformité",
-  docTechnique: "Doc technique",
-  conformiteCE: "Conformité CE",
 };
 
 function UploadDocModal({

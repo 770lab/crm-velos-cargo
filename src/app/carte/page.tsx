@@ -51,7 +51,7 @@ interface TourneeResult {
 export default function CartePage() {
   const { carte: allClients, refresh } = useData();
   const [selected, setSelected] = useState<string | null>(null);
-  const [mode, setMode] = useState<"atelier" | "sursite">("atelier");
+  const mode = "sursite";
   const [maxDistance, setMaxDistance] = useState(50);
   const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
   const [codePostal, setCodePostal] = useState("");
@@ -166,27 +166,8 @@ export default function CartePage() {
             <label className="text-xs font-medium text-gray-600 block mb-1">
               Mode de livraison
             </label>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setMode("atelier")}
-                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  mode === "atelier"
-                    ? "bg-blue-600 text-white"
-                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                }`}
-              >
-                Atelier (6/camion)
-              </button>
-              <button
-                onClick={() => setMode("sursite")}
-                className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-colors ${
-                  mode === "sursite"
-                    ? "bg-orange-600 text-white"
-                    : "bg-gray-100 text-gray-600 hover:bg-gray-200"
-                }`}
-              >
-                Sur site (54/camion)
-              </button>
+            <div className="px-3 py-2 bg-gray-50 border border-gray-200 rounded-lg text-sm text-gray-700">
+              Sur site — 54 vélos/camion (montés)
             </div>
           </div>
           <div>
@@ -340,7 +321,7 @@ function PlanifierSplits({
   onPlanned,
   resetTour,
 }: {
-  mode: "atelier" | "sursite";
+  mode: string;
   splits: TourneeSplit[];
   onPlanned: () => void;
   resetTour: () => void;

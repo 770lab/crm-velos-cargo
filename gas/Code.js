@@ -118,9 +118,7 @@ function getClients(params) {
   var clients = rows.map(function(row) {
     var c = {};
     headers.forEach(function(h, i) { c[h] = row[i]; });
-    ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle",
-     "attestationHonneur","declarationHonneur","cadreContribution","factureRecue",
-     "parcelleCadastrale","etatRecapitulatif","rapportConformite","docTechnique","conformiteCE"
+    ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle","parcelleCadastrale"
     ].forEach(function(f) {
       c[f] = c[f] === true || c[f] === "TRUE";
     });
@@ -179,9 +177,7 @@ function getClient(id) {
 
   if (!client) return { error: "Client non trouvé" };
 
-  ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle",
-   "attestationHonneur","declarationHonneur","cadreContribution","factureRecue",
-   "parcelleCadastrale","etatRecapitulatif","rapportConformite","docTechnique","conformiteCE"
+  ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle","parcelleCadastrale"
   ].forEach(function(f) {
     client[f] = client[f] === true || client[f] === "TRUE";
   });
@@ -327,9 +323,7 @@ function getStats() {
   var velosFacturables = vRows.filter(function(v) { return isBool(v[vHeaders.indexOf("facturable")]); }).length;
   var velosFactures = vRows.filter(function(v) { return isBool(v[vHeaders.indexOf("facture")]); }).length;
 
-  var docFields = ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle",
-    "attestationHonneur","declarationHonneur","cadreContribution","factureRecue",
-    "parcelleCadastrale","etatRecapitulatif","rapportConformite","docTechnique","conformiteCE"];
+  var docFields = ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle","parcelleCadastrale"];
   var clientsDocsComplets = cRows.filter(function(c) {
     return docFields.every(function(f) { return isBool(c[cHeaders.indexOf(f)]); });
   }).length;
@@ -492,7 +486,7 @@ function suggestTournee(clientId, mode, maxDistance) {
   }
   if (!target) return { error: "Client non trouvé" };
 
-  var capacite = mode === "sursite" ? 54 : 6;
+  var capacite = 54;
   maxDistance = maxDistance || 50;
 
   // Reste = commandé - livré - déjà planifié (livraisons "planifiee" ou "en_cours")
@@ -893,15 +887,7 @@ function uploadDoc(body) {
     attestationRecue: "Liasse fiscale",
     signatureOk: "Signature",
     inscriptionBicycle: "Bicycle",
-    attestationHonneur: "Attestation honneur",
-    declarationHonneur: "Declaration honneur",
-    cadreContribution: "Cadre contribution",
-    factureRecue: "Facture",
-    parcelleCadastrale: "Parcelle cadastrale",
-    etatRecapitulatif: "Etat recapitulatif",
-    rapportConformite: "Rapport conformite",
-    docTechnique: "Doc technique",
-    conformiteCE: "Conformite CE"
+    parcelleCadastrale: "Parcelle cadastrale"
   };
   var docLabel = docLabels[docType] || docType;
   var ext = fileName.split(".").pop() || "pdf";
@@ -920,15 +906,7 @@ function uploadDoc(body) {
     attestationRecue: "attestationLien",
     signatureOk: "signatureLien",
     inscriptionBicycle: "bicycleLien",
-    attestationHonneur: "attestationHonneurLien",
-    declarationHonneur: "declarationHonneurLien",
-    cadreContribution: "cadreContributionLien",
-    factureRecue: "factureRecueLien",
-    parcelleCadastrale: "parcelleCadastraleLien",
-    etatRecapitulatif: "etatRecapitulatifLien",
-    rapportConformite: "rapportConformiteLien",
-    docTechnique: "docTechniqueLien",
-    conformiteCE: "conformiteCELien"
+    parcelleCadastrale: "parcelleCadastraleLien"
   };
 
   var lienField = lienFields[docType];
@@ -953,15 +931,7 @@ var DOC_TYPE_TO_FIELDS = {
   DSN:                { flag: "attestationRecue",   link: "attestationLien" },
   BICYCLE:            { flag: "inscriptionBicycle", link: "bicycleLien" },
   SIGNATURE:          { flag: "signatureOk",        link: "signatureLien" },
-  ATTESTATION_HONNEUR:{ flag: "attestationHonneur", link: "attestationHonneurLien" },
-  DECLARATION_HONNEUR:{ flag: "declarationHonneur", link: "declarationHonneurLien" },
-  CADRE_CONTRIBUTION: { flag: "cadreContribution",  link: "cadreContributionLien" },
-  FACTURE:            { flag: "factureRecue",        link: "factureRecueLien" },
-  PARCELLE:           { flag: "parcelleCadastrale",  link: "parcelleCadastraleLien" },
-  ETAT_RECAPITULATIF: { flag: "etatRecapitulatif",   link: "etatRecapitulatifLien" },
-  RAPPORT_CONFORMITE: { flag: "rapportConformite",   link: "rapportConformiteLien" },
-  DOC_TECHNIQUE:      { flag: "docTechnique",        link: "docTechniqueLien" },
-  CONFORMITE_CE:      { flag: "conformiteCE",        link: "conformiteCELien" }
+  PARCELLE:           { flag: "parcelleCadastrale",  link: "parcelleCadastraleLien" }
 };
 
 function normalizeName(s) {
@@ -981,24 +951,14 @@ function detectDocTypeByName(fileName) {
   if (/\bDSN\b/.test(n) || /\bDNS\b/.test(n) || /^SALARIES\b/.test(n)) return "DSN";
   if (/\bATT(ESTATION)?\b.*\bURSSAF\b/.test(n) || /^URSSAF\b/.test(n)) return "ATTESTATION_URSSAF";
   if (/\bBICYCLE\b/.test(n)) return "BICYCLE";
-  if (/\bATT(ESTATION)?\s+(SUR\s+L\s*)?HONNEUR\b/.test(n)) return "ATTESTATION_HONNEUR";
-  if (/\bDECLARATION\s+(SUR\s+L\s*)?HONNEUR\b/.test(n)) return "DECLARATION_HONNEUR";
-  if (/\bCADRE\s+(DE\s+)?CONTRIBUTION\b/.test(n)) return "CADRE_CONTRIBUTION";
-  if (/\bFACTURE\b/.test(n)) return "FACTURE";
   if (/\bPARCELLE\b/.test(n) || /\bCADASTR/.test(n) || /\bGEOPORTAIL\b/.test(n)) return "PARCELLE";
-  if (/\bETAT\s+RECAPITULATIF\b/.test(n) || /\bRECAPITULATIF\b/.test(n)) return "ETAT_RECAPITULATIF";
-  if (/\bRAPPORT\s+(DE\s+)?CONFORMITE\b/.test(n) || /\bTEST\s+(DE\s+)?CONFORMITE\b/.test(n)) return "RAPPORT_CONFORMITE";
-  if (/\bDOC(UMENTATION)?\s+TECHNIQUE\b/.test(n) || /\bFICHE\s+TECHNIQUE\b/.test(n)) return "DOC_TECHNIQUE";
-  if (/\bCONFORMITE\s+CE\b/.test(n) || /\bEN\s*15194\b/.test(n) || /\bDECLARATION\s+(DE\s+)?CONFORMITE\b/.test(n)) return "CONFORMITE_CE";
   if (/\bSIGN(ATURE|E)\b/.test(n)) return "SIGNATURE";
   return null;
 }
 
 function buildClassifyPrompt() {
   return "Tu classes un document administratif français d'une entreprise dans le cadre d'un dossier CEE vélos cargo. " +
-    "Réponds UNIQUEMENT par un seul label parmi : DEVIS, KBIS, ATTESTATION_URSSAF, DSN, BICYCLE, SIGNATURE, " +
-    "ATTESTATION_HONNEUR, DECLARATION_HONNEUR, CADRE_CONTRIBUTION, FACTURE, PARCELLE, ETAT_RECAPITULATIF, " +
-    "RAPPORT_CONFORMITE, DOC_TECHNIQUE, CONFORMITE_CE, AUTRE. " +
+    "Réponds UNIQUEMENT par un seul label parmi : DEVIS, KBIS, ATTESTATION_URSSAF, DSN, BICYCLE, SIGNATURE, PARCELLE, AUTRE. " +
     "Règles : " +
     "- DEVIS = un devis commercial (émis ou signé). " +
     "- KBIS = tout justificatif officiel d'immatriculation : extrait Kbis, RCS, K (EI), avis SIRENE, fiche INSEE, extrait D1, certificat d'immatriculation. " +
@@ -1006,15 +966,7 @@ function buildClassifyPrompt() {
     "- DSN = Déclaration Sociale Nominative (effectif salariés), liasse fiscale, registre du personnel. " +
     "- BICYCLE = document d'inscription à la plateforme Bicycle ou certificat d'identification vélo. " +
     "- SIGNATURE = contrat signé électroniquement. " +
-    "- ATTESTATION_HONNEUR = attestation sur l'honneur de fin de chantier signée. " +
-    "- DECLARATION_HONNEUR = déclaration sur l'honneur prouvant la livraison. " +
-    "- CADRE_CONTRIBUTION = cadre de contribution complété. " +
-    "- FACTURE = facture de l'opération. " +
     "- PARCELLE = parcelle cadastrale ou document Géoportail du lieu de livraison. " +
-    "- ETAT_RECAPITULATIF = état récapitulatif des vélos achetés ou loués. " +
-    "- RAPPORT_CONFORMITE = rapport de tests de conformité (poids ≥ 175 kg). " +
-    "- DOC_TECHNIQUE = documentation technique du vélo-cargo (photo modèle, batterie, dimensions). " +
-    "- CONFORMITE_CE = déclaration de conformité CE du fabricant (EN 15194, NF R30050). " +
     "- AUTRE = tout le reste. " +
     "Aucun autre texte dans ta réponse.";
 }
