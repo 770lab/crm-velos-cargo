@@ -702,12 +702,19 @@ function ImportModal({ onClose }: { onClose: () => void }) {
 interface SyncReport {
   updates?: { client: string; docType: string; file: string; by: string }[];
   orphans?: string[];
+  fuzzyMatched?: { folder: string; matched: string; by: string }[];
   unknowns?: { folder: string; file: string }[];
+  skippedFiles?: { folder: string; file: string; error: string }[];
+  skippedFolders?: { folder: string; error: string }[];
+  timeoutHit?: boolean;
+  elapsedMs?: number;
   aiClassified?: number;
   aiQueueSize?: number;
   filesSeen?: number;
   error?: string;
 }
+
+type AiReason = "ok" | "noKey" | "unsupportedMime" | "tooBig" | "httpError" | "labelOther" | "noClientMatch" | "exception";
 
 interface ClassifyProgress {
   total: number;
@@ -715,7 +722,19 @@ interface ClassifyProgress {
   classified: number;
   running: boolean;
   done: boolean;
+  reasons: Record<AiReason, number>;
 }
+
+const AI_REASON_LABELS: Record<AiReason, string> = {
+  ok: "OK",
+  noKey: "Clé Gemini absente",
+  unsupportedMime: "Format non supporté (≠ PDF/image)",
+  tooBig: "Fichier > 18 Mo",
+  httpError: "Erreur HTTP Gemini",
+  labelOther: "Classé AUTRE par l'IA",
+  noClientMatch: "Pas de client matché",
+  exception: "Exception inattendue",
+};
 
 function SyncDriveModal({ onClose }: { onClose: () => void }) {
   const [loading, setLoading] = useState(false);
@@ -737,11 +756,15 @@ function SyncDriveModal({ onClose }: { onClose: () => void }) {
   const runAi = async () => {
     const total = report?.aiQueueSize ?? report?.unknowns?.length ?? 0;
     if (total === 0) return;
-    setAi({ total, processed: 0, classified: 0, running: true, done: false });
+    const emptyReasons: Record<AiReason, number> = {
+      ok: 0, noKey: 0, unsupportedMime: 0, tooBig: 0, httpError: 0, labelOther: 0, noClientMatch: 0, exception: 0,
+    };
+    setAi({ total, processed: 0, classified: 0, running: true, done: false, reasons: { ...emptyReasons } });
 
     let processed = 0;
     let classified = 0;
     let remaining = total;
+    const aggReasons = { ...emptyReasons };
 
     while (remaining > 0) {
       try {
@@ -749,10 +772,15 @@ function SyncDriveModal({ onClose }: { onClose: () => void }) {
         processed += data.processed ?? 0;
         classified += data.classified ?? 0;
         remaining = data.remaining ?? 0;
-        setAi({ total, processed, classified, running: remaining > 0, done: remaining === 0 });
+        if (data.reasons) {
+          for (const k of Object.keys(aggReasons) as AiReason[]) {
+            aggReasons[k] += data.reasons[k] ?? 0;
+          }
+        }
+        setAi({ total, processed, classified, running: remaining > 0, done: remaining === 0, reasons: { ...aggReasons } });
         if ((data.processed ?? 0) === 0) break;
       } catch (err) {
-        setAi({ total, processed, classified, running: false, done: false });
+        setAi({ total, processed, classified, running: false, done: false, reasons: { ...aggReasons } });
         console.error(err);
         return;
       }
@@ -837,7 +865,64 @@ function SyncDriveModal({ onClose }: { onClose: () => void }) {
                 </div>
                 {ai.done && <p className="text-xs mt-2 text-purple-700">Terminé.</p>}
                 {ai.running && <p className="text-xs mt-2 text-purple-700">En cours…</p>}
+
+                {ai.reasons && (ai.processed > 0) && (
+                  <div className="mt-2 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
+                    {(Object.keys(ai.reasons) as AiReason[])
+                      .filter((k) => ai.reasons[k] > 0)
+                      .map((k) => (
+                        <div key={k} className="flex justify-between">
+                          <span className={k === "ok" ? "text-emerald-700" : k === "noKey" ? "text-red-700 font-medium" : "text-purple-800"}>
+                            {AI_REASON_LABELS[k]}
+                          </span>
+                          <span className="font-mono">{ai.reasons[k]}</span>
+                        </div>
+                      ))}
+                  </div>
+                )}
+                {ai.reasons?.noKey && ai.reasons.noKey > 0 && (
+                  <p className="mt-2 text-xs text-red-700">
+                    💡 Renseigner <code>GEMINI_API_KEY</code> dans Project Settings → Script Properties.
+                  </p>
+                )}
               </div>
+            )}
+
+            {report.fuzzyMatched && report.fuzzyMatched.length > 0 && (
+              <details className="border border-amber-200 bg-amber-50 rounded-lg p-2">
+                <summary className="cursor-pointer font-medium text-amber-900">
+                  Dossiers matchés en fuzzy ({report.fuzzyMatched.length})
+                </summary>
+                <ul className="mt-2 text-xs text-amber-800 space-y-1">
+                  {report.fuzzyMatched.map((m, i) => (
+                    <li key={i}>• {m.folder} → <span className="font-medium">{m.matched}</span> <span className="text-amber-600">({m.by})</span></li>
+                  ))}
+                </ul>
+              </details>
+            )}
+
+            {(report.skippedFiles?.length || report.skippedFolders?.length || report.timeoutHit) && (
+              <details className="border border-red-200 bg-red-50 rounded-lg p-2">
+                <summary className="cursor-pointer font-medium text-red-800">
+                  Incidents Drive
+                  {report.timeoutHit && " · timeout préventif"}
+                  {(report.skippedFiles?.length ?? 0) + (report.skippedFolders?.length ?? 0) > 0 &&
+                    ` · ${(report.skippedFiles?.length ?? 0) + (report.skippedFolders?.length ?? 0)} skip`}
+                </summary>
+                <ul className="mt-2 text-xs text-red-700 space-y-1">
+                  {report.skippedFolders?.map((s, i) => (
+                    <li key={`fo-${i}`}>📁 {s.folder} : {s.error}</li>
+                  ))}
+                  {report.skippedFiles?.map((s, i) => (
+                    <li key={`fi-${i}`}>📄 [{s.folder}] {s.file} : {s.error}</li>
+                  ))}
+                </ul>
+                {report.timeoutHit && (
+                  <p className="mt-2 text-xs text-red-700">
+                    ⚠ Le scan s&apos;est arrêté préventivement à 5 min. Relance pour continuer.
+                  </p>
+                )}
+              </details>
             )}
 
             {report.unknowns && report.unknowns.length > 0 && (

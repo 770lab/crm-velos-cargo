@@ -897,18 +897,31 @@ function detectDocTypeByName(fileName) {
   return null;
 }
 
+// Renvoie { label, reason } pour permettre à classifyBatch de tracer pourquoi un fichier
+// n'est pas classé. reason ∈ { ok, noKey, unsupportedMime, tooBig, httpError, labelOther, exception }.
 function classifyWithGemini(file) {
   var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
-  if (!apiKey) return null;
+  if (!apiKey) return { label: null, reason: "noKey" };
 
-  var mimeType = file.getMimeType();
-  if (mimeType !== "application/pdf" &&
-      mimeType.indexOf("image/") !== 0) {
-    return null;
+  var mimeType;
+  try {
+    mimeType = file.getMimeType();
+  } catch (err) {
+    return { label: null, reason: "exception" };
+  }
+  if (mimeType !== "application/pdf" && mimeType.indexOf("image/") !== 0) {
+    return { label: null, reason: "unsupportedMime", mimeType: mimeType };
   }
 
-  var blob = file.getBlob();
-  if (blob.getBytes().length > 18 * 1024 * 1024) return null;
+  var blob;
+  try {
+    blob = file.getBlob();
+  } catch (err) {
+    return { label: null, reason: "exception" };
+  }
+  if (blob.getBytes().length > 18 * 1024 * 1024) {
+    return { label: null, reason: "tooBig" };
+  }
 
   var base64 = Utilities.base64Encode(blob.getBytes());
   var prompt = "Tu classes un document administratif français d'une entreprise. " +
@@ -942,16 +955,45 @@ function classifyWithGemini(file) {
       muteHttpExceptions: true
     });
     var code = res.getResponseCode();
-    if (code !== 200) return null;
+    if (code !== 200) {
+      Logger.log("classifyWithGemini : HTTP " + code + " sur " + file.getName() + " : " + res.getContentText().slice(0, 200));
+      return { label: null, reason: "httpError", httpCode: code };
+    }
     var data = JSON.parse(res.getContentText());
     var text = (((data.candidates || [])[0] || {}).content || {}).parts;
-    if (!text || !text[0]) return null;
+    if (!text || !text[0]) return { label: null, reason: "labelOther", rawLabel: "" };
     var label = String(text[0].text || "").trim().toUpperCase().replace(/[^A-Z_]/g, "");
-    if (DOC_TYPE_TO_FIELDS[label]) return label;
-    return null;
+    if (DOC_TYPE_TO_FIELDS[label]) return { label: label, reason: "ok" };
+    return { label: null, reason: "labelOther", rawLabel: label };
   } catch (err) {
-    return null;
+    Logger.log("classifyWithGemini : exception sur " + file.getName() + " : " + err.message);
+    return { label: null, reason: "exception" };
   }
+}
+
+// Cherche le client correspondant à un dossier Drive.
+// Tente : (1) match exact, (2) suffixe numérique (ex. "L AFRICA PARIS128" → "L AFRICA PARIS"),
+// (3) préfixe le plus long parmi les clients connus (ex. "JG NERGIE CONSULTING 75" matche "JG NERGIE CONSULTING").
+// Retourne { match, by: "exact"|"stripDigits"|"prefix" } ou null.
+function findClientForFolder(folderKey, clientsByKey, clientsKeysSorted) {
+  if (!folderKey) return null;
+  if (clientsByKey[folderKey]) return { match: clientsByKey[folderKey], by: "exact" };
+
+  var stripped = folderKey.replace(/\s*\d+$/, "").trim();
+  if (stripped !== folderKey && clientsByKey[stripped]) {
+    return { match: clientsByKey[stripped], by: "stripDigits" };
+  }
+
+  // Préfixe le plus long parmi les clients connus.
+  // On exige >= 8 caractères pour éviter des collisions parasites genre "AB" qui matche tout.
+  for (var k = 0; k < clientsKeysSorted.length; k++) {
+    var ck = clientsKeysSorted[k];
+    if (ck.length < 8) continue;
+    if (folderKey === ck) return { match: clientsByKey[ck], by: "exact" };
+    if (folderKey.indexOf(ck + " ") === 0) return { match: clientsByKey[ck], by: "prefix" };
+    if (stripped === ck) return { match: clientsByKey[ck], by: "stripDigits" };
+  }
+  return null;
 }
 
 function syncDriveDocs() {
@@ -968,6 +1010,8 @@ function syncDriveDocs() {
     var key = normalizeName(all[i][iEntreprise]);
     if (key) clientsByKey[key] = { row: all[i], rowIdx: i };
   }
+  // Liste des clés clients triée par longueur décroissante (pour matcher le préfixe le plus long).
+  var clientsKeysSorted = Object.keys(clientsByKey).sort(function(a, b) { return b.length - a.length; });
 
   var root;
   try {
@@ -979,6 +1023,7 @@ function syncDriveDocs() {
   var report = {
     updates: [],
     orphans: [],
+    fuzzyMatched: [],
     unknowns: [],
     aiClassified: 0,
     filesSeen: 0,
@@ -1012,10 +1057,14 @@ function syncDriveDocs() {
       continue;
     }
 
-    var match = clientsByKey[folderKey];
+    var matchInfo = findClientForFolder(folderKey, clientsByKey, clientsKeysSorted);
+    var match = matchInfo ? matchInfo.match : null;
     if (!match) {
       report.orphans.push(folderName);
       continue;
+    }
+    if (matchInfo.by !== "exact") {
+      report.fuzzyMatched.push({ folder: folderName, matched: match.row[iEntreprise], by: matchInfo.by });
     }
 
     var files;
@@ -1123,6 +1172,7 @@ function classifyBatch(limit) {
     var key = normalizeName(all[i][iEntreprise]);
     if (key) clientsByKey[key] = { row: all[i], rowIdx: i };
   }
+  var clientsKeysSorted = Object.keys(clientsByKey).sort(function(a, b) { return b.length - a.length; });
 
   var batch = queue.slice(0, limit);
   var rest = queue.slice(limit);
@@ -1130,18 +1180,28 @@ function classifyBatch(limit) {
   var updates = [];
   var errors = [];
   var classified = 0;
+  var reasons = { ok: 0, noKey: 0, unsupportedMime: 0, tooBig: 0, httpError: 0, labelOther: 0, noClientMatch: 0, exception: 0 };
 
   for (var j = 0; j < batch.length; j++) {
     var item = batch[j];
     try {
       var file = DriveApp.getFileById(item.fileId);
-      var docType = classifyWithGemini(file);
-      if (!docType || docType === "AUTRE" || !DOC_TYPE_TO_FIELDS[docType]) continue;
+      var clf = classifyWithGemini(file);
+      var label = clf && clf.label;
+      var reason = (clf && clf.reason) || "exception";
+      if (!label || !DOC_TYPE_TO_FIELDS[label]) {
+        reasons[reason] = (reasons[reason] || 0) + 1;
+        continue;
+      }
 
-      var match = clientsByKey[item.folderKey];
-      if (!match) continue;
+      var matchInfo = findClientForFolder(item.folderKey, clientsByKey, clientsKeysSorted);
+      var match = matchInfo ? matchInfo.match : null;
+      if (!match) {
+        reasons.noClientMatch++;
+        continue;
+      }
 
-      var fieldSet = DOC_TYPE_TO_FIELDS[docType];
+      var fieldSet = DOC_TYPE_TO_FIELDS[label];
       var flagCol = headers.indexOf(fieldSet.flag);
       var linkCol = headers.indexOf(fieldSet.link);
       if (flagCol === -1) continue;
@@ -1152,12 +1212,15 @@ function classifyBatch(limit) {
       }
 
       classified++;
+      reasons.ok++;
       updates.push({
         client: match.row[iEntreprise],
-        docType: docType,
-        file: item.file
+        docType: label,
+        file: item.file,
+        matchedBy: matchInfo.by
       });
     } catch (err) {
+      reasons.exception++;
       errors.push({ file: item.file, error: err.message });
     }
   }
@@ -1170,7 +1233,8 @@ function classifyBatch(limit) {
     classified: classified,
     remaining: rest.length,
     updates: updates,
-    errors: errors
+    errors: errors,
+    reasons: reasons
   };
 }
 
