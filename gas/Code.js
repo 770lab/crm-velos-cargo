@@ -906,8 +906,9 @@ function cancelTournee(tourneeId) {
   if (iTournee === -1 || iStatut === -1) return { error: "Colonnes manquantes" };
 
   var cancelled = 0;
+  var target = String(tourneeId);
   for (var i = 1; i < all.length; i++) {
-    if (all[i][iTournee] === tourneeId && all[i][iStatut] !== "annulee") {
+    if (String(all[i][iTournee]) === target && all[i][iStatut] !== "annulee") {
       var oldStatut = all[i][iStatut];
       sheet.getRange(i + 1, iStatut + 1).setValue("annulee");
       if (iDateEff !== -1) sheet.getRange(i + 1, iDateEff + 1).setValue("");
@@ -919,7 +920,7 @@ function cancelTournee(tourneeId) {
     }
   }
   SpreadsheetApp.flush();
-  return { ok: true, cancelled: cancelled };
+  return { ok: true, cancelled: cancelled, tourneeId: target };
 }
 
 // ---- UPLOAD DOCUMENTS ----
