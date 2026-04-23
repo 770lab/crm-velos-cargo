@@ -463,7 +463,7 @@ function TourneeCard({
           {tournee.livraisons[0]?.client.entreprise}
           {tournee.livraisons.length > 1 && ` +${tournee.livraisons.length - 1}`}
         </span>
-        <span className="font-mono opacity-70 whitespace-nowrap">{tournee.totalVelos}v</span>
+        <span className="font-mono opacity-70 whitespace-nowrap">{tournee.totalVelos}v/{tournee.livraisons.length}l</span>
       </div>
       {peutAjouter && (
         <div className="mt-0.5 inline-flex items-center gap-1 px-1 rounded bg-green-100 text-green-800 text-[9px] font-semibold leading-tight">
