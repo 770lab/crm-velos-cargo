@@ -1441,9 +1441,9 @@ function debugDriveFolder() {
 }
 
 // Appelé depuis le bouton "Tester Gemini" du modal de sync côté front.
-// Fait UN seul appel Gemini sur un fichier PDF/image (pris dans AI_QUEUE si dispo,
-// sinon le premier PDF/image trouvé dans DOSSIER VELO) et renvoie le détail brut
-// (httpCode, body tronqué, fileName, mimeType, url obfusquée) pour diagnostic.
+// Fait UN appel Gemini texte-seul (pas de fichier) pour diagnostiquer la clé / le modèle /
+// le quota, indépendamment de Drive. Si ce test passe mais classifyBatch échoue en masse,
+// le problème est spécifique aux payloads PDF (taille, rate-limit sur inline_data, etc.).
 function testGemini() {
   var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
   var diag = {
@@ -1451,10 +1451,7 @@ function testGemini() {
     apiKeyLength: apiKey ? apiKey.length : 0,
     model: "gemini-2.5-flash",
     urlObfuscated: null,
-    source: null,
-    fileName: null,
-    fileId: null,
-    mimeType: null,
+    testMode: "text-only",
     httpCode: null,
     body: null,
     label: null,
@@ -1466,71 +1463,9 @@ function testGemini() {
     return diag;
   }
 
-  var file = null;
-  var raw = PropertiesService.getScriptProperties().getProperty("AI_QUEUE");
-  var queue = raw ? JSON.parse(raw) : [];
-  for (var q = 0; q < queue.length && !file; q++) {
-    try {
-      var f = DriveApp.getFileById(queue[q].fileId);
-      var m = f.getMimeType();
-      if (m === "application/pdf" || m.indexOf("image/") === 0) {
-        file = f;
-        diag.source = "AI_QUEUE";
-      }
-    } catch (err) { /* fichier inaccessible, on continue */ }
-  }
-
-  if (!file) {
-    try {
-      var root = DriveApp.getFolderById(DRIVE_DOSSIER_VELO_ID);
-      var subs = root.getFolders();
-      while (subs.hasNext() && !file) {
-        var sub = subs.next();
-        var fs = sub.getFiles();
-        while (fs.hasNext()) {
-          var ff = fs.next();
-          var mm = ff.getMimeType();
-          if (mm === "application/pdf" || mm.indexOf("image/") === 0) {
-            file = ff;
-            diag.source = "DriveScan:" + sub.getName();
-            break;
-          }
-        }
-      }
-    } catch (err2) {
-      diag.error = "Drive inaccessible : " + err2.message;
-      return diag;
-    }
-  }
-
-  if (!file) {
-    diag.error = "Aucun PDF/image trouvé (AI_QUEUE vide et DOSSIER VELO sans PDF/image)";
-    return diag;
-  }
-
-  diag.fileName = file.getName();
-  diag.fileId = file.getId();
-  diag.mimeType = file.getMimeType();
-
-  var blob;
-  try { blob = file.getBlob(); } catch (errB) {
-    diag.error = "getBlob a planté : " + errB.message;
-    return diag;
-  }
-  if (blob.getBytes().length > 18 * 1024 * 1024) {
-    diag.error = "Fichier > 18 Mo (on skip pour éviter de fausser le diag)";
-    return diag;
-  }
-
-  var base64 = Utilities.base64Encode(blob.getBytes());
   var payload = {
-    contents: [{
-      parts: [
-        { text: "Classe ce document en un mot parmi : DEVIS, KBIS, ATTESTATION_URSSAF, BICYCLE, AUTRE." },
-        { inline_data: { mime_type: diag.mimeType, data: base64 } }
-      ]
-    }],
-    generationConfig: { temperature: 0, maxOutputTokens: 10 }
+    contents: [{ parts: [{ text: "Réponds uniquement par OK." }] }],
+    generationConfig: { temperature: 0, maxOutputTokens: 5 }
   };
 
   var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
@@ -1545,7 +1480,7 @@ function testGemini() {
     });
     diag.httpCode = res.getResponseCode();
     var body = res.getContentText();
-    diag.body = body.length > 1000 ? body.slice(0, 1000) + "..." : body;
+    diag.body = body.length > 1500 ? body.slice(0, 1500) + "..." : body;
     if (diag.httpCode === 200) {
       try {
         var data = JSON.parse(body);

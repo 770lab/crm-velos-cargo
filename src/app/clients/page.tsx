@@ -863,10 +863,7 @@ type GeminiTestResult = {
   apiKeyLength: number;
   model: string;
   urlObfuscated: string | null;
-  source: string | null;
-  fileName: string | null;
-  fileId: string | null;
-  mimeType: string | null;
+  testMode?: string | null;
   httpCode: number | null;
   body: string | null;
   label: string | null;
@@ -889,7 +886,6 @@ function SyncDriveModal({ onClose }: { onClose: () => void }) {
     } catch (err) {
       setGeminiTest({
         apiKeyPresent: false, apiKeyLength: 0, model: "", urlObfuscated: null,
-        source: null, fileName: null, fileId: null, mimeType: null,
         httpCode: null, body: null, label: null,
         error: err instanceof Error ? err.message : "Erreur inconnue",
       });
@@ -982,10 +978,8 @@ function SyncDriveModal({ onClose }: { onClose: () => void }) {
             </div>
             <div>apiKey : {geminiTest.apiKeyPresent ? `présente (${geminiTest.apiKeyLength} chars)` : "ABSENTE"}</div>
             <div>model : {geminiTest.model}</div>
+            {geminiTest.testMode && <div>mode : {geminiTest.testMode}</div>}
             {geminiTest.urlObfuscated && <div>url : {geminiTest.urlObfuscated}</div>}
-            {geminiTest.source && <div>source fichier : {geminiTest.source}</div>}
-            {geminiTest.fileName && <div>fichier : {geminiTest.fileName}</div>}
-            {geminiTest.mimeType && <div>mimeType : {geminiTest.mimeType}</div>}
             <div>httpCode : {geminiTest.httpCode ?? "—"}</div>
             {geminiTest.label && <div>label IA : {geminiTest.label}</div>}
             {geminiTest.error && <div className="mt-2">error : {geminiTest.error}</div>}
