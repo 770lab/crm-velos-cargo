@@ -358,12 +358,9 @@ function DayStaffingSummary({ tournees }: { tournees: Tournee[] }) {
   const active = tournees.filter((t) => t.statutGlobal !== "annulee" && t.statutGlobal !== "livree");
   if (active.length === 0) return null;
 
-  const retraits = active.filter((t) => t.mode === "retrait");
-  const internes = active.filter((t) => t.mode !== "retrait");
-
   type Groupe = { mode: string; tournees: Tournee[]; totalMin: number; totalVelos: number; capacite: number };
   const byMode = new Map<string, Groupe>();
-  for (const t of internes) {
+  for (const t of active) {
     const key = t.mode || "autre";
     if (!byMode.has(key)) {
       byMode.set(key, {
@@ -380,30 +377,32 @@ function DayStaffingSummary({ tournees }: { tournees: Tournee[] }) {
     g.totalVelos += t.totalVelos;
   }
 
-  const groupes = Array.from(byMode.values());
+  const ORDER: Record<string, number> = { gros: 0, moyen: 1, camionnette: 2, retrait: 3, autre: 4 };
+  const groupes = Array.from(byMode.values()).sort((a, b) => (ORDER[a.mode] ?? 99) - (ORDER[b.mode] ?? 99));
   const nbEquipes = groupes.length;
   const nbMonteurs = nbEquipes * MONTEURS_PAR_EQUIPE;
-
-  const retraitTotalVelos = retraits.reduce((s, t) => s + t.totalVelos, 0);
-  const retraitClientsCount = retraits.reduce((s, t) => s + t.livraisons.length, 0);
+  const hasRetrait = groupes.some((g) => g.mode === "retrait");
+  const plafond = nbEquipes > 2;
 
   return (
     <div className="mt-2 pt-2 border-t border-gray-200 space-y-1.5 text-[10px] leading-tight">
-      {groupes.length > 0 && (
-        <div className="font-semibold text-gray-700">
-          {nbEquipes} équipe{nbEquipes > 1 ? "s" : ""} · {nbMonteurs} monteurs
-        </div>
-      )}
+      <div className="font-semibold text-gray-700">
+        {nbEquipes} équipe{nbEquipes > 1 ? "s" : ""} · {nbMonteurs} monteurs{hasRetrait ? " + 1 chef admin" : ""}
+        {plafond && <span className="ml-1 text-red-700">⚠ dépasse 2 équipes</span>}
+      </div>
       {groupes.map((g, idx) => {
+        const isRetrait = g.mode === "retrait";
         const label = MODE_SHORT_LABELS[g.mode] || g.mode;
         const reste8h = JOURNEE_MIN - g.totalMin;
         const depasse10h = g.totalMin > JOURNEE_MAX;
         const capaLibre = g.capacite > 0 ? g.capacite - g.totalVelos : 0;
-        const peutAjouter = reste8h >= 120 && (g.capacite === 0 || capaLibre >= SEUIL_2EME_TOURNEE);
+        const peutAjouter = !isRetrait && reste8h >= 120 && (g.capacite === 0 || capaLibre >= SEUIL_2EME_TOURNEE);
         const tightPalette = depasse10h
           ? "text-red-700"
           : reste8h < 60
           ? "text-amber-700"
+          : isRetrait
+          ? "text-purple-700"
           : "text-gray-700";
         return (
           <div key={g.mode + idx} className="space-y-0.5">
@@ -425,47 +424,17 @@ function DayStaffingSummary({ tournees }: { tournees: Tournee[] }) {
                 + ~{formatDureeShort(reste8h)} libre → 2e tournée possible
               </div>
             )}
-            {!peutAjouter && !depasse10h && reste8h < 60 && reste8h >= 0 && (
+            {!peutAjouter && !depasse10h && !isRetrait && reste8h < 60 && reste8h >= 0 && (
               <div className="text-amber-700">journée pleine (~8h)</div>
             )}
             {depasse10h && (
-              <div className="text-red-700 font-medium">⚠ dépasse 10h — à split</div>
+              <div className="text-red-700 font-medium">
+                ⚠ dépasse 10h{isRetrait ? " — ajouter 1 monteur" : " — à split"}
+              </div>
             )}
           </div>
         );
       })}
-      {retraits.length > 0 && (() => {
-        const montageTotal = retraitTotalVelos * MINUTES_PAR_VELO;
-        const dureeAvec2 = montageTotal / MONTEURS_PAR_EQUIPE;
-        const monteursReco = Math.max(MONTEURS_PAR_EQUIPE, Math.ceil(montageTotal / JOURNEE_MIN));
-        const tropAvec2 = dureeAvec2 > JOURNEE_MIN;
-        return (
-          <div className="text-purple-700 space-y-0.5 pt-1 border-t border-purple-200/50">
-            <div className="font-semibold">
-              Retrait entrepôt · {retraitClientsCount} client{retraitClientsCount > 1 ? "s" : ""} · {retraitTotalVelos}v
-            </div>
-            <ul className="pl-2 space-y-0.5 text-purple-700/80">
-              {retraits.map((t) => (
-                <li key={t.tourneeId || t.livraisons[0].id} className="truncate">
-                  · {t.livraisons[0]?.client.entreprise}
-                  {t.livraisons.length > 1 ? ` +${t.livraisons.length - 1}` : ""}
-                  <span className="opacity-60"> ({t.totalVelos}v)</span>
-                </li>
-              ))}
-            </ul>
-            {tropAvec2 ? (
-              <div className="text-red-700 font-medium">
-                ⚠ {formatDureeShort(montageTotal)} de montage → prévoir {monteursReco} monteurs + 1 chef admin
-              </div>
-            ) : (
-              <div>
-                Prévoir {MONTEURS_PAR_EQUIPE} monteurs (~{formatDureeShort(dureeAvec2)}) + 1 chef admin
-              </div>
-            )}
-            <div className="opacity-70 italic">hors timing tournées internes</div>
-          </div>
-        );
-      })()}
     </div>
   );
 }
