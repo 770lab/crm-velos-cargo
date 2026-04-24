@@ -103,8 +103,8 @@ function setupProps() {
 // Compte les threads restants à traiter + donne la date du plus ancien
 // restant (= la date jusqu'où le watcher devra remonter)
 function syncProgress() {
-  var queryRemaining = "has:attachment newer_than:365d -label:" + LABEL_PROCESSED + " -label:" + LABEL_FAILED;
-  var queryProcessed = "has:attachment newer_than:365d label:" + LABEL_PROCESSED;
+  var queryRemaining = "has:attachment newer_than:7d -label:" + LABEL_PROCESSED + " -label:" + LABEL_FAILED;
+  var queryProcessed = "has:attachment newer_than:7d label:" + LABEL_PROCESSED;
   var remaining = GmailApp.search(queryRemaining, 0, 500);
   var processed = GmailApp.search(queryProcessed, 0, 500);
   var oldestRemainingDate = null;
@@ -150,11 +150,11 @@ function inboxSync(payload) {
   var labelOk  = _getOrCreateLabel(LABEL_PROCESSED);
   var labelKo  = _getOrCreateLabel(LABEL_FAILED);
 
-  // Recherche : soit par label, soit fallback global "has:attachment newer_than:365d" non traités
+  // Recherche : soit par label, soit fallback global "has:attachment newer_than:7d" non traités
   var useLabelFilter = labelTo.getThreads(0, 1).length > 0;
   var query = useLabelFilter
     ? "label:" + LABEL_TO_PROCESS + " -label:" + LABEL_PROCESSED + " -label:" + LABEL_FAILED
-    : "has:attachment newer_than:365d -label:" + LABEL_PROCESSED + " -label:" + LABEL_FAILED;
+    : "has:attachment newer_than:7d -label:" + LABEL_PROCESSED + " -label:" + LABEL_FAILED;
 
   var threads = GmailApp.search(query, 0, 50);
   stats.threads = threads.length;
@@ -500,7 +500,7 @@ function debugInbox() {
     out.geminiOk = true;
   } catch (e) { out.geminiError = String(e); Logger.log("geminiError: " + e); }
   try {
-    var q = "has:attachment newer_than:365d -label:" + LABEL_PROCESSED;
+    var q = "has:attachment newer_than:7d -label:" + LABEL_PROCESSED;
     out.threadsToProcess = GmailApp.search(q, 0, 50).length;
     Logger.log("Gmail search OK: " + out.threadsToProcess + " threads");
   } catch (e) { out.gmailError = String(e); Logger.log("gmailError: " + e); }
