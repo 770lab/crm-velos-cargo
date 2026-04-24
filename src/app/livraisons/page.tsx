@@ -727,10 +727,11 @@ function TourneeModal({
     const init = tournee.nbMonteurs > 0 ? tournee.nbMonteurs : MONTEURS_PAR_EQUIPE;
     if (monteurs === init) return;
     const t = setTimeout(() => {
-      gasPost("assignTournee", { tourneeId: tournee.tourneeId, nbMonteurs: monteurs });
-    }, 600);
+      gasPost("assignTournee", { tourneeId: tournee.tourneeId, nbMonteurs: monteurs })
+        .then(() => onChanged());
+    }, 800);
     return () => clearTimeout(t);
-  }, [monteurs, tournee.tourneeId, tournee.nbMonteurs]);
+  }, [monteurs, tournee.tourneeId, tournee.nbMonteurs, onChanged]);
 
   const alreadyInTour = useMemo(
     () => new Set(tournee.livraisons.map((l) => l.clientId).filter((x): x is string => !!x)),
