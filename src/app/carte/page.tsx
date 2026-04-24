@@ -601,6 +601,82 @@ function addDaysISO(iso: string, days: number): string {
   return toISO(d);
 }
 
+const ENTREPOT = { lat: 48.9545398, lng: 2.4557494, label: "AXDIS PRO – Blanc-Mesnil" };
+const MINUTES_PAR_VELO = 8;
+const HEURES_JOURNEE = 8;
+const ROAD_FACTOR = 1.3;
+const KM_PAR_MIN = 0.5;
+
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const toRad = (x: number) => (x * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(a));
+}
+
+function computeSplitMetrics(stops: TourneeStop[]): {
+  totalKm: number;
+  driveMin: number;
+  unloadMin: number;
+  totalMin: number;
+  nbVelos: number;
+  segments: { distKm: number; trajetMin: number }[];
+  retour: { distKm: number; trajetMin: number };
+} {
+  const segments: { distKm: number; trajetMin: number }[] = [];
+  let prevLat = ENTREPOT.lat;
+  let prevLng = ENTREPOT.lng;
+  let totalKm = 0;
+  let driveMin = 0;
+  let nbVelos = 0;
+  for (const s of stops) {
+    nbVelos += s.nbVelos;
+    if (prevLat && prevLng && s.lat && s.lng) {
+      const routeKm = haversineKm(prevLat, prevLng, s.lat, s.lng) * ROAD_FACTOR;
+      const min = Math.round(routeKm / KM_PAR_MIN);
+      segments.push({ distKm: Math.round(routeKm * 10) / 10, trajetMin: min });
+      totalKm += routeKm;
+      driveMin += min;
+    } else {
+      segments.push({ distKm: 0, trajetMin: 0 });
+    }
+    prevLat = s.lat;
+    prevLng = s.lng;
+  }
+  const retour =
+    prevLat && prevLng
+      ? (() => {
+          const routeKm = haversineKm(prevLat, prevLng, ENTREPOT.lat, ENTREPOT.lng) * ROAD_FACTOR;
+          const min = Math.round(routeKm / KM_PAR_MIN);
+          totalKm += routeKm;
+          driveMin += min;
+          return { distKm: Math.round(routeKm * 10) / 10, trajetMin: min };
+        })()
+      : { distKm: 0, trajetMin: 0 };
+  const unloadMin = nbVelos * MINUTES_PAR_VELO;
+  const totalMin = driveMin + unloadMin;
+  return {
+    totalKm: Math.round(totalKm * 10) / 10,
+    driveMin,
+    unloadMin,
+    totalMin,
+    nbVelos,
+    segments,
+    retour,
+  };
+}
+
+function fmtDuree(min: number): string {
+  if (min <= 0) return "0min";
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  return h > 0 ? `${h}h${m > 0 ? String(m).padStart(2, "0") : ""}` : `${m}min`;
+}
+
 function PlanifierSplits({
   mode,
   splits,
@@ -622,12 +698,27 @@ function PlanifierSplits({
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<{ count: number; tournees: { tourneeId: string; created: number; datePrevue: string }[] } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [editedSplits, setEditedSplits] = useState<TourneeSplit[]>(() =>
+    splits.map((s) => ({ ...s, stops: [...s.stops] }))
+  );
 
-  // Re-init dates si le nombre de splits change
+  // Re-init dates + stops quand la suggestion serveur change (nouveau client cible / nouveau mode)
   useEffect(() => {
     const start = nextMondayISO();
     setDates(splits.map((_, i) => addDaysISO(start, i)));
-  }, [splits.length]); // eslint-disable-line react-hooks/exhaustive-deps
+    setEditedSplits(splits.map((s) => ({ ...s, stops: [...s.stops] })));
+  }, [splits]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const removeStop = (splitIdx: number, stopIdx: number) => {
+    setEditedSplits((prev) =>
+      prev.map((sp, i) => {
+        if (i !== splitIdx) return sp;
+        const stops = sp.stops.filter((_, j) => j !== stopIdx);
+        const totalVelos = stops.reduce((sum, s) => sum + s.nbVelos, 0);
+        return { ...sp, stops, totalVelos };
+      })
+    );
+  };
 
   const today = useMemo(() => todayISO(), []);
 
@@ -642,15 +733,20 @@ function PlanifierSplits({
       setError("Choisis une date pour chaque tournée");
       return;
     }
+    const nonEmptySplits = editedSplits.filter((sp) => sp.stops.length > 0);
+    if (nonEmptySplits.length === 0) {
+      setError("Aucun arrêt à planifier");
+      return;
+    }
     setError(null);
     setLoading(true);
     try {
-      if (splits.length === 1) {
+      if (nonEmptySplits.length === 1) {
         const r = await gasPost("createTournee", {
           datePrevue: dates[0],
           notes: notes.trim(),
           mode,
-          stops: splits[0].stops.map((s, i) => ({
+          stops: nonEmptySplits[0].stops.map((s, i) => ({
             clientId: s.id,
             ordre: i + 1,
             nbVelos: s.nbVelos,
@@ -663,7 +759,7 @@ function PlanifierSplits({
           onPlanned();
         }
       } else {
-        const tournees = splits.map((sp, idx) => ({
+        const tournees = nonEmptySplits.map((sp, idx) => ({
           datePrevue: dates[idx],
           mode,
           notes: notes.trim()
@@ -741,7 +837,12 @@ function PlanifierSplits({
       </h3>
 
       <div className="space-y-3">
-        {splits.map((sp, idx) => (
+        {editedSplits.map((sp, idx) => {
+          const isRetrait = mode === "retrait";
+          const metrics = !isRetrait ? computeSplitMetrics(sp.stops) : null;
+          const depasseJournee = metrics ? metrics.totalMin > HEURES_JOURNEE * 60 : false;
+          const isEmpty = sp.stops.length === 0;
+          return (
           <div key={idx} className="border rounded-lg p-3 bg-gray-50 space-y-2">
             <div className="flex justify-between items-center">
               <span className="text-sm font-medium text-gray-700">
@@ -752,39 +853,99 @@ function PlanifierSplits({
               </span>
             </div>
 
-            <div className="space-y-1">
-              {sp.stops.map((s, i) => (
-                <div key={`${s.id}-${i}`} className="flex items-center gap-2 text-xs">
-                  <span className="w-5 h-5 rounded-full bg-green-600 text-white flex items-center justify-center font-medium">
-                    {i + 1}
+            {metrics && (
+              <div
+                className={`text-[11px] rounded px-2 py-1.5 border ${
+                  depasseJournee
+                    ? "bg-red-50 border-red-200 text-red-800"
+                    : "bg-white border-gray-200 text-gray-700"
+                }`}
+              >
+                <div className="flex justify-between gap-2 flex-wrap">
+                  <span>
+                    📍 {metrics.totalKm} km aller-retour · roulage {fmtDuree(metrics.driveMin)}
                   </span>
-                  <div className="flex-1 min-w-0 truncate">
-                    {s.entreprise}
-                    {s.ville && <span className="text-gray-400"> · {s.ville}</span>}
+                  <span>
+                    déchargement {fmtDuree(metrics.unloadMin)}{" "}
+                    <span className="text-gray-400">({sp.totalVelos}×{MINUTES_PAR_VELO}min)</span>
+                  </span>
+                </div>
+                <div className="flex justify-between gap-2 mt-0.5 font-medium">
+                  <span>Total 1 monteur : {fmtDuree(metrics.totalMin)}</span>
+                  {depasseJournee && <span>⚠ dépasse {HEURES_JOURNEE}h</span>}
+                </div>
+              </div>
+            )}
+
+            <div className="space-y-1">
+              {!isRetrait && (
+                <div className="text-[10px] text-gray-400 pl-7">📍 départ {ENTREPOT.label}</div>
+              )}
+              {sp.stops.map((s, i) => (
+                <div key={`${s.id}-${i}`}>
+                  {metrics && i > 0 && metrics.segments[i] && metrics.segments[i].distKm > 0 && (
+                    <div className="text-[10px] text-gray-400 pl-7 py-0.5">
+                      ↓ {metrics.segments[i].distKm} km · ~{metrics.segments[i].trajetMin} min
+                    </div>
+                  )}
+                  {metrics && i === 0 && metrics.segments[0] && metrics.segments[0].distKm > 0 && (
+                    <div className="text-[10px] text-gray-400 pl-7 py-0.5">
+                      ↓ {metrics.segments[0].distKm} km · ~{metrics.segments[0].trajetMin} min
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2 text-xs group">
+                    <span className="w-5 h-5 rounded-full bg-green-600 text-white flex items-center justify-center font-medium">
+                      {i + 1}
+                    </span>
+                    <div className="flex-1 min-w-0 truncate">
+                      {s.entreprise}
+                      {s.ville && <span className="text-gray-400"> · {s.ville}</span>}
+                    </div>
+                    <span className="text-gray-600 whitespace-nowrap">{s.nbVelos} v.</span>
+                    <button
+                      type="button"
+                      onClick={() => removeStop(idx, i)}
+                      className="text-gray-300 hover:text-red-600 transition-colors text-sm leading-none px-1"
+                      title="Retirer ce client (client pas dispo ce jour-là)"
+                      aria-label={`Retirer ${s.entreprise}`}
+                    >
+                      ✕
+                    </button>
                   </div>
-                  <span className="text-gray-600 whitespace-nowrap">{s.nbVelos} v.</span>
                 </div>
               ))}
-            </div>
-
-            <div>
-              <label className="block text-xs text-gray-500 mb-1">Date prévue</label>
-              <DateLoadPicker
-                value={dates[idx] || ""}
-                onChange={(iso) => {
-                  const next = [...dates];
-                  next[idx] = iso;
-                  setDates(next);
-                }}
-                minDate={today}
-                loadByDate={loadByDate}
-              />
-              {dates[idx] && (
-                <p className="text-xs text-gray-500 mt-1 capitalize">{formatFrDate(dates[idx])}</p>
+              {metrics && metrics.retour.distKm > 0 && (
+                <div className="text-[10px] text-gray-400 pl-7 py-0.5">
+                  ↩ retour {ENTREPOT.label} · {metrics.retour.distKm} km · ~{metrics.retour.trajetMin} min
+                </div>
               )}
             </div>
+
+            {isEmpty ? (
+              <div className="text-xs text-gray-400 italic text-center py-2">
+                Tournée vide — tous les arrêts retirés. Relance une nouvelle suggestion si besoin.
+              </div>
+            ) : (
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">Date prévue</label>
+                <DateLoadPicker
+                  value={dates[idx] || ""}
+                  onChange={(iso) => {
+                    const next = [...dates];
+                    next[idx] = iso;
+                    setDates(next);
+                  }}
+                  minDate={today}
+                  loadByDate={loadByDate}
+                />
+                {dates[idx] && (
+                  <p className="text-xs text-gray-500 mt-1 capitalize">{formatFrDate(dates[idx])}</p>
+                )}
+              </div>
+            )}
           </div>
-        ))}
+          );
+        })}
 
         <div>
           <label className="block text-xs text-gray-500 mb-1">Notes (optionnel)</label>
@@ -803,15 +964,23 @@ function PlanifierSplits({
           </div>
         )}
 
-        <button
-          onClick={submit}
-          disabled={loading}
-          className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 text-sm font-medium"
-        >
-          {loading
-            ? "Création en cours…"
-            : `Planifier ${splits.length} tournée${splits.length > 1 ? "s" : ""} · ${splits.reduce((s, sp) => s + sp.totalVelos, 0)} vélos`}
-        </button>
+        {(() => {
+          const nonEmpty = editedSplits.filter((sp) => sp.stops.length > 0);
+          const totalVelos = nonEmpty.reduce((s, sp) => s + sp.totalVelos, 0);
+          return (
+            <button
+              onClick={submit}
+              disabled={loading || nonEmpty.length === 0}
+              className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50 text-sm font-medium"
+            >
+              {loading
+                ? "Création en cours…"
+                : nonEmpty.length === 0
+                ? "Aucun arrêt à planifier"
+                : `Planifier ${nonEmpty.length} tournée${nonEmpty.length > 1 ? "s" : ""} · ${totalVelos} vélos`}
+            </button>
+          );
+        })()}
       </div>
     </div>
   );
