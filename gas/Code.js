@@ -2037,8 +2037,44 @@ function validateVerification(id) {
   var r = _findVerifRow(id);
   if (!r) return { error: "Vérification introuvable" };
   if (r.statusCol >= 0) r.sheet.getRange(r.rowIndex, r.statusCol + 1).setValue("validated");
+
+  var headers = r.sheet.getRange(1, 1, 1, r.sheet.getLastColumn()).getValues()[0];
+  var docTypeCol = headers.indexOf("docType");
+  var driveUrlCol = headers.indexOf("driveUrl");
+  var docType = docTypeCol >= 0 ? String(r.row[docTypeCol] || "") : "";
+  var driveUrl = driveUrlCol >= 0 ? String(r.row[driveUrlCol] || "").split(" ||| ")[0] : "";
+  var clientId = r.clientIdCol >= 0 ? r.row[r.clientIdCol] : "";
+
+  if (clientId && docType) {
+    var mapping = {
+      DEVIS: { flag: "devisSignee", link: "devisLien" },
+      KBIS: { flag: "kbisRecu", link: "kbisLien" },
+      LIASSE: { flag: "attestationRecue", link: "attestationLien" },
+      URSSAF: { flag: "attestationRecue", link: "attestationLien" },
+      ATTESTATION: { flag: "attestationRecue", link: "attestationLien" },
+      SIGNATURE: { flag: "signatureOk", link: "signatureLien" },
+      BICYCLE: { flag: "inscriptionBicycle", link: "bicycleLien" },
+      PARCELLE: { flag: "parcelleCadastrale", link: "parcelleCadastraleLien" }
+    };
+    var m = mapping[docType];
+    if (m) {
+      var cSheet = SS.getSheetByName("Clients");
+      var cData = cSheet.getDataRange().getValues();
+      var cHeaders = cData[0];
+      for (var ci = 1; ci < cData.length; ci++) {
+        if (String(cData[ci][0]) === String(clientId)) {
+          var flagCol = cHeaders.indexOf(m.flag);
+          var linkCol = cHeaders.indexOf(m.link);
+          if (flagCol >= 0) cSheet.getRange(ci + 1, flagCol + 1).setValue(true);
+          if (linkCol >= 0 && driveUrl) cSheet.getRange(ci + 1, linkCol + 1).setValue(driveUrl);
+          break;
+        }
+      }
+    }
+  }
+
   SpreadsheetApp.flush();
-  return { ok: true, id: id, status: "validated" };
+  return { ok: true, id: id, status: "validated", docType: docType, clientId: clientId };
 }
 
 function rejectVerification(id, revertNbVelos, notes) {
