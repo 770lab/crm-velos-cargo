@@ -127,6 +127,7 @@ function handleRequest(e) {
         result = assignTournee(bodyAT.tourneeId || e.parameter.tourneeId, {
           chauffeurId: bodyAT.chauffeurId,
           chefEquipeId: bodyAT.chefEquipeId,
+          chefEquipeIds: bodyAT.chefEquipeIds,
           monteurIds: bodyAT.monteurIds,
           nbMonteurs: bodyAT.nbMonteurs
         });
@@ -534,7 +535,7 @@ function ensureLivraisonsSchema() {
     sheet = SS.insertSheet("Livraisons");
     var initialCols = [
       "id","clientId","datePrevue","dateEffective","statut","notes",
-      "nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs"
+      "nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs","chefEquipeIds"
     ];
     sheet.getRange(1, 1, 1, initialCols.length).setValues([initialCols]);
     return { sheet: sheet, headers: initialCols };
@@ -542,7 +543,7 @@ function ensureLivraisonsSchema() {
 
   var lastCol = sheet.getLastColumn();
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  var needed = ["nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs"];
+  var needed = ["nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs","chefEquipeIds"];
   var added = false;
   for (var k = 0; k < needed.length; k++) {
     if (headers.indexOf(needed[k]) === -1) {
@@ -738,6 +739,12 @@ function getLivraisons() {
     }
     liv.chauffeurId = liv.chauffeurId || null;
     liv.chefEquipeId = liv.chefEquipeId || null;
+    if (typeof liv.chefEquipeIds === "string" && liv.chefEquipeIds) {
+      try { liv.chefEquipeIds = JSON.parse(liv.chefEquipeIds); }
+      catch (e) { liv.chefEquipeIds = []; }
+    } else if (!liv.chefEquipeIds) {
+      liv.chefEquipeIds = [];
+    }
     liv.nbMonteurs = Number(liv.nbMonteurs) || 0;
     return liv;
   });
@@ -2183,17 +2190,22 @@ function assignTournee(tourneeId, assignment) {
   var iChef = headers.indexOf("chefEquipeId");
   var iMonteurs = headers.indexOf("monteurIds");
   var iNbMonteurs = headers.indexOf("nbMonteurs");
+  var iChefIds = headers.indexOf("chefEquipeIds");
   if (iTourneeId < 0 || iChauffeur < 0 || iChef < 0 || iMonteurs < 0) {
     return { error: "Colonnes équipe manquantes, relance ensureLivraisonsSchema" };
   }
   var monteurIdsJson = Array.isArray(assignment.monteurIds)
     ? JSON.stringify(assignment.monteurIds)
     : (assignment.monteurIds || "");
+  var chefEquipeIdsJson = Array.isArray(assignment.chefEquipeIds)
+    ? JSON.stringify(assignment.chefEquipeIds)
+    : (assignment.chefEquipeIds || "");
   var updated = 0;
   for (var i = 1; i < data.length; i++) {
     if (String(data[i][iTourneeId]) === String(tourneeId)) {
       if (assignment.chauffeurId !== undefined) sheet.getRange(i + 1, iChauffeur + 1).setValue(assignment.chauffeurId || "");
       if (assignment.chefEquipeId !== undefined) sheet.getRange(i + 1, iChef + 1).setValue(assignment.chefEquipeId || "");
+      if (assignment.chefEquipeIds !== undefined && iChefIds >= 0) sheet.getRange(i + 1, iChefIds + 1).setValue(chefEquipeIdsJson);
       if (assignment.monteurIds !== undefined) sheet.getRange(i + 1, iMonteurs + 1).setValue(monteurIdsJson);
       if (assignment.nbMonteurs !== undefined && iNbMonteurs >= 0) sheet.getRange(i + 1, iNbMonteurs + 1).setValue(Number(assignment.nbMonteurs) || 0);
       updated++;
@@ -2367,7 +2379,7 @@ function getTourneeExecution(tourneeId) {
   var vData = vSheet ? vSheet.getDataRange().getValues() : [vHeaders];
 
   var livraisons = [];
-  var chauffeurId = null, chefEquipeId = null, monteurIds = [];
+  var chauffeurId = null, chefEquipeId = null, chefEquipeIds = [], monteurIds = [];
   for (var i = 1; i < data.length; i++) {
     if (String(data[i][iTourneeId]) !== String(tourneeId)) continue;
     var liv = {};
@@ -2375,8 +2387,12 @@ function getTourneeExecution(tourneeId) {
     if (typeof liv.monteurIds === "string" && liv.monteurIds) {
       try { liv.monteurIds = JSON.parse(liv.monteurIds); } catch (e) { liv.monteurIds = []; }
     }
+    if (typeof liv.chefEquipeIds === "string" && liv.chefEquipeIds) {
+      try { liv.chefEquipeIds = JSON.parse(liv.chefEquipeIds); } catch (e) { liv.chefEquipeIds = []; }
+    }
     chauffeurId = liv.chauffeurId || chauffeurId;
     chefEquipeId = liv.chefEquipeId || chefEquipeId;
+    if (Array.isArray(liv.chefEquipeIds) && liv.chefEquipeIds.length) chefEquipeIds = liv.chefEquipeIds;
     if (Array.isArray(liv.monteurIds) && liv.monteurIds.length) monteurIds = liv.monteurIds;
 
     var clientRow = cData.find(function(c) { return c[0] === liv.clientId; });
@@ -2422,6 +2438,7 @@ function getTourneeExecution(tourneeId) {
   }
   var chauffeur = chauffeurId ? equipeById[chauffeurId] || null : null;
   var chefEquipe = chefEquipeId ? equipeById[chefEquipeId] || null : null;
+  var chefsEquipe = (chefEquipeIds || []).map(function(cid) { return equipeById[cid] || null; }).filter(function(x) { return x; });
   var monteurs = (monteurIds || []).map(function(mid) { return equipeById[mid] || null; }).filter(function(x) { return x; });
 
   return {
@@ -2432,6 +2449,7 @@ function getTourneeExecution(tourneeId) {
     equipe: {
       chauffeur: chauffeur,
       chefEquipe: chefEquipe,
+      chefsEquipe: chefsEquipe,
       monteurs: monteurs
     }
   };

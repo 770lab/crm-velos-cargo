@@ -85,6 +85,7 @@ interface LivraisonRow {
   mode?: string | null;
   chauffeurId?: string | null;
   chefEquipeId?: string | null;
+  chefEquipeIds?: string[];
   monteurIds?: string[];
   nbMonteurs?: number;
   client: {

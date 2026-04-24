@@ -1032,18 +1032,26 @@ function TourneeModal({
             <span>📍</span>
             <span className="truncate">Départ : {ENTREPOT.label}</span>
           </div>
-          <div className="grid gap-2 text-center grid-cols-3">
+          <div className="grid gap-2 text-center grid-cols-5">
+            <div className="bg-white rounded-lg p-2">
+              <div className="text-lg font-bold text-blue-900">{tournee.totalVelos}</div>
+              <div className="text-[10px] text-blue-600">Vélos</div>
+            </div>
+            <div className="bg-white rounded-lg p-2">
+              <div className="text-lg font-bold text-blue-900">{tournee.livraisons.length}</div>
+              <div className="text-[10px] text-blue-600">Arrêts</div>
+            </div>
             <div className="bg-white rounded-lg p-2">
               <div className="text-lg font-bold text-blue-900">{fmtDuree(montageAvecEffectif)}</div>
-              <div className="text-[10px] text-blue-600">{isRetrait ? "Préparation + admin" : "Montage + admin"}{monteurs > 1 ? ` (${monteurs} mont.)` : ""}</div>
+              <div className="text-[10px] text-blue-600">{isRetrait ? "Prépa + admin" : "Montage"}{monteurs > 1 ? ` (${monteurs}m.)` : ""}</div>
             </div>
             <div className="bg-white rounded-lg p-2">
               <div className="text-lg font-bold text-blue-900">{fmtDuree(totalTrajetMin)}</div>
-              <div className="text-[10px] text-blue-600">Trajet route</div>
+              <div className="text-[10px] text-blue-600">Trajet</div>
             </div>
             <div className="bg-white rounded-lg p-2">
               <div className="text-lg font-bold text-blue-900">{fmtDuree(totalJourneeEffectif)}</div>
-              <div className="text-[10px] text-blue-600">Total journée</div>
+              <div className="text-[10px] text-blue-600">Total</div>
             </div>
           </div>
 
@@ -1099,7 +1107,12 @@ function TourneeModal({
             tourneeId={tournee.tourneeId}
             isRetrait={isRetrait}
             initialChauffeurId={tournee.livraisons[0]?.chauffeurId || null}
-            initialChefEquipeId={tournee.livraisons[0]?.chefEquipeId || null}
+            initialChefEquipeIds={(() => {
+              const ids = tournee.livraisons[0]?.chefEquipeIds;
+              if (Array.isArray(ids) && ids.length > 0) return ids;
+              const single = tournee.livraisons[0]?.chefEquipeId;
+              return single ? [single] : [];
+            })()}
             initialMonteurIds={tournee.livraisons[0]?.monteurIds || []}
             onSaved={onChanged}
           />
@@ -1440,6 +1453,35 @@ function parseTourneeFromNotes(notes: string | null): { tourneeId: string | null
   return { tourneeId: tid, mode };
 }
 
+function optimizeStopOrder(livraisons: LivraisonRow[]): LivraisonRow[] {
+  const withCoords = livraisons.filter((l) => l.client.lat && l.client.lng);
+  const withoutCoords = livraisons.filter((l) => !l.client.lat || !l.client.lng);
+  if (withCoords.length <= 1) return livraisons;
+
+  const remaining = [...withCoords];
+  const ordered: LivraisonRow[] = [];
+  let curLat = ENTREPOT.lat;
+  let curLng = ENTREPOT.lng;
+
+  while (remaining.length > 0) {
+    let bestIdx = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < remaining.length; i++) {
+      const d = haversineKm(curLat, curLng, remaining[i].client.lat!, remaining[i].client.lng!);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    const next = remaining.splice(bestIdx, 1)[0];
+    ordered.push(next);
+    curLat = next.client.lat!;
+    curLng = next.client.lng!;
+  }
+
+  return [...ordered, ...withoutCoords];
+}
+
 function groupByTournee(livraisons: LivraisonRow[]): Tournee[] {
   const groups = new Map<string, Tournee>();
   for (const l of livraisons) {
@@ -1476,6 +1518,9 @@ function groupByTournee(livraisons: LivraisonRow[]): Tournee[] {
     } else {
       g.statutGlobal = "mixte";
     }
+    if (g.livraisons.length > 1) {
+      g.livraisons = optimizeStopOrder(g.livraisons);
+    }
   }
 
   return Array.from(groups.values());
@@ -1485,20 +1530,20 @@ function EquipeAssignBlock({
   tourneeId,
   isRetrait,
   initialChauffeurId,
-  initialChefEquipeId,
+  initialChefEquipeIds,
   initialMonteurIds,
   onSaved,
 }: {
   tourneeId: string;
   isRetrait: boolean;
   initialChauffeurId: string | null;
-  initialChefEquipeId: string | null;
+  initialChefEquipeIds: string[];
   initialMonteurIds: string[];
   onSaved: () => void;
 }) {
   const { equipe } = useData();
   const [chauffeurId, setChauffeurId] = useState<string>(initialChauffeurId || "");
-  const [chefEquipeId, setChefEquipeId] = useState<string>(initialChefEquipeId || "");
+  const [chefEquipeIds, setChefEquipeIds] = useState<string[]>(initialChefEquipeIds);
   const [monteurIds, setMonteurIds] = useState<string[]>(initialMonteurIds);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -1511,7 +1556,7 @@ function EquipeAssignBlock({
   const hasEquipe = equipe.length > 0;
   const dirty =
     chauffeurId !== (initialChauffeurId || "") ||
-    chefEquipeId !== (initialChefEquipeId || "") ||
+    JSON.stringify([...chefEquipeIds].sort()) !== JSON.stringify([...initialChefEquipeIds].sort()) ||
     JSON.stringify([...monteurIds].sort()) !== JSON.stringify([...initialMonteurIds].sort());
 
   const save = async () => {
@@ -1521,7 +1566,8 @@ function EquipeAssignBlock({
       const r = await gasPost("assignTournee", {
         tourneeId,
         chauffeurId: chauffeurId || "",
-        chefEquipeId: chefEquipeId || "",
+        chefEquipeId: chefEquipeIds[0] || "",
+        chefEquipeIds,
         monteurIds,
       });
       if ((r as { error?: string }).error) throw new Error((r as { error?: string }).error);
@@ -1532,6 +1578,10 @@ function EquipeAssignBlock({
     } finally {
       setSaving(false);
     }
+  };
+
+  const toggleChef = (id: string) => {
+    setChefEquipeIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
   const toggleMonteur = (id: string) => {
@@ -1548,44 +1598,56 @@ function EquipeAssignBlock({
         {savedAt && !dirty && <span className="text-[11px] text-green-600">✓ enregistré</span>}
       </div>
 
-      <div className="grid md:grid-cols-2 gap-3 text-sm">
-        {!isRetrait && (
-          <div>
-            <label className="block text-xs text-gray-500 mb-1">🚚 Chauffeur</label>
-            <select
-              value={chauffeurId}
-              onChange={(e) => setChauffeurId(e.target.value)}
-              className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
-              disabled={!hasEquipe}
-            >
-              <option value="">— non affecté —</option>
-              {chauffeurs.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.nom}
-                </option>
-              ))}
-            </select>
-          </div>
-        )}
-        <div className={isRetrait ? "md:col-span-2" : ""}>
-          <label className="block text-xs text-gray-500 mb-1">👷 Chef d&apos;équipe</label>
+      {!isRetrait && (
+        <div className="mb-3">
+          <label className="block text-xs text-gray-500 mb-1">🚚 Chauffeur</label>
           <select
-            value={chefEquipeId}
-            onChange={(e) => setChefEquipeId(e.target.value)}
+            value={chauffeurId}
+            onChange={(e) => setChauffeurId(e.target.value)}
             className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
             disabled={!hasEquipe}
           >
             <option value="">— non affecté —</option>
-            {chefs.map((m) => (
+            {chauffeurs.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.nom}
               </option>
             ))}
           </select>
         </div>
+      )}
+
+      <div className="mb-3">
+        <label className="block text-xs text-gray-500 mb-1">
+          👷 Chef{chefEquipeIds.length > 1 ? "s" : ""} d&apos;équipe <span className="text-gray-400">({chefEquipeIds.length} sélectionné{chefEquipeIds.length > 1 ? "s" : ""})</span>
+        </label>
+        {chefs.length === 0 ? (
+          <div className="text-xs text-gray-400 italic">Aucun chef enregistré</div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {chefs.map((m) => {
+              const on = chefEquipeIds.includes(m.id);
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => toggleChef(m.id)}
+                  className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                    on
+                      ? "bg-blue-600 text-white border-blue-600"
+                      : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                  }`}
+                >
+                  {on ? "✓ " : ""}
+                  {m.nom}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      <div className="mt-3">
+      <div>
         <label className="block text-xs text-gray-500 mb-1">
           🔧 Monteurs <span className="text-gray-400">({monteurIds.length} sélectionné{monteurIds.length > 1 ? "s" : ""})</span>
         </label>
