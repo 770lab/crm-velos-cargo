@@ -302,21 +302,21 @@ function _geminiAnalyze(ctx) {
     text:
       "Tu analyses un email reçu pour un CRM de livraison de vélos cargo aux commerces.\n" +
       "Contexte : Artisans Verts Energy livre des vélos électriques aux salariés de magasins (1 vélo / salarié max).\n\n" +
-      "IMPORTANT : L’expéditeur de l’email N’EST PAS forcément le client final. " +
-      "Il peut être un apporteur d’affaires, un courtier, un cabinet RH ou un intermédiaire " +
-      "qui transmet des documents pour le compte d’un de ses propres clients. " +
-      "Le NOM DU CLIENT doit être extrait du CONTENU DES DOCUMENTS (PDF) et non de l’adresse email de l’expéditeur. " +
+      "IMPORTANT : L'expéditeur de l'email N'EST PAS forcément le client final. " +
+      "Il peut être un apporteur d'affaires, un courtier, un cabinet RH ou un intermédiaire " +
+      "qui transmet des documents pour le compte d'un de ses propres clients. " +
+      "Le NOM DU CLIENT doit être extrait du CONTENU DES DOCUMENTS (PDF) et non de l'adresse email de l'expéditeur. " +
       "Cherche dans le PDF : la raison sociale, le nom sur le KBIS, le nom sur la DSN/URSSAF, " +
       "le destinataire du devis, etc.\n\n" +
       "Liste des clients connus dans le CRM :\n" + clientList + "\n\n" +
       "Si le nom trouvé dans le document correspond (même partiellement) à un client connu ci-dessus, " +
-      "utilise EXACTEMENT le nom tel qu’il apparaît dans la liste.\n\n" +
+      "utilise EXACTEMENT le nom tel qu'il apparaît dans la liste.\n\n" +
       "Renvoie UNIQUEMENT un JSON strict :\n" +
       "{\n" +
-      ‘  "clientName": string|null (nom de la société CIBLE du document, PAS l\’expéditeur),\n’ +
-      ‘  "docType": "DEVIS"|"KBIS"|"LIASSE"|"URSSAF"|"ATTESTATION"|"SIGNATURE"|"BICYCLE"|"PARCELLE"|"AUTRE"|null,\n’ +
-      ‘  "effectif": number|null (effectif moyen mensuel, uniquement si DSN/URSSAF),\n’ +
-      ‘  "notes": string (1 phrase de contexte)\n’ +
+      '  "clientName": string|null (nom de la société CIBLE du document, PAS l\'expéditeur),\n' +
+      '  "docType": "DEVIS"|"KBIS"|"LIASSE"|"URSSAF"|"ATTESTATION"|"SIGNATURE"|"BICYCLE"|"PARCELLE"|"AUTRE"|null,\n' +
+      '  "effectif": number|null (effectif moyen mensuel, uniquement si DSN/URSSAF),\n' +
+      '  "notes": string (1 phrase de contexte)\n' +
       "}\n\n" +
       "Email :\n" +
       "From: " + ctx.fromEmail + "\n" +
