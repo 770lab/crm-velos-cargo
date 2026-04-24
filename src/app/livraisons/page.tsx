@@ -14,6 +14,7 @@ interface Tournee {
   mode: string | null;
   livraisons: LivraisonRow[];
   totalVelos: number;
+  nbMonteurs: number;
   statutGlobal: "planifiee" | "en_cours" | "livree" | "annulee" | "mixte";
 }
 
@@ -410,14 +411,15 @@ function DayStaffingSummary({ tournees }: { tournees: Tournee[] }) {
     }
     const g = byMode.get(key)!;
     g.tournees.push(t);
-    g.totalMin += estimateTourneeMinutes(t);
+    const tMonteurs = t.nbMonteurs > 0 ? t.nbMonteurs : MONTEURS_PAR_EQUIPE;
+    g.totalMin += estimateTourneeMinutes(t, tMonteurs);
     g.totalVelos += t.totalVelos;
   }
 
   const ORDER: Record<string, number> = { gros: 0, moyen: 1, camionnette: 2, retrait: 3, autre: 4 };
   const groupes = Array.from(byMode.values()).sort((a, b) => (ORDER[a.mode] ?? 99) - (ORDER[b.mode] ?? 99));
   const nbEquipes = groupes.length;
-  const nbMonteurs = nbEquipes * MONTEURS_PAR_EQUIPE;
+  const nbMonteurs = active.reduce((sum, t) => sum + (t.nbMonteurs > 0 ? t.nbMonteurs : MONTEURS_PAR_EQUIPE), 0);
   const hasRetrait = groupes.some((g) => g.mode === "retrait");
   const plafond = nbEquipes > 2;
 
@@ -713,12 +715,22 @@ function TourneeModal({
 }) {
   const { carte: allClients } = useData();
   const [busy, setBusy] = useState<string | null>(null);
-  const [monteurs, setMonteurs] = useState(2);
+  const [monteurs, setMonteurs] = useState(() => tournee.nbMonteurs > 0 ? tournee.nbMonteurs : MONTEURS_PAR_EQUIPE);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editingDate, setEditingDate] = useState(false);
   const [newDate, setNewDate] = useState(tournee.datePrevue ? isoDate(tournee.datePrevue) : "");
   const [addingClient, setAddingClient] = useState(false);
   const [clientSearch, setClientSearch] = useState("");
+
+  useEffect(() => {
+    if (!tournee.tourneeId) return;
+    const init = tournee.nbMonteurs > 0 ? tournee.nbMonteurs : MONTEURS_PAR_EQUIPE;
+    if (monteurs === init) return;
+    const t = setTimeout(() => {
+      gasPost("assignTournee", { tourneeId: tournee.tourneeId, nbMonteurs: monteurs });
+    }, 600);
+    return () => clearTimeout(t);
+  }, [monteurs, tournee.tourneeId, tournee.nbMonteurs]);
 
   const alreadyInTour = useMemo(
     () => new Set(tournee.livraisons.map((l) => l.clientId).filter((x): x is string => !!x)),
@@ -1446,12 +1458,14 @@ function groupByTournee(livraisons: LivraisonRow[]): Tournee[] {
         mode,
         livraisons: [],
         totalVelos: 0,
+        nbMonteurs: 0,
         statutGlobal: "planifiee",
       };
       groups.set(groupKey, g);
     }
     g.livraisons.push(l);
     g.totalVelos += l._count.velos;
+    if (l.nbMonteurs && l.nbMonteurs > g.nbMonteurs) g.nbMonteurs = l.nbMonteurs;
   }
 
   for (const g of groups.values()) {

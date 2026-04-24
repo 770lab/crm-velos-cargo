@@ -325,12 +325,17 @@ function _geminiAnalyze(ctx) {
   }];
 
   var pdfBlobs = ctx.pdfBlobs || (ctx.pdfBlob ? [ctx.pdfBlob] : []);
-  for (var i = 0; i < pdfBlobs.length && i < 3; i++) {
+  var totalB64Size = 0;
+  var MAX_PAYLOAD = 15 * 1024 * 1024; // 15 MB max pour Gemini
+  for (var i = 0; i < pdfBlobs.length; i++) {
     try {
-      var b64 = Utilities.base64Encode(pdfBlobs[i].getBytes());
+      var bytes = pdfBlobs[i].getBytes();
+      var b64Size = Math.ceil(bytes.length * 4 / 3);
+      if (totalB64Size + b64Size > MAX_PAYLOAD) break;
       parts.push({
-        inline_data: { mime_type: "application/pdf", data: b64 }
+        inline_data: { mime_type: "application/pdf", data: Utilities.base64Encode(bytes) }
       });
+      totalB64Size += b64Size;
     } catch (e) {}
   }
 

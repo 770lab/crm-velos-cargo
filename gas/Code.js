@@ -127,7 +127,8 @@ function handleRequest(e) {
         result = assignTournee(bodyAT.tourneeId || e.parameter.tourneeId, {
           chauffeurId: bodyAT.chauffeurId,
           chefEquipeId: bodyAT.chefEquipeId,
-          monteurIds: bodyAT.monteurIds
+          monteurIds: bodyAT.monteurIds,
+          nbMonteurs: bodyAT.nbMonteurs
         });
         break;
       case "getTourneeExecution":
@@ -533,7 +534,7 @@ function ensureLivraisonsSchema() {
     sheet = SS.insertSheet("Livraisons");
     var initialCols = [
       "id","clientId","datePrevue","dateEffective","statut","notes",
-      "nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds"
+      "nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs"
     ];
     sheet.getRange(1, 1, 1, initialCols.length).setValues([initialCols]);
     return { sheet: sheet, headers: initialCols };
@@ -541,7 +542,7 @@ function ensureLivraisonsSchema() {
 
   var lastCol = sheet.getLastColumn();
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  var needed = ["nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds"];
+  var needed = ["nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs"];
   var added = false;
   for (var k = 0; k < needed.length; k++) {
     if (headers.indexOf(needed[k]) === -1) {
@@ -737,6 +738,7 @@ function getLivraisons() {
     }
     liv.chauffeurId = liv.chauffeurId || null;
     liv.chefEquipeId = liv.chefEquipeId || null;
+    liv.nbMonteurs = Number(liv.nbMonteurs) || 0;
     return liv;
   });
 }
@@ -2180,6 +2182,7 @@ function assignTournee(tourneeId, assignment) {
   var iChauffeur = headers.indexOf("chauffeurId");
   var iChef = headers.indexOf("chefEquipeId");
   var iMonteurs = headers.indexOf("monteurIds");
+  var iNbMonteurs = headers.indexOf("nbMonteurs");
   if (iTourneeId < 0 || iChauffeur < 0 || iChef < 0 || iMonteurs < 0) {
     return { error: "Colonnes équipe manquantes, relance ensureLivraisonsSchema" };
   }
@@ -2192,6 +2195,7 @@ function assignTournee(tourneeId, assignment) {
       if (assignment.chauffeurId !== undefined) sheet.getRange(i + 1, iChauffeur + 1).setValue(assignment.chauffeurId || "");
       if (assignment.chefEquipeId !== undefined) sheet.getRange(i + 1, iChef + 1).setValue(assignment.chefEquipeId || "");
       if (assignment.monteurIds !== undefined) sheet.getRange(i + 1, iMonteurs + 1).setValue(monteurIdsJson);
+      if (assignment.nbMonteurs !== undefined && iNbMonteurs >= 0) sheet.getRange(i + 1, iNbMonteurs + 1).setValue(Number(assignment.nbMonteurs) || 0);
       updated++;
     }
   }
