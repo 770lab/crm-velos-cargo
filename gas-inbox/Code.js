@@ -271,7 +271,7 @@ function _processMessage(msg, crmCtx) {
     clientId: matched ? matched.id : "",
     entreprise: matched ? matched.entreprise : (gemini && gemini.clientName) || "",
     docType: gemini && gemini.docType || "",
-    driveUrl: result.attachments[0] && result.attachments[0].url || "",
+    driveUrl: result.attachments.map(function (a) { return a.url || ""; }).filter(Boolean).join(" ||| "),
     fileName: result.attachments.map(function (a) { return a.name; }).join(", "),
     fromEmail: fromEmail,
     subject: msg.getSubject(),

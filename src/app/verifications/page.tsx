@@ -235,14 +235,7 @@ function VerifCard({
 
       <div className="flex items-center flex-wrap gap-2 mt-3 pt-3 border-t">
         {verif.driveUrl ? (
-          <a
-            href={verif.driveUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"
-          >
-            📎 {verif.fileName || "Document"}
-          </a>
+          <DriveLinks driveUrl={verif.driveUrl} fileName={verif.fileName} />
         ) : (
           <span className="text-xs text-gray-400">Pas de fichier attaché</span>
         )}
@@ -380,6 +373,40 @@ function RejectModal({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function DriveLinks({ driveUrl, fileName }: { driveUrl: string; fileName?: string }) {
+  const urls = driveUrl.split(" ||| ").filter(Boolean);
+  const names = (fileName || "").split(", ").filter(Boolean);
+
+  if (urls.length <= 1) {
+    return (
+      <a
+        href={urls[0] || driveUrl}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"
+      >
+        📎 {fileName || "Document"}
+      </a>
+    );
+  }
+
+  return (
+    <div className="flex flex-wrap gap-2">
+      {urls.map((url, i) => (
+        <a
+          key={i}
+          href={url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1 bg-blue-50 px-2 py-1 rounded"
+        >
+          📎 {names[i] || `Document ${i + 1}`}
+        </a>
+      ))}
     </div>
   );
 }
