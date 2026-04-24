@@ -10,6 +10,7 @@ const nav = [
   { href: "/clients", label: "Clients", icon: "🏢" },
   { href: "/carte", label: "Carte & Tournées", icon: "🗺️" },
   { href: "/livraisons", label: "Livraisons", icon: "🚚" },
+  { href: "/equipe", label: "Équipe", icon: "👷" },
   { href: "/verifications", label: "À vérifier", icon: "🔎", badge: true as const },
 ];
 

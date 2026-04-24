@@ -525,7 +525,7 @@ function RetraitPanel({
 
       {selected.size > 0 && (
         <div className={`text-sm font-medium rounded-lg px-3 py-2 ${faisable ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
-          {totalVelos} vélos × 8 min = {fmtDuree(totalMin)} · {monteurs} monteur{monteurs > 1 ? "s" : ""} → {fmtDuree(Math.round(totalMin / monteurs))}/monteur
+          {totalVelos} vélos × {MINUTES_PAR_VELO} min = {fmtDuree(totalMin)} · {monteurs} monteur{monteurs > 1 ? "s" : ""} → {fmtDuree(Math.round(totalMin / monteurs))}/monteur
           {!faisable && ` (dépasse 8h — capacité max : ${capacite} vélos)`}
         </div>
       )}
@@ -602,7 +602,7 @@ function addDaysISO(iso: string, days: number): string {
 }
 
 const ENTREPOT = { lat: 48.9545398, lng: 2.4557494, label: "AXDIS PRO – Blanc-Mesnil" };
-const MINUTES_PAR_VELO = 8;
+const MINUTES_PAR_VELO = 12;
 const HEURES_JOURNEE = 8;
 const ROAD_FACTOR = 1.3;
 const KM_PAR_MIN = 0.5;

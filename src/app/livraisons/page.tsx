@@ -621,7 +621,7 @@ function StatutPill({ statut }: { statut: Tournee["statutGlobal"] }) {
   );
 }
 
-const MINUTES_PAR_VELO = 8;
+const MINUTES_PAR_VELO = 12;
 const HEURES_JOURNEE = 8;
 const SEUIL_SPLIT_MIN = 90;
 const ENTREPOT = { lat: 48.9545398, lng: 2.4557494, label: "AXDIS PRO – 2 Rue des Frères Lumière, 93150 Le Blanc-Mesnil" };
@@ -985,6 +985,17 @@ function TourneeModal({
             </div>
           </div>
           <div className="flex items-center gap-2">
+            {tournee.tourneeId && (
+              <a
+                href={`/tournee-execute?id=${encodeURIComponent(tournee.tourneeId)}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-1 text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 flex items-center gap-1"
+                title="Ouvrir l'écran mobile pour le chef d'équipe"
+              >
+                📱 Chef d&apos;équipe
+              </a>
+            )}
             <button
               onClick={() => setShowPrint(true)}
               className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-1"
@@ -1068,6 +1079,18 @@ function TourneeModal({
             </div>
           )}
         </div>
+
+        {/* Affectation équipe */}
+        {tournee.tourneeId && (
+          <EquipeAssignBlock
+            tourneeId={tournee.tourneeId}
+            isRetrait={isRetrait}
+            initialChauffeurId={tournee.livraisons[0]?.chauffeurId || null}
+            initialChefEquipeId={tournee.livraisons[0]?.chefEquipeId || null}
+            initialMonteurIds={tournee.livraisons[0]?.monteurIds || []}
+            onSaved={onChanged}
+          />
+        )}
 
         {/* Barre sélection */}
         <div className="flex items-center gap-3 mb-2">
@@ -1441,4 +1464,153 @@ function groupByTournee(livraisons: LivraisonRow[]): Tournee[] {
   }
 
   return Array.from(groups.values());
+}
+
+function EquipeAssignBlock({
+  tourneeId,
+  isRetrait,
+  initialChauffeurId,
+  initialChefEquipeId,
+  initialMonteurIds,
+  onSaved,
+}: {
+  tourneeId: string;
+  isRetrait: boolean;
+  initialChauffeurId: string | null;
+  initialChefEquipeId: string | null;
+  initialMonteurIds: string[];
+  onSaved: () => void;
+}) {
+  const { equipe } = useData();
+  const [chauffeurId, setChauffeurId] = useState<string>(initialChauffeurId || "");
+  const [chefEquipeId, setChefEquipeId] = useState<string>(initialChefEquipeId || "");
+  const [monteurIds, setMonteurIds] = useState<string[]>(initialMonteurIds);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<Date | null>(null);
+
+  const chauffeurs = equipe.filter((m) => m.role === "chauffeur" && m.actif !== false);
+  const chefs = equipe.filter((m) => m.role === "chef" && m.actif !== false);
+  const monteurs = equipe.filter((m) => m.role === "monteur" && m.actif !== false);
+
+  const hasEquipe = equipe.length > 0;
+  const dirty =
+    chauffeurId !== (initialChauffeurId || "") ||
+    chefEquipeId !== (initialChefEquipeId || "") ||
+    JSON.stringify([...monteurIds].sort()) !== JSON.stringify([...initialMonteurIds].sort());
+
+  const save = async () => {
+    setSaving(true);
+    setError(null);
+    try {
+      const r = await gasPost("assignTournee", {
+        tourneeId,
+        chauffeurId: chauffeurId || "",
+        chefEquipeId: chefEquipeId || "",
+        monteurIds,
+      });
+      if ((r as { error?: string }).error) throw new Error((r as { error?: string }).error);
+      setSavedAt(new Date());
+      onSaved();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const toggleMonteur = (id: string) => {
+    setMonteurIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  return (
+    <div className="bg-white border rounded-lg p-3 mb-4">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-sm font-medium text-gray-700">
+          👷 Affectation équipe
+          {!hasEquipe && <span className="ml-2 text-xs text-gray-400 font-normal">— ajoute d&apos;abord tes membres dans /equipe</span>}
+        </span>
+        {savedAt && !dirty && <span className="text-[11px] text-green-600">✓ enregistré</span>}
+      </div>
+
+      <div className="grid md:grid-cols-2 gap-3 text-sm">
+        {!isRetrait && (
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">🚚 Chauffeur</label>
+            <select
+              value={chauffeurId}
+              onChange={(e) => setChauffeurId(e.target.value)}
+              className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
+              disabled={!hasEquipe}
+            >
+              <option value="">— non affecté —</option>
+              {chauffeurs.map((m) => (
+                <option key={m.id} value={m.id}>
+                  {m.nom}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        <div className={isRetrait ? "md:col-span-2" : ""}>
+          <label className="block text-xs text-gray-500 mb-1">👷 Chef d&apos;équipe</label>
+          <select
+            value={chefEquipeId}
+            onChange={(e) => setChefEquipeId(e.target.value)}
+            className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
+            disabled={!hasEquipe}
+          >
+            <option value="">— non affecté —</option>
+            {chefs.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.nom}
+              </option>
+            ))}
+          </select>
+        </div>
+      </div>
+
+      <div className="mt-3">
+        <label className="block text-xs text-gray-500 mb-1">
+          🔧 Monteurs <span className="text-gray-400">({monteurIds.length} sélectionné{monteurIds.length > 1 ? "s" : ""})</span>
+        </label>
+        {monteurs.length === 0 ? (
+          <div className="text-xs text-gray-400 italic">Aucun monteur enregistré</div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {monteurs.map((m) => {
+              const on = monteurIds.includes(m.id);
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => toggleMonteur(m.id)}
+                  className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                    on
+                      ? "bg-emerald-600 text-white border-emerald-600"
+                      : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                  }`}
+                >
+                  {on ? "✓ " : ""}
+                  {m.nom}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      {error && <div className="mt-2 text-xs text-red-600 bg-red-50 rounded p-2">{error}</div>}
+
+      <div className="mt-3 flex justify-end">
+        <button
+          onClick={save}
+          disabled={!dirty || saving || !hasEquipe}
+          className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
+        >
+          {saving ? "..." : "Enregistrer l'affectation"}
+        </button>
+      </div>
+    </div>
+  );
 }
