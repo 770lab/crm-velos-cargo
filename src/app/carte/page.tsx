@@ -317,6 +317,7 @@ export default function CartePage() {
                 <PlanifierSplits
                   mode={mode}
                   splits={tournee.splits}
+                  clientsProches={tournee.clientsProches}
                   loadByDate={loadByDate}
                   onPlanned={() => { refresh("livraisons"); refresh("carte"); }}
                   resetTour={() => handleSelectClient(selected!)}
@@ -680,12 +681,14 @@ function fmtDuree(min: number): string {
 function PlanifierSplits({
   mode,
   splits,
+  clientsProches,
   loadByDate,
   onPlanned,
   resetTour,
 }: {
   mode: string;
   splits: TourneeSplit[];
+  clientsProches: TourneeResult["clientsProches"];
   loadByDate: Map<string, DayLoad>;
   onPlanned: () => void;
   resetTour: () => void;
@@ -716,6 +719,32 @@ function PlanifierSplits({
         const stops = sp.stops.filter((_, j) => j !== stopIdx);
         const totalVelos = stops.reduce((sum, s) => sum + s.nbVelos, 0);
         return { ...sp, stops, totalVelos };
+      })
+    );
+  };
+
+  const addStopFromCandidate = (
+    splitIdx: number,
+    candidate: TourneeResult["clientsProches"][number]
+  ) => {
+    setEditedSplits((prev) =>
+      prev.map((sp, i) => {
+        if (i !== splitIdx) return sp;
+        const used = sp.stops.reduce((sum, s) => sum + s.nbVelos, 0);
+        const free = Math.max(0, sp.capacite - used);
+        const nb = Math.min(candidate.velosRestants, free);
+        if (nb <= 0) return sp;
+        const newStop: TourneeStop = {
+          id: candidate.id,
+          entreprise: candidate.entreprise,
+          ville: candidate.ville,
+          lat: candidate.lat,
+          lng: candidate.lng,
+          nbVelos: nb,
+          distance: candidate.distance,
+        };
+        const stops = [...sp.stops, newStop];
+        return { ...sp, stops, totalVelos: used + nb };
       })
     );
   };
@@ -920,6 +949,46 @@ function PlanifierSplits({
                 </div>
               )}
             </div>
+
+            {!isRetrait && !isEmpty && (() => {
+              const used = sp.stops.reduce((acc, s) => acc + s.nbVelos, 0);
+              const free = sp.capacite - used;
+              if (free <= 0) return null;
+              const inSplit = new Set(sp.stops.map((s) => s.id));
+              const candidates = (clientsProches || [])
+                .filter((c) => !inSplit.has(c.id) && c.velosRestants > 0)
+                .slice(0, 8);
+              if (candidates.length === 0) return null;
+              return (
+                <div className="rounded-lg border border-dashed border-green-300 bg-green-50/50 p-2 space-y-1">
+                  <div className="text-[11px] font-medium text-green-900 flex justify-between">
+                    <span>🔁 Remplir le camion</span>
+                    <span className="text-green-700">{free} v. libres</span>
+                  </div>
+                  <div className="text-[10px] text-gray-600">Clients proches éligibles, triés par distance :</div>
+                  <div className="space-y-1">
+                    {candidates.map((c) => {
+                      const nb = Math.min(c.velosRestants, free);
+                      return (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => addStopFromCandidate(idx, c)}
+                          className="w-full flex items-center gap-2 px-2 py-1.5 text-xs bg-white border rounded hover:border-green-400 hover:bg-green-50 text-left"
+                        >
+                          <span className="flex-1 min-w-0 truncate">
+                            {c.entreprise}
+                            {c.ville && <span className="text-gray-400"> · {c.ville}</span>}
+                          </span>
+                          <span className="text-gray-500 whitespace-nowrap">{c.distance} km</span>
+                          <span className="text-green-700 font-medium whitespace-nowrap">+{nb} v.</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              );
+            })()}
 
             {isEmpty ? (
               <div className="text-xs text-gray-400 italic text-center py-2">
