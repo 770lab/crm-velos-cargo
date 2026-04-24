@@ -714,6 +714,11 @@ function TourneeModal({
   onChanged: () => void;
 }) {
   const { carte: allClients } = useData();
+  const clientInfo = useMemo(() => {
+    const map = new Map<string, typeof allClients[number]>();
+    for (const c of allClients) map.set(c.id, c);
+    return map;
+  }, [allClients]);
   const [busy, setBusy] = useState<string | null>(null);
   const [monteurs, setMonteurs] = useState(() => tournee.nbMonteurs > 0 ? tournee.nbMonteurs : MONTEURS_PAR_EQUIPE);
   const [selected, setSelected] = useState<Set<string>>(new Set());
@@ -939,6 +944,7 @@ function TourneeModal({
         segments={segments}
         retourSegment={retourSegment}
         monteurs={monteurs}
+        clientInfo={clientInfo}
         onBack={() => setShowPrint(false)}
       />
     );
@@ -1183,6 +1189,11 @@ function TourneeModal({
                   {l.client.telephone && (
                     <div className="text-xs text-gray-400">{l.client.telephone}</div>
                   )}
+                  {l.clientId && clientInfo.get(l.clientId)?.apporteur && (
+                    <div className="text-[10px] text-orange-600 font-medium mt-0.5">
+                      Apporteur : {clientInfo.get(l.clientId)!.apporteur}
+                    </div>
+                  )}
                 </div>
                 <div className="text-right shrink-0">
                   <span className="text-sm font-medium bg-gray-100 px-2 py-0.5 rounded">
@@ -1317,12 +1328,14 @@ function FeuilleDeRoute({
   segments,
   retourSegment,
   monteurs,
+  clientInfo,
   onBack,
 }: {
   tournee: Tournee;
   segments: { distKm: number; trajetMin: number }[];
   retourSegment: { distKm: number; trajetMin: number };
   monteurs: number;
+  clientInfo: Map<string, { apporteur: string | null; contact: string | null; email: string | null }>;
   onBack: () => void;
 }) {
   const totalTrajet = segments.reduce((s, seg) => s + seg.trajetMin, 0) + retourSegment.trajetMin;
@@ -1369,6 +1382,7 @@ function FeuilleDeRoute({
               <th className="py-2 w-8">#</th>
               <th className="py-2">Client</th>
               <th className="py-2">Adresse</th>
+              <th className="py-2 w-20 text-center">Apporteur</th>
               <th className="py-2 w-16 text-center">Tél.</th>
               <th className="py-2 w-12 text-center">Vélos</th>
               <th className="py-2 w-16 text-center">Trajet</th>
@@ -1382,6 +1396,9 @@ function FeuilleDeRoute({
                 <td className="py-2 font-medium">{l.client.entreprise}</td>
                 <td className="py-2 text-xs text-gray-600">
                   {[l.client.adresse, l.client.codePostal, l.client.ville].filter(Boolean).join(", ")}
+                </td>
+                <td className="py-2 text-xs text-center text-orange-600 font-medium">
+                  {(l.clientId && clientInfo.get(l.clientId)?.apporteur) || "—"}
                 </td>
                 <td className="py-2 text-xs text-center">{l.client.telephone || "—"}</td>
                 <td className="py-2 text-center font-medium">{l._count.velos}</td>
@@ -1397,6 +1414,7 @@ function FeuilleDeRoute({
               <tr className="border-b bg-gray-50">
                 <td className="py-2 text-gray-400">↩</td>
                 <td className="py-2 font-medium text-gray-500" colSpan={2}>Retour entrepôt — {ENTREPOT.label}</td>
+                <td className="py-2 text-center text-gray-400">—</td>
                 <td className="py-2 text-center text-gray-400">—</td>
                 <td className="py-2 text-center text-gray-400">—</td>
                 <td className="py-2 text-center text-xs text-gray-500">{retourSegment.distKm}km</td>
