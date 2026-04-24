@@ -23,6 +23,7 @@ export default function ClientsPage() {
   const [showSync, setShowSync] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [editVelos, setEditVelos] = useState<ClientRow | null>(null);
 
   const nextDeliveryByClient = useMemo(() => {
     const map = new Map<string, { date: string; nbVelos: number; tourneeId?: string | null; mode?: string | null }>();
@@ -259,7 +260,7 @@ export default function ClientsPage() {
                 <td className="px-4 py-3 text-gray-600">{c.ville || "-"}</td>
                 <td className="text-center px-4 py-3 text-gray-500">{c.departement || "-"}</td>
                 <td className="text-center px-4 py-3 font-medium">
-                  <VelosCell livres={c.stats.livres} total={c.stats.totalVelos} planifies={c.stats.planifies ?? 0} />
+                  <VelosCell livres={c.stats.livres} total={c.stats.totalVelos} planifies={c.stats.planifies ?? 0} onEdit={() => setEditVelos(c)} />
                 </td>
                 <td className="text-center px-4 py-3 text-xs">
                   <DeliveryCell next={nextDeliveryByClient.get(c.id)} />
@@ -319,6 +320,7 @@ export default function ClientsPage() {
 
       {showAdd && <AddClientModal onClose={() => { setShowAdd(false); refresh("clients"); }} />}
       {showImport && <ImportModal onClose={() => { setShowImport(false); refresh("clients"); }} />}
+      {editVelos && <EditVelosModal client={editVelos} onClose={() => setEditVelos(null)} onSaved={() => refresh("clients")} />}
       {showSync && <SyncDriveModal onClose={() => { setShowSync(false); refresh("clients"); }} />}
       {mailClient && (
         <RappelMailModal
@@ -604,14 +606,102 @@ function StatusDot({ ok }: { ok: boolean }) {
   );
 }
 
-function VelosCell({ livres, total, planifies }: { livres: number; total: number; planifies: number }) {
+function VelosCell({ livres, total, planifies, onEdit }: { livres: number; total: number; planifies: number; onEdit?: () => void }) {
   const reste = Math.max(0, total - livres - planifies);
   return (
-    <div className="leading-tight" title={`${livres} livrés · ${planifies} planifiés · ${reste} à planifier (sur ${total})`}>
+    <div className="leading-tight inline-flex items-center gap-1" title={`${livres} livrés · ${planifies} planifiés · ${reste} à planifier (sur ${total}) — clic sur le crayon pour corriger l'effectif`}>
       <div>{livres}/{total}</div>
+      {onEdit && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onEdit(); }}
+          className="text-gray-300 hover:text-blue-600 text-[10px] ml-1"
+          title="Corriger le nombre de vélos"
+        >
+          ✎
+        </button>
+      )}
       {planifies > 0 && (
         <div className="text-[10px] font-normal text-orange-600">+{planifies} planifié{planifies > 1 ? "s" : ""}</div>
       )}
+    </div>
+  );
+}
+
+function EditVelosModal({ client, onClose, onSaved }: { client: ClientRow; onClose: () => void; onSaved: () => void }) {
+  const [value, setValue] = useState<string>(String(client.stats.totalVelos));
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const target = parseInt(value, 10);
+  const current = client.stats.totalVelos;
+  const livres = client.stats.livres;
+  const planifies = client.stats.planifies ?? 0;
+  const diff = isFinite(target) ? target - current : 0;
+
+  const save = async () => {
+    if (!isFinite(target) || target < 0) { setError("Valeur invalide"); return; }
+    if (target < livres) { setError(`Tu ne peux pas descendre en dessous de ${livres} (vélos déjà livrés)`); return; }
+    setLoading(true); setError(null);
+    try {
+      const res = await gasPost("setClientVelosTarget", { clientId: client.id, target });
+      if ((res as { error?: string }).error) throw new Error((res as { error?: string }).error);
+      onSaved();
+      onClose();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <div>
+            <h2 className="text-lg font-semibold">Corriger l'effectif — {client.entreprise}</h2>
+            <p className="text-xs text-gray-500 mt-1">1 vélo / salarié au maximum</p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+        </div>
+
+        <div className="bg-gray-50 rounded-lg p-3 mb-4 text-sm space-y-1">
+          <div className="flex justify-between"><span className="text-gray-600">Actuel</span><span className="font-medium">{current} vélo{current > 1 ? "s" : ""}</span></div>
+          <div className="flex justify-between text-xs"><span className="text-gray-500">dont livrés</span><span>{livres}</span></div>
+          {planifies > 0 && <div className="flex justify-between text-xs"><span className="text-gray-500">dont planifiés</span><span>{planifies}</span></div>}
+        </div>
+
+        <label className="block text-sm font-medium text-gray-700 mb-1">Nouvel effectif cible</label>
+        <input
+          type="number"
+          min={livres}
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          className="w-full px-3 py-2 border rounded-lg text-sm"
+          autoFocus
+        />
+
+        {diff !== 0 && isFinite(target) && (
+          <div className={`mt-2 text-xs rounded-lg p-2 ${diff > 0 ? "bg-blue-50 text-blue-800" : "bg-amber-50 text-amber-800"}`}>
+            {diff > 0
+              ? `+${diff} vélo${diff > 1 ? "s" : ""} seront ajoutés`
+              : `${Math.abs(diff)} vélo${Math.abs(diff) > 1 ? "s" : ""} seront annulés (soft — réversibles)`}
+          </div>
+        )}
+
+        {error && <div className="mt-2 text-xs text-red-600 bg-red-50 rounded-lg p-2">{error}</div>}
+
+        <div className="flex justify-end gap-2 mt-4">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">Annuler</button>
+          <button
+            onClick={save}
+            disabled={loading || diff === 0}
+            className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
+          >
+            {loading ? "..." : "Enregistrer"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

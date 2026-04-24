@@ -93,6 +93,23 @@ function handleRequest(e) {
       case "cancelTournee":
         result = cancelTournee(e.parameter.tourneeId);
         break;
+      case "setClientVelosTarget":
+        var bodyST2 = getBody();
+        result = setClientVelosTarget(bodyST2.clientId || e.parameter.clientId, Number(bodyST2.target != null ? bodyST2.target : e.parameter.target));
+        break;
+      case "listVerifications":
+        result = listVerifications(e.parameter);
+        break;
+      case "validateVerification":
+        result = validateVerification(e.parameter.id);
+        break;
+      case "rejectVerification":
+        var bodyRV = getBody();
+        result = rejectVerification(bodyRV.id || e.parameter.id, bodyRV.revertNbVelos === true || e.parameter.revertNbVelos === "true", bodyRV.notes || "");
+        break;
+      case "countPendingVerifications":
+        result = countPendingVerifications();
+        break;
       default:
         result = { error: "Action inconnue: " + action };
     }
@@ -153,8 +170,11 @@ function getClients(params) {
       }
     });
 
+    var iAnnule = velosHeaders.indexOf("annule");
     var clientVelos = velosRows.filter(function(v) {
-      return v[velosHeaders.indexOf("clientId")] === c.id;
+      if (v[velosHeaders.indexOf("clientId")] !== c.id) return false;
+      if (iAnnule >= 0 && (v[iAnnule] === true || v[iAnnule] === "TRUE")) return false;
+      return true;
     });
 
     c.stats = {
@@ -226,8 +246,13 @@ function getClient(id) {
   var velosHeaders = velosData[0];
   var velosRows = velosData.slice(1);
 
+  var iAnnuleGV = velosHeaders.indexOf("annule");
   client.velos = velosRows
-    .filter(function(v) { return v[velosHeaders.indexOf("clientId")] === id; })
+    .filter(function(v) {
+      if (v[velosHeaders.indexOf("clientId")] !== id) return false;
+      if (iAnnuleGV >= 0 && (v[iAnnuleGV] === true || v[iAnnuleGV] === "TRUE")) return false;
+      return true;
+    })
     .map(function(v) {
       var velo = {};
       velosHeaders.forEach(function(h, j) { velo[h] = v[j]; });
@@ -353,14 +378,17 @@ function getStats() {
   var vRows = vData.slice(1);
 
   var totalClients = cRows.length;
-  var totalVelos = vRows.length;
+  var isBoolTmp = function(val) { return val === true || val === "TRUE"; };
+  var iAnnuleStats = vHeaders.indexOf("annule");
+  var vRowsActive = iAnnuleStats >= 0 ? vRows.filter(function(v) { return !isBoolTmp(v[iAnnuleStats]); }) : vRows;
+  var totalVelos = vRowsActive.length;
 
-  var isBool = function(val) { return val === true || val === "TRUE"; };
+  var isBool = isBoolTmp;
 
-  var velosLivres = vRows.filter(function(v) { return isBool(v[vHeaders.indexOf("photoQrPrise")]); }).length;
-  var certificatsRecus = vRows.filter(function(v) { return isBool(v[vHeaders.indexOf("certificatRecu")]); }).length;
-  var velosFacturables = vRows.filter(function(v) { return isBool(v[vHeaders.indexOf("facturable")]); }).length;
-  var velosFactures = vRows.filter(function(v) { return isBool(v[vHeaders.indexOf("facture")]); }).length;
+  var velosLivres = vRowsActive.filter(function(v) { return isBool(v[vHeaders.indexOf("photoQrPrise")]); }).length;
+  var certificatsRecus = vRowsActive.filter(function(v) { return isBool(v[vHeaders.indexOf("certificatRecu")]); }).length;
+  var velosFacturables = vRowsActive.filter(function(v) { return isBool(v[vHeaders.indexOf("facturable")]); }).length;
+  var velosFactures = vRowsActive.filter(function(v) { return isBool(v[vHeaders.indexOf("facture")]); }).length;
 
   var docFields = ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle","parcelleCadastrale"];
   var clientsDocsComplets = cRows.filter(function(c) {
@@ -1716,4 +1744,216 @@ function fetchParcelle(clientId) {
     lng: lng,
     geoportailUrl: geoPortailUrl
   };
+}
+
+// ---- SET CLIENT VELOS TARGET (correction effectif) ----
+
+function ensureVelosAnnuleColumn() {
+  var sheet = SS.getSheetByName("Velos");
+  if (!sheet) return { sheet: null, headers: [], annuleCol: -1 };
+  var lastCol = sheet.getLastColumn();
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  var annuleCol = headers.indexOf("annule");
+  if (annuleCol === -1) {
+    sheet.getRange(1, lastCol + 1).setValue("annule");
+    headers.push("annule");
+    annuleCol = headers.length - 1;
+  }
+  return { sheet: sheet, headers: headers, annuleCol: annuleCol };
+}
+
+// Ajuste le nombre de vélos actifs du client à `target` :
+//  - target > actifs : réactive annulés, puis crée lignes manquantes
+//  - target < actifs : soft-cancel les non-livrés d'abord (jamais de hard delete)
+function setClientVelosTarget(clientId, target) {
+  if (!clientId) return { error: "clientId manquant" };
+  if (!isFinite(target) || target < 0) return { error: "target invalide" };
+  target = Math.floor(target);
+
+  var meta = ensureVelosAnnuleColumn();
+  var sheet = meta.sheet;
+  if (!sheet) return { error: "Feuille Velos introuvable" };
+  var headers = meta.headers;
+  var annuleCol = meta.annuleCol;
+  var idCol = headers.indexOf("id");
+  var clientIdCol = headers.indexOf("clientId");
+  var livreCol = headers.indexOf("photoQrPrise");
+
+  var data = sheet.getDataRange().getValues();
+  var actifs = [];
+  var annules = [];
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][clientIdCol] !== clientId) continue;
+    var isAnn = data[i][annuleCol] === true || data[i][annuleCol] === "TRUE";
+    var isLivre = livreCol >= 0 && (data[i][livreCol] === true || data[i][livreCol] === "TRUE");
+    var entry = { rowIndex: i + 1, isLivre: isLivre };
+    if (isAnn) annules.push(entry); else actifs.push(entry);
+  }
+
+  var current = actifs.length;
+  var reactivated = 0, cancelled = 0, created = 0;
+
+  if (target > current) {
+    var toAdd = target - current;
+    // 1) Réactive d'abord les annulés
+    while (toAdd > 0 && annules.length > 0) {
+      var r = annules.shift();
+      sheet.getRange(r.rowIndex, annuleCol + 1).setValue("FALSE");
+      reactivated++; toAdd--;
+    }
+    // 2) Crée les lignes manquantes
+    if (toAdd > 0) {
+      // Prépare les nouvelles lignes avec id + clientId + annule=FALSE
+      var newRows = [];
+      for (var k = 0; k < toAdd; k++) {
+        var row = new Array(headers.length).fill("");
+        row[idCol] = Utilities.getUuid();
+        row[clientIdCol] = clientId;
+        row[annuleCol] = "FALSE";
+        newRows.push(row);
+      }
+      sheet.getRange(sheet.getLastRow() + 1, 1, newRows.length, headers.length).setValues(newRows);
+      created = toAdd;
+    }
+  } else if (target < current) {
+    var toCancel = current - target;
+    // Priorité : cancel les non-livrés
+    var nonLivres = actifs.filter(function(a) { return !a.isLivre; });
+    var livres = actifs.filter(function(a) { return a.isLivre; });
+    var ordered = nonLivres.concat(livres);
+    for (var j = 0; j < toCancel && j < ordered.length; j++) {
+      sheet.getRange(ordered[j].rowIndex, annuleCol + 1).setValue("TRUE");
+      cancelled++;
+    }
+  }
+
+  SpreadsheetApp.flush();
+  return {
+    ok: true,
+    clientId: clientId,
+    before: current,
+    after: target,
+    reactivated: reactivated,
+    cancelled: cancelled,
+    created: created
+  };
+}
+
+// ---- VERIFICATIONS PENDING ----
+
+var VERIF_SHEET_NAME = "VerificationsPending";
+var VERIF_COLS_CRM = [
+  "id", "receivedAt", "clientId", "entreprise", "docType",
+  "driveUrl", "fileName", "fromEmail", "subject",
+  "effectifDetected", "nbVelosBefore", "nbVelosAfter",
+  "status", "notes", "messageId"
+];
+
+function ensureVerificationsSheet() {
+  var sh = SS.getSheetByName(VERIF_SHEET_NAME);
+  if (!sh) {
+    sh = SS.insertSheet(VERIF_SHEET_NAME);
+    sh.getRange(1, 1, 1, VERIF_COLS_CRM.length).setValues([VERIF_COLS_CRM]);
+    sh.setFrozenRows(1);
+    return sh;
+  }
+  var headers = sh.getRange(1, 1, 1, Math.max(1, sh.getLastColumn())).getValues()[0];
+  var missing = VERIF_COLS_CRM.filter(function(c) { return headers.indexOf(c) < 0; });
+  if (missing.length) {
+    sh.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]);
+  }
+  return sh;
+}
+
+function listVerifications(params) {
+  var sh = ensureVerificationsSheet();
+  var data = sh.getDataRange().getValues();
+  if (data.length < 2) return { items: [], count: 0 };
+  var headers = data[0];
+  var status = (params && params.status) || "pending";
+  var limit = Math.max(1, Math.min(500, Number((params && params.limit) || 100)));
+
+  var items = [];
+  for (var i = data.length - 1; i >= 1 && items.length < limit; i--) {
+    var row = data[i];
+    var obj = {};
+    headers.forEach(function(h, j) {
+      var v = row[j];
+      if (v instanceof Date) obj[h] = Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM-dd'T'HH:mm:ssXXX");
+      else obj[h] = v;
+    });
+    obj._rowIndex = i + 1;
+    if (status === "all" || obj.status === status || (!obj.status && status === "pending")) {
+      items.push(obj);
+    }
+  }
+  return { items: items, count: items.length };
+}
+
+function _findVerifRow(id) {
+  var sh = ensureVerificationsSheet();
+  var data = sh.getDataRange().getValues();
+  if (data.length < 2) return null;
+  var headers = data[0];
+  var idCol = headers.indexOf("id");
+  var statusCol = headers.indexOf("status");
+  var notesCol = headers.indexOf("notes");
+  var clientIdCol = headers.indexOf("clientId");
+  var nbBeforeCol = headers.indexOf("nbVelosBefore");
+  var nbAfterCol = headers.indexOf("nbVelosAfter");
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][idCol]) === String(id)) {
+      return {
+        sheet: sh, rowIndex: i + 1, row: data[i],
+        idCol: idCol, statusCol: statusCol, notesCol: notesCol,
+        clientIdCol: clientIdCol, nbBeforeCol: nbBeforeCol, nbAfterCol: nbAfterCol
+      };
+    }
+  }
+  return null;
+}
+
+function validateVerification(id) {
+  var r = _findVerifRow(id);
+  if (!r) return { error: "Vérification introuvable" };
+  if (r.statusCol >= 0) r.sheet.getRange(r.rowIndex, r.statusCol + 1).setValue("validated");
+  SpreadsheetApp.flush();
+  return { ok: true, id: id, status: "validated" };
+}
+
+function rejectVerification(id, revertNbVelos, notes) {
+  var r = _findVerifRow(id);
+  if (!r) return { error: "Vérification introuvable" };
+  if (r.statusCol >= 0) r.sheet.getRange(r.rowIndex, r.statusCol + 1).setValue("rejected");
+  if (notes && r.notesCol >= 0) {
+    var existing = String(r.row[r.notesCol] || "");
+    var newNotes = existing ? existing + " | REJECT: " + notes : "REJECT: " + notes;
+    r.sheet.getRange(r.rowIndex, r.notesCol + 1).setValue(newNotes);
+  }
+  var revertResult = null;
+  if (revertNbVelos && r.clientIdCol >= 0 && r.nbBeforeCol >= 0) {
+    var cid = r.row[r.clientIdCol];
+    var before = Number(r.row[r.nbBeforeCol]);
+    if (cid && isFinite(before)) {
+      revertResult = setClientVelosTarget(cid, before);
+    }
+  }
+  SpreadsheetApp.flush();
+  return { ok: true, id: id, status: "rejected", revert: revertResult };
+}
+
+function countPendingVerifications() {
+  var sh = SS.getSheetByName(VERIF_SHEET_NAME);
+  if (!sh) return { count: 0 };
+  var data = sh.getDataRange().getValues();
+  if (data.length < 2) return { count: 0 };
+  var headers = data[0];
+  var statusCol = headers.indexOf("status");
+  if (statusCol < 0) return { count: data.length - 1 };
+  var n = 0;
+  for (var i = 1; i < data.length; i++) {
+    var s = String(data[i][statusCol] || "").toLowerCase();
+    if (s === "" || s === "pending" || s === "unassigned") n++;
+  }
+  return { count: n };
 }

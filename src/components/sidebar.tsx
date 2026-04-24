@@ -2,18 +2,41 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { gasGet } from "@/lib/gas";
 
 const nav = [
   { href: "/", label: "Tableau de bord", icon: "📊" },
   { href: "/clients", label: "Clients", icon: "🏢" },
   { href: "/carte", label: "Carte & Tournées", icon: "🗺️" },
   { href: "/livraisons", label: "Livraisons", icon: "🚚" },
+  { href: "/verifications", label: "À vérifier", icon: "🔎", badge: true as const },
 ];
 
 export function Sidebar() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
+  const [pendingCount, setPendingCount] = useState<number>(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      try {
+        const res = await gasGet("countPendingVerifications");
+        if (!cancelled && res && typeof (res as { count?: number }).count === "number") {
+          setPendingCount((res as { count: number }).count);
+        }
+      } catch {
+        // action pas encore déployée — on ignore silencieusement
+      }
+    };
+    load();
+    const interval = setInterval(load, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [pathname]);
 
   return (
     <>
@@ -48,6 +71,7 @@ export function Sidebar() {
               item.href === "/"
                 ? pathname === "/"
                 : pathname.startsWith(item.href);
+            const showBadge = "badge" in item && item.badge && pendingCount > 0;
             return (
               <Link
                 key={item.href}
@@ -60,7 +84,12 @@ export function Sidebar() {
                 }`}
               >
                 <span>{item.icon}</span>
-                {item.label}
+                <span className="flex-1">{item.label}</span>
+                {showBadge && (
+                  <span className="bg-red-600 text-white text-xs font-semibold min-w-[1.25rem] h-5 px-1.5 rounded-full inline-flex items-center justify-center">
+                    {pendingCount > 99 ? "99+" : pendingCount}
+                  </span>
+                )}
               </Link>
             );
           })}
