@@ -191,6 +191,11 @@ function ClientDetailPage() {
         {DOC_CONFIG.map((doc) => {
           const isValid = client[doc.field as keyof ClientDetail] as boolean;
           const lien = (client[doc.lienField as keyof ClientDetail] as string) || "";
+          const isExpired = doc.field === "kbisRecu"
+            ? isValid && isDocExpired(client.kbisDate, client.dateEngagement, 3)
+            : doc.field === "attestationRecue"
+            ? isValid && isDocExpired(client.liasseFiscaleDate, client.dateEngagement, 12)
+            : false;
           return (
             <DocCardExpanded
               key={doc.field}
@@ -198,6 +203,7 @@ function ClientDetailPage() {
               label={doc.label}
               description={doc.description}
               validated={isValid}
+              expired={isExpired}
               lien={lien}
               saving={saving === doc.field || saving === doc.lienField}
               onToggle={() => updateField(doc.field, !isValid)}
@@ -419,6 +425,7 @@ function DocCardExpanded({
   description,
   source,
   validated,
+  expired,
   lien,
   saving,
   onToggle,
@@ -431,6 +438,7 @@ function DocCardExpanded({
   description: string;
   source?: string;
   validated: boolean;
+  expired?: boolean;
   lien: string;
   saving: boolean;
   onToggle: () => void;
@@ -449,7 +457,9 @@ function DocCardExpanded({
   return (
     <div
       className={`rounded-xl border p-4 transition-colors ${
-        validated
+        validated && expired
+          ? "bg-orange-50 border-orange-200"
+          : validated
           ? "bg-green-50 border-green-200"
           : "bg-white border-gray-200"
       }`}
@@ -457,12 +467,14 @@ function DocCardExpanded({
       <div className="flex items-start gap-3">
         <div
           className={`w-8 h-8 rounded-full flex items-center justify-center text-sm font-bold shrink-0 ${
-            validated
+            validated && expired
+              ? "bg-orange-500 text-white"
+              : validated
               ? "bg-green-500 text-white"
               : "bg-gray-200 text-gray-500"
           }`}
         >
-          {validated ? "✓" : step}
+          {validated ? (expired ? "!" : "✓") : step}
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between">
@@ -471,12 +483,14 @@ function DocCardExpanded({
               onClick={onToggle}
               disabled={saving}
               className={`px-3 py-1 text-xs font-medium rounded-lg transition-colors ${
-                validated
+                validated && expired
+                  ? "bg-orange-100 text-orange-700 hover:bg-red-100 hover:text-red-700"
+                  : validated
                   ? "bg-green-100 text-green-700 hover:bg-red-100 hover:text-red-700"
                   : "bg-blue-600 text-white hover:bg-blue-700"
               } disabled:opacity-50`}
             >
-              {saving ? "..." : validated ? "Validé — annuler ?" : "Valider"}
+              {saving ? "..." : validated && expired ? "Périmé — renouveler" : validated ? "Validé — annuler ?" : "Valider"}
             </button>
           </div>
           <p className="text-xs text-gray-500 mt-1">
