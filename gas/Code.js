@@ -1758,17 +1758,34 @@ function fetchParcelle(clientId) {
   var lng = coords[0];
   var lat = coords[1];
 
-  // 2) Requête cadastre via apicarto.ign.fr
-  var cadastreUrl = "https://apicarto.ign.fr/api/cadastre/parcelle?geom=" +
-    encodeURIComponent('{"type":"Point","coordinates":[' + lng + ',' + lat + ']}') +
-    "&_limit=1";
-  var cadRes = UrlFetchApp.fetch(cadastreUrl, { muteHttpExceptions: true });
-  if (cadRes.getResponseCode() !== 200) return { error: "Erreur API cadastre : HTTP " + cadRes.getResponseCode() };
+  // 2) Requête cadastre — essai apicarto.ign.fr puis fallback geo.api.gouv.fr
+  var props = null;
+  try {
+    var cadastreUrl = "https://apicarto.ign.fr/api/cadastre/parcelle?geom=" +
+      encodeURIComponent('{"type":"Point","coordinates":[' + lng + ',' + lat + ']}') +
+      "&_limit=1";
+    var cadRes = UrlFetchApp.fetch(cadastreUrl, { muteHttpExceptions: true });
+    if (cadRes.getResponseCode() === 200) {
+      var cadData = JSON.parse(cadRes.getContentText());
+      if (cadData.features && cadData.features.length > 0) props = cadData.features[0].properties;
+    }
+  } catch (e) {}
 
-  var cadData = JSON.parse(cadRes.getContentText());
-  if (!cadData.features || cadData.features.length === 0) return { error: "Aucune parcelle trouvée pour ces coordonnées." };
+  if (!props) {
+    try {
+      var fallbackUrl = "https://geo.api.gouv.fr/communes?lat=" + lat + "&lon=" + lng + "&fields=codeDepartement,codeCommune&limit=1";
+      var fbRes = UrlFetchApp.fetch(fallbackUrl, { muteHttpExceptions: true });
+      if (fbRes.getResponseCode() === 200) {
+        var communes = JSON.parse(fbRes.getContentText());
+        if (communes.length > 0) {
+          props = { code_com: communes[0].code, section: "", numero: "", contenance: "" };
+        }
+      }
+    } catch (e2) {}
+  }
 
-  var props = cadData.features[0].properties;
+  if (!props) return { error: "API cadastre indisponible — réessayez plus tard." };
+
   var codeCommune = props.code_com || props.commune || "";
   var section = props.section || "";
   var numero = props.numero || "";

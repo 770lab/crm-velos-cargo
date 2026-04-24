@@ -56,6 +56,8 @@ function doGet(e) {
         return _respond(debugInbox());
       case "progress":
         return _respond(syncProgress());
+      case "relabel":
+        return _respond(relabelUnprocessed());
       default:
         return _respondError("Action GET inconnue : " + action);
     }
@@ -122,6 +124,18 @@ function syncProgress() {
   };
 }
 
+function relabelUnprocessed() {
+  var labelTo = _getOrCreateLabel(LABEL_TO_PROCESS);
+  var query = "has:attachment -label:" + LABEL_PROCESSED + " -label:" + LABEL_FAILED + " -label:" + LABEL_TO_PROCESS;
+  var threads = GmailApp.search(query, 0, 500);
+  var count = 0;
+  for (var i = 0; i < threads.length; i++) {
+    threads[i].addLabel(labelTo);
+    count++;
+  }
+  return { relabeled: count };
+}
+
 function installTriggers() {
   // Supprime les anciens triggers
   var triggers = ScriptApp.getProjectTriggers();
@@ -130,8 +144,9 @@ function installTriggers() {
       ScriptApp.deleteTrigger(triggers[i]);
     }
   }
-  ScriptApp.newTrigger("inboxSync").timeBased().everyMinutes(15).create();
-  Logger.log("Trigger inboxSync installé (15 min).");
+  var interval = 1;
+  ScriptApp.newTrigger("inboxSync").timeBased().everyMinutes(interval).create();
+  Logger.log("Trigger inboxSync installé (" + interval + " min).");
 }
 
 function _getGeminiKey() {
@@ -156,7 +171,8 @@ function inboxSync(payload) {
     ? "label:" + LABEL_TO_PROCESS + " -label:" + LABEL_PROCESSED + " -label:" + LABEL_FAILED
     : "has:attachment newer_than:7d -label:" + LABEL_PROCESSED + " -label:" + LABEL_FAILED;
 
-  var threads = GmailApp.search(query, 0, 50);
+  var batchSize = (payload && payload.batchSize) ? Math.min(Number(payload.batchSize), 200) : 50;
+  var threads = GmailApp.search(query, 0, batchSize);
   stats.threads = threads.length;
 
   var crmCtx = _loadCrmContext();
@@ -261,13 +277,33 @@ function _processMessage(msg, crmCtx) {
   var nbBefore = null, nbAfter = null;
   if (matched && gemini && gemini.effectif != null && gemini.effectif >= 0 && gemini.effectif < 10000) {
     nbBefore = Number(matched.nbVelosCommandes || 0);
-    nbAfter  = Math.max(nbBefore, Number(gemini.effectif)); // on prend le max (règle métier : 1 vélo / salarié au max)
+    nbAfter  = Math.max(nbBefore, Number(gemini.effectif));
     if (nbAfter !== nbBefore) {
       _updateClientField(matched.rowIndex, crmCtx.clientsHeaders.indexOf("nbVelosCommandes") + 1, nbAfter);
-      // flag effectifMentionne=true
       var effCol = crmCtx.clientsHeaders.indexOf("effectifMentionne");
       if (effCol >= 0) _updateClientField(matched.rowIndex, effCol + 1, true);
     }
+  }
+
+  // Auto-remplir kbisDate si Gemini l'a extrait
+  if (matched && gemini && gemini.kbisDate) {
+    var kbisDateCol = crmCtx.clientsHeaders.indexOf("kbisDate");
+    if (kbisDateCol >= 0) _updateClientField(matched.rowIndex, kbisDateCol + 1, gemini.kbisDate);
+  }
+
+  // Auto-remplir dateEngagement si Gemini a trouvé une date de devis
+  if (matched && gemini && gemini.devisDate) {
+    var engCol = crmCtx.clientsHeaders.indexOf("dateEngagement");
+    if (engCol >= 0) {
+      var existing = crmCtx.sheet.getRange(matched.rowIndex, engCol + 1).getValue();
+      if (!existing) _updateClientField(matched.rowIndex, engCol + 1, gemini.devisDate);
+    }
+  }
+
+  // Auto-flag effectifPresent si Gemini a détecté un effectif dans le document
+  if (matched && gemini && gemini.effectifPresent === true) {
+    var effPCol = crmCtx.clientsHeaders.indexOf("effectifMentionne");
+    if (effPCol >= 0) _updateClientField(matched.rowIndex, effPCol + 1, true);
   }
 
   // Écrit la ligne dans VerificationsPending
@@ -313,9 +349,12 @@ function _geminiAnalyze(ctx) {
       "utilise EXACTEMENT le nom tel qu'il apparaît dans la liste.\n\n" +
       "Renvoie UNIQUEMENT un JSON strict :\n" +
       "{\n" +
-      '  "clientName": string|null (nom de la société CIBLE du document, PAS l\'expéditeur),\n' +
+      '  "clientName": string|null (nom de la societe CIBLE du document, PAS l\'expediteur),\n' +
       '  "docType": "DEVIS"|"KBIS"|"LIASSE"|"URSSAF"|"ATTESTATION"|"SIGNATURE"|"BICYCLE"|"PARCELLE"|"AUTRE"|null,\n' +
-      '  "effectif": number|null (effectif moyen mensuel, uniquement si DSN/URSSAF),\n' +
+      '  "effectif": number|null (effectif moyen mensuel si DSN/URSSAF/liasse/registre du personnel),\n' +
+      '  "effectifPresent": true|false|null (true si un nombre d\'effectifs/salaries est visible dans le document),\n' +
+      '  "kbisDate": "YYYY-MM-DD"|null (date de l\'extrait Kbis/RNE "a jour au..." visible sur le document),\n' +
+      '  "devisDate": "YYYY-MM-DD"|null (date du devis si document est un devis signe),\n' +
       '  "notes": string (1 phrase de contexte)\n' +
       "}\n\n" +
       "Email :\n" +
