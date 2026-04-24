@@ -90,6 +90,9 @@ function handleRequest(e) {
       case "fetchParcelle":
         result = fetchParcelle(e.parameter.id);
         break;
+      case "autoFetchParcelles":
+        result = autoFetchParcelles(parseInt(e.parameter.limit || "50", 10));
+        break;
       case "cancelTournee":
         result = cancelTournee(e.parameter.tourneeId);
         break;
@@ -1786,6 +1789,47 @@ function fetchParcelle(clientId) {
     lng: lng,
     geoportailUrl: geoPortailUrl
   };
+}
+
+// Parcours tous les clients sans parcelleCadastrale=TRUE et appelle fetchParcelle
+// pour chacun. Auto-référence la parcelle via api-adresse + apicarto.ign.fr.
+// Limité à `limit` clients par appel pour rester sous le quota Apps Script 6min.
+function autoFetchParcelles(limit) {
+  limit = limit > 0 ? limit : 50;
+  var sheet = SS.getSheetByName("Clients");
+  if (!sheet) return { error: "Feuille Clients introuvable" };
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0];
+  var iId = headers.indexOf("id");
+  var iFlag = headers.indexOf("parcelleCadastrale");
+  var iAdresse = headers.indexOf("adresse");
+
+  var report = { processed: 0, ok: 0, skipped: 0, failed: 0, errors: [] };
+  for (var i = 1; i < data.length && report.processed < limit; i++) {
+    var already = data[i][iFlag] === true || data[i][iFlag] === "TRUE";
+    if (already) { report.skipped++; continue; }
+    var clientId = data[i][iId];
+    var adresse = data[i][iAdresse];
+    if (!clientId || !adresse) { report.skipped++; continue; }
+    report.processed++;
+    try {
+      var res = fetchParcelle(clientId);
+      if (res && res.ok) {
+        report.ok++;
+      } else {
+        report.failed++;
+        if (res && res.error && report.errors.length < 10) {
+          report.errors.push({ clientId: clientId, error: res.error });
+        }
+      }
+    } catch (err) {
+      report.failed++;
+      if (report.errors.length < 10) report.errors.push({ clientId: clientId, error: String(err) });
+    }
+    // Pause légère pour lisser les appels API
+    Utilities.sleep(250);
+  }
+  return report;
 }
 
 // ---- SET CLIENT VELOS TARGET (correction effectif) ----

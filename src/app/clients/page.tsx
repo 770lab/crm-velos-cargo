@@ -24,6 +24,26 @@ export default function ClientsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [editVelos, setEditVelos] = useState<ClientRow | null>(null);
+  const [autoParcellesBusy, setAutoParcellesBusy] = useState(false);
+
+  const runAutoParcelles = async () => {
+    setAutoParcellesBusy(true);
+    try {
+      const r = await gasGet("autoFetchParcelles", { limit: "50" });
+      const report = r as { ok?: number; failed?: number; processed?: number; error?: string };
+      if (report.error) {
+        alert("Erreur : " + report.error);
+      } else {
+        const msg = `${report.ok ?? 0} parcelle(s) référencée(s) · ${report.failed ?? 0} échec(s) sur ${report.processed ?? 0} clients traités.`;
+        alert(msg);
+        refresh("clients");
+      }
+    } catch (e) {
+      alert("Erreur : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setAutoParcellesBusy(false);
+    }
+  };
 
   const nextDeliveryByClient = useMemo(() => {
     const map = new Map<string, { date: string; nbVelos: number; tourneeId?: string | null; mode?: string | null }>();
@@ -135,6 +155,14 @@ export default function ClientsPage() {
             className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm"
           >
             Synchroniser Drive
+          </button>
+          <button
+            onClick={runAutoParcelles}
+            disabled={autoParcellesBusy}
+            className="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 text-sm disabled:opacity-50"
+            title="Géocode + récupère la parcelle cadastrale pour tous les clients qui en sont dépourvus"
+          >
+            {autoParcellesBusy ? "Auto-parcelles…" : "Auto-parcelles"}
           </button>
           <button
             onClick={() => setShowAdd(true)}
@@ -348,13 +376,15 @@ function DeliveryCell({ next }: { next?: { date: string; nbVelos: number; mode?:
   );
 }
 
+// Docs à DEMANDER au client dans le mail de rappel.
+// NB : `inscriptionBicycle` et `parcelleCadastrale` sont gérés côté bureau
+// (Maria via la plateforme Bicycle, parcelle via Géoportail automatique),
+// donc on ne les remonte pas dans la relance client.
 const DOCS_RAPPEL: { key: keyof ClientRow; label: string }[] = [
   { key: "devisSignee", label: "Devis signé" },
   { key: "kbisRecu", label: "Kbis récent (≤ 3 mois)" },
   { key: "attestationRecue", label: "Liasse fiscale avec effectif" },
   { key: "signatureOk", label: "Signature de l'engagement" },
-  { key: "inscriptionBicycle", label: "Inscription plateforme Bicycle" },
-  { key: "parcelleCadastrale", label: "Parcelle cadastrale" },
 ];
 
 function RappelMailModal({

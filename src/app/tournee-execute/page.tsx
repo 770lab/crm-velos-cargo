@@ -266,6 +266,13 @@ function LivraisonCard({
             )}
           </div>
 
+          {/* Rappel inscription plateforme Bicycle — à dire au client */}
+          <div className="mx-3 mt-3 bg-amber-50 border border-amber-200 rounded-lg p-2.5 text-xs text-amber-900">
+            <div className="font-semibold mb-0.5">⚠️ À dire au client</div>
+            Indiquer qu&apos;il devra procéder à l&apos;inscription sur la plateforme Bicycle
+            pour valider l&apos;immatriculation de chaque vélo après livraison.
+          </div>
+
           <div className="p-3 space-y-2">
             {liv.velos.map((v, vi) => (
               <VeloRow key={v.id} velo={v} index={vi} onChanged={onChanged} />
