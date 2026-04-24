@@ -247,10 +247,10 @@ function _processMessage(msg, crmCtx) {
 
   for (var i = 0; i < attachments.length; i++) {
     var att = attachments[i];
-    var file;
     try {
-      file = folder.createFile(att.copyBlob());
-      file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+      var blob = att.copyBlob();
+      var file = folder.createFile(blob);
+      try { file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW); } catch (e2) {}
       result.attachments.push({ name: att.getName(), url: file.getUrl(), folderId: folder.getId() });
     } catch (e) {
       result.attachments.push({ name: att.getName(), error: String(e) });

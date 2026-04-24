@@ -381,7 +381,7 @@ function DriveLinks({ driveUrl, fileName }: { driveUrl: string; fileName?: strin
   const urls = driveUrl.split(" ||| ").filter(Boolean);
   const names = (fileName || "").split(", ").filter(Boolean);
 
-  if (urls.length <= 1) {
+  if (names.length <= 1) {
     return (
       <a
         href={urls[0] || driveUrl}
@@ -389,24 +389,31 @@ function DriveLinks({ driveUrl, fileName }: { driveUrl: string; fileName?: strin
         rel="noopener noreferrer"
         className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1"
       >
-        📎 {fileName || "Document"}
+        📎 {names[0] || fileName || "Document"}
       </a>
     );
   }
 
   return (
     <div className="flex flex-wrap gap-2">
-      {urls.map((url, i) => (
-        <a
-          key={i}
-          href={url}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1 bg-blue-50 px-2 py-1 rounded"
-        >
-          📎 {names[i] || `Document ${i + 1}`}
-        </a>
-      ))}
+      {names.map((name, i) => {
+        const url = urls[i];
+        return url ? (
+          <a
+            key={i}
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-xs text-blue-600 hover:underline inline-flex items-center gap-1 bg-blue-50 px-2 py-1 rounded"
+          >
+            📎 {name}
+          </a>
+        ) : (
+          <span key={i} className="text-xs text-gray-500 inline-flex items-center gap-1 bg-gray-50 px-2 py-1 rounded">
+            📎 {name}
+          </span>
+        );
+      })}
     </div>
   );
 }
