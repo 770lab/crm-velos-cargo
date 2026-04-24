@@ -209,28 +209,32 @@ function _processMessage(msg, crmCtx) {
     return result;
   }
 
-  // Matching client (cascade)
   var fromEmail = _extractEmail(msg.getFrom());
-  var matched = _matchClientByEmail(crmCtx, fromEmail)
-             || _matchClientByDomain(crmCtx, fromEmail)
-             || _matchClientByText(crmCtx, msg.getSubject() + "\n" + msg.getPlainBody());
 
-  // Analyse Gemini sur le premier PDF (pour enrichir matching + extraire effectif)
+  // 1) Gemini analyse le document EN PREMIER pour identifier le vrai client
   var gemini = null;
   try {
+    var clientNames = crmCtx.clients.map(function (c) { return c.entreprise; }).filter(Boolean);
     gemini = _geminiAnalyze({
       subject: msg.getSubject(),
       body: (msg.getPlainBody() || "").substring(0, 4000),
       fromEmail: fromEmail,
-      pdfBlob: pdfs.length ? pdfs[0] : null
+      pdfBlobs: pdfs,
+      knownClients: clientNames
     });
   } catch (e) {
     result.geminiError = String(e);
   }
 
-  // Fallback : si pas matché, on demande à Gemini le nom du client et on retente
-  if (!matched && gemini && gemini.clientName) {
+  // 2) Matching : Gemini d'abord (contenu du document), email en fallback
+  var matched = null;
+  if (gemini && gemini.clientName) {
     matched = _matchClientByText(crmCtx, gemini.clientName);
+  }
+  if (!matched) {
+    matched = _matchClientByEmail(crmCtx, fromEmail)
+           || _matchClientByDomain(crmCtx, fromEmail)
+           || _matchClientByText(crmCtx, msg.getSubject() + "\n" + msg.getPlainBody());
   }
 
   result.gemini = gemini;
@@ -292,16 +296,27 @@ function _geminiAnalyze(ctx) {
   var key = _getGeminiKey();
   var url = "https://generativelanguage.googleapis.com/v1beta/models/" + GEMINI_MODEL + ":generateContent?key=" + key;
 
+  var clientList = (ctx.knownClients || []).join(", ");
+
   var parts = [{
     text:
-      "Tu analyses un email reçu pour un CRM de livraison de vélos cargo aux commerces. " +
-      "Contexte entreprise : Artisans Verts Energy, prestataire qui livre des vélos électriques aux salariés de magasins (1 vélo / salarié max). " +
-      "À partir de l'email et du PDF joint (si présent), renvoie UNIQUEMENT un JSON strict avec ces champs :\n" +
+      "Tu analyses un email reçu pour un CRM de livraison de vélos cargo aux commerces.\n" +
+      "Contexte : Artisans Verts Energy livre des vélos électriques aux salariés de magasins (1 vélo / salarié max).\n\n" +
+      "IMPORTANT : L’expéditeur de l’email N’EST PAS forcément le client final. " +
+      "Il peut être un apporteur d’affaires, un courtier, un cabinet RH ou un intermédiaire " +
+      "qui transmet des documents pour le compte d’un de ses propres clients. " +
+      "Le NOM DU CLIENT doit être extrait du CONTENU DES DOCUMENTS (PDF) et non de l’adresse email de l’expéditeur. " +
+      "Cherche dans le PDF : la raison sociale, le nom sur le KBIS, le nom sur la DSN/URSSAF, " +
+      "le destinataire du devis, etc.\n\n" +
+      "Liste des clients connus dans le CRM :\n" + clientList + "\n\n" +
+      "Si le nom trouvé dans le document correspond (même partiellement) à un client connu ci-dessus, " +
+      "utilise EXACTEMENT le nom tel qu’il apparaît dans la liste.\n\n" +
+      "Renvoie UNIQUEMENT un JSON strict :\n" +
       "{\n" +
-      '  "clientName": string|null (nom d’entreprise du client détecté dans email ou PDF, ex: "L\'AFRICA PARIS"),\n' +
-      '  "docType": "DEVIS"|"KBIS"|"LIASSE"|"URSSAF"|"ATTESTATION"|"SIGNATURE"|"BICYCLE"|"PARCELLE"|"AUTRE"|null,\n' +
-      '  "effectif": number|null (effectif moyen mensuel salariés, uniquement si URSSAF),\n' +
-      '  "notes": string (1 phrase de contexte)\n' +
+      ‘  "clientName": string|null (nom de la société CIBLE du document, PAS l\’expéditeur),\n’ +
+      ‘  "docType": "DEVIS"|"KBIS"|"LIASSE"|"URSSAF"|"ATTESTATION"|"SIGNATURE"|"BICYCLE"|"PARCELLE"|"AUTRE"|null,\n’ +
+      ‘  "effectif": number|null (effectif moyen mensuel, uniquement si DSN/URSSAF),\n’ +
+      ‘  "notes": string (1 phrase de contexte)\n’ +
       "}\n\n" +
       "Email :\n" +
       "From: " + ctx.fromEmail + "\n" +
@@ -309,11 +324,14 @@ function _geminiAnalyze(ctx) {
       "Body:\n" + ctx.body
   }];
 
-  if (ctx.pdfBlob) {
-    var b64 = Utilities.base64Encode(ctx.pdfBlob.getBytes());
-    parts.push({
-      inline_data: { mime_type: "application/pdf", data: b64 }
-    });
+  var pdfBlobs = ctx.pdfBlobs || (ctx.pdfBlob ? [ctx.pdfBlob] : []);
+  for (var i = 0; i < pdfBlobs.length && i < 3; i++) {
+    try {
+      var b64 = Utilities.base64Encode(pdfBlobs[i].getBytes());
+      parts.push({
+        inline_data: { mime_type: "application/pdf", data: b64 }
+      });
+    } catch (e) {}
   }
 
   var body = {
