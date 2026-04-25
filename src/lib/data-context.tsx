@@ -7,6 +7,7 @@ interface Stats {
   totalClients: number;
   totalVelos: number;
   velosLivres: number;
+  velosPlanifies: number;
   certificatsRecus: number;
   velosFacturables: number;
   velosFactures: number;

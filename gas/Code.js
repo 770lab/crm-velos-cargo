@@ -438,10 +438,19 @@ function getStats() {
 
   var progression = totalVelos > 0 ? Math.round((velosLivres / totalVelos) * 100) : 0;
 
+  // Vélos planifiés = somme des nbVelos des livraisons non livrées et non annulées
+  // (déjà dans une tournée du planning, en attente de livraison effective).
+  var planifiesByClient = computePlanifiesByClient();
+  var velosPlanifies = 0;
+  Object.keys(planifiesByClient).forEach(function(cid) {
+    velosPlanifies += Number(planifiesByClient[cid]) || 0;
+  });
+
   return {
     totalClients: totalClients,
     totalVelos: totalVelos,
     velosLivres: velosLivres,
+    velosPlanifies: velosPlanifies,
     certificatsRecus: certificatsRecus,
     velosFacturables: velosFacturables,
     velosFactures: velosFactures,

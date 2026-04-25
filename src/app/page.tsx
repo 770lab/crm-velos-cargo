@@ -30,6 +30,13 @@ export default function Dashboard() {
       href: "/clients",
     },
     {
+      label: "Vélos planifiés",
+      value: stats.velosPlanifies ?? 0,
+      sub: "dans une tournée à venir",
+      color: "bg-sky-500",
+      href: "/livraisons",
+    },
+    {
       label: "Vélos livrés",
       value: stats.velosLivres,
       sub: `sur ${stats.totalVelos}`,
