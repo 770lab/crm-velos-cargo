@@ -51,11 +51,11 @@ function doGet(e) {
       case "ping":
         return _respond({ status: "ok", now: new Date().toISOString(), user: Session.getActiveUser().getEmail() });
       case "sync":
-        return _respond(inboxSync());
+        return _respond(inboxSync(e.parameter || {}));
       case "debug":
         return _respond(debugInbox());
       case "progress":
-        return _respond(syncProgress());
+        return _respond(syncProgress(e.parameter || {}));
       case "relabel":
         return _respond(relabelUnprocessed());
       default:
@@ -104,9 +104,11 @@ function setupProps() {
 
 // Compte les threads restants à traiter + donne la date du plus ancien
 // restant (= la date jusqu'où le watcher devra remonter)
-function syncProgress() {
-  var queryRemaining = "has:attachment newer_than:7d -label:" + LABEL_PROCESSED + " -label:" + LABEL_FAILED;
-  var queryProcessed = "has:attachment newer_than:7d label:" + LABEL_PROCESSED;
+function syncProgress(payload) {
+  var days = (payload && payload.days) ? Math.max(1, Math.min(3650, Number(payload.days))) : 365;
+  var queryRemaining = "has:attachment newer_than:" + days + "d -label:" + LABEL_PROCESSED + " -label:" + LABEL_FAILED;
+  var queryProcessed = "has:attachment newer_than:" + days + "d label:" + LABEL_PROCESSED;
+  // Cap à 500 résultats par appel pour éviter les timeouts. Si remaining === 500, c'est probablement plus.
   var remaining = GmailApp.search(queryRemaining, 0, 500);
   var processed = GmailApp.search(queryProcessed, 0, 500);
   var oldestRemainingDate = null;
@@ -117,8 +119,11 @@ function syncProgress() {
     if (!newestRemainingDate || d > newestRemainingDate) newestRemainingDate = d;
   }
   return {
+    days: days,
     remaining: remaining.length,
+    remainingCapped: remaining.length === 500,
     processed: processed.length,
+    processedCapped: processed.length === 500,
     oldestRemaining: oldestRemainingDate ? oldestRemainingDate.toISOString() : null,
     newestRemaining: newestRemainingDate ? newestRemainingDate.toISOString() : null
   };
@@ -159,50 +164,64 @@ function _getGeminiKey() {
 
 function inboxSync(payload) {
   var started = new Date();
-  var stats = { threads: 0, messages: 0, processed: 0, matched: 0, unassigned: 0, errors: 0, details: [] };
+  var stats = { threads: 0, messages: 0, processed: 0, matched: 0, unassigned: 0, errors: 0, batches: 0, details: [] };
 
   var labelTo  = _getOrCreateLabel(LABEL_TO_PROCESS);
   var labelOk  = _getOrCreateLabel(LABEL_PROCESSED);
   var labelKo  = _getOrCreateLabel(LABEL_FAILED);
 
   // Recherche : on traite TOUT ce qui matche soit le label crm-a-traiter (file
-  // de catch-up posée à la main), soit n'importe quel mail récent avec PJ
-  // — du moment qu'il n'a pas déjà été traité (crm-traite) ou rejeté (crm-echec).
-  // Sans le OR, des mails non labellés comme Giulia étaient ignorés tant que
-  // crm-a-traiter contenait au moins un thread.
-  var query = "(label:" + LABEL_TO_PROCESS + " OR has:attachment newer_than:30d) " +
+  // de catch-up posée à la main), soit n'importe quel mail avec PJ dans la
+  // fenêtre `days` — du moment qu'il n'a pas déjà été traité (crm-traite) ou
+  // rejeté (crm-echec). Par défaut 365j pour couvrir l'historique en attente,
+  // override possible via payload.days.
+  var days = (payload && payload.days) ? Math.max(1, Math.min(3650, Number(payload.days))) : 365;
+  var query = "(label:" + LABEL_TO_PROCESS + " OR has:attachment newer_than:" + days + "d) " +
               "-label:" + LABEL_PROCESSED + " -label:" + LABEL_FAILED;
 
   var batchSize = (payload && payload.batchSize) ? Math.min(Number(payload.batchSize), 200) : 50;
-  var threads = GmailApp.search(query, 0, batchSize);
-  stats.threads = threads.length;
+  // Mode loop : on enchaîne les batches dans la même requête HTTP, jusqu'à
+  // ce que la file soit vide ou qu'on approche du timeout GAS (6 min).
+  // Budget par défaut 4 min, override via payload.maxMs.
+  var loop = !!(payload && (payload.loop === "true" || payload.loop === true));
+  var maxMs = (payload && payload.maxMs) ? Number(payload.maxMs) : 4 * 60 * 1000;
 
   var crmCtx = _loadCrmContext();
 
-  for (var t = 0; t < threads.length; t++) {
-    var thread = threads[t];
-    var messages = thread.getMessages();
-    for (var m = 0; m < messages.length; m++) {
-      var msg = messages[m];
-      stats.messages++;
-      // Skip si déjà traité (label au niveau message impossible en GAS : on skippe à la thread)
-      try {
-        var r = _processMessage(msg, crmCtx);
-        if (r.matched) stats.matched++; else stats.unassigned++;
-        stats.processed++;
-        stats.details.push(r);
-      } catch (err) {
-        stats.errors++;
-        stats.details.push({ messageId: msg.getId(), error: String(err) });
+  do {
+    var threads = GmailApp.search(query, 0, batchSize);
+    if (threads.length === 0) break;
+    stats.batches++;
+    stats.threads += threads.length;
+
+    for (var t = 0; t < threads.length; t++) {
+      var thread = threads[t];
+      var messages = thread.getMessages();
+      for (var m = 0; m < messages.length; m++) {
+        var msg = messages[m];
+        stats.messages++;
+        try {
+          var r = _processMessage(msg, crmCtx);
+          if (r.matched) stats.matched++; else stats.unassigned++;
+          stats.processed++;
+          // On garde au plus 50 entrées de details pour ne pas exploser la réponse JSON.
+          if (stats.details.length < 50) stats.details.push(r);
+        } catch (err) {
+          stats.errors++;
+          if (stats.details.length < 50) stats.details.push({ messageId: msg.getId(), error: String(err) });
+        }
       }
+      try { thread.addLabel(labelOk); } catch (e) {}
     }
-    // Label thread comme traitée (on ne retraite pas)
-    try { thread.addLabel(labelOk); } catch (e) {}
-  }
+
+    if (!loop) break;
+    if (new Date() - started > maxMs) break;
+  } while (true);
 
   return {
     status: "ok",
     elapsedMs: new Date() - started,
+    drained: stats.threads === 0 || (loop && stats.threads < batchSize * stats.batches),
     stats: stats
   };
 }
