@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { gasGet, gasPost, gasUpload } from "@/lib/gas";
 import { useData, type ClientRow } from "@/lib/data-context";
@@ -883,6 +883,8 @@ function UploadDocModal({
   const [file, setFile] = useState<File | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
 
   const submit = async () => {
     if (!file) return;
@@ -912,13 +914,53 @@ function UploadDocModal({
         <p className="text-sm text-gray-500 mb-4">
           Le fichier sera classé directement dans le bon sous-dossier Drive et la pastille passera au vert.
         </p>
+
         <input
+          ref={inputRef}
           type="file"
           accept="application/pdf,image/*"
           onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          className="w-full text-sm mb-3"
+          className="hidden"
         />
-        {file && <div className="text-xs text-gray-500 mb-3">Fichier : {file.name} ({Math.round(file.size / 1024)} Ko)</div>}
+
+        {!file ? (
+          <button
+            type="button"
+            onClick={() => inputRef.current?.click()}
+            onDragOver={(e) => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={(e) => {
+              e.preventDefault();
+              setDragOver(false);
+              const f = e.dataTransfer.files?.[0];
+              if (f) setFile(f);
+            }}
+            className={`w-full border-2 border-dashed rounded-lg p-6 text-center transition-colors mb-3 ${
+              dragOver ? "border-green-500 bg-green-50" : "border-gray-300 hover:border-green-400 hover:bg-gray-50"
+            }`}
+          >
+            <div className="text-3xl mb-2">📎</div>
+            <div className="text-sm font-medium text-gray-700">Cliquer pour choisir un fichier</div>
+            <div className="text-xs text-gray-500 mt-1">ou glisser-déposer ici · PDF / image</div>
+          </button>
+        ) : (
+          <div className="border rounded-lg p-3 mb-3 flex items-center gap-3 bg-green-50 border-green-200">
+            <div className="text-2xl">📄</div>
+            <div className="flex-1 min-w-0">
+              <div className="text-sm font-medium text-gray-800 truncate">{file.name}</div>
+              <div className="text-xs text-gray-500">{Math.round(file.size / 1024)} Ko</div>
+            </div>
+            <button
+              type="button"
+              onClick={() => { setFile(null); if (inputRef.current) inputRef.current.value = ""; }}
+              className="text-gray-400 hover:text-red-600 text-xl leading-none px-1"
+              aria-label="Retirer le fichier"
+            >
+              ×
+            </button>
+          </div>
+        )}
+
         {error && <div className="bg-red-50 border border-red-200 rounded p-2 text-xs text-red-700 mb-3">{error}</div>}
         <div className="flex justify-end gap-3">
           <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600">Annuler</button>

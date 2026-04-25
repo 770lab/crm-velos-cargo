@@ -165,11 +165,13 @@ function inboxSync(payload) {
   var labelOk  = _getOrCreateLabel(LABEL_PROCESSED);
   var labelKo  = _getOrCreateLabel(LABEL_FAILED);
 
-  // Recherche : soit par label, soit fallback global "has:attachment newer_than:7d" non traités
-  var useLabelFilter = labelTo.getThreads(0, 1).length > 0;
-  var query = useLabelFilter
-    ? "label:" + LABEL_TO_PROCESS + " -label:" + LABEL_PROCESSED + " -label:" + LABEL_FAILED
-    : "has:attachment newer_than:7d -label:" + LABEL_PROCESSED + " -label:" + LABEL_FAILED;
+  // Recherche : on traite TOUT ce qui matche soit le label crm-a-traiter (file
+  // de catch-up posée à la main), soit n'importe quel mail récent avec PJ
+  // — du moment qu'il n'a pas déjà été traité (crm-traite) ou rejeté (crm-echec).
+  // Sans le OR, des mails non labellés comme Giulia étaient ignorés tant que
+  // crm-a-traiter contenait au moins un thread.
+  var query = "(label:" + LABEL_TO_PROCESS + " OR has:attachment newer_than:30d) " +
+              "-label:" + LABEL_PROCESSED + " -label:" + LABEL_FAILED;
 
   var batchSize = (payload && payload.batchSize) ? Math.min(Number(payload.batchSize), 200) : 50;
   var threads = GmailApp.search(query, 0, batchSize);
