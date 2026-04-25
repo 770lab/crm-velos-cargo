@@ -27,6 +27,21 @@ interface Verification {
 
 type Tab = "pending" | "validated" | "rejected" | "all";
 
+interface BulkPreview {
+  wouldValidate: number;
+  validated?: number;
+  fresh: number;        // flag posé + lien rempli
+  linkOnly: number;     // flag déjà coché, on rajoute juste le lien
+  skipExisting: number; // déjà OK, juste sortie de la file
+  skipped: number;
+  skipReasons: { notPending: number; noClient: number; clientNotFound: number; unknownDocType: number };
+  byDocType: Record<string, number>;
+  clientsTouched: number;
+  clientsUpdated?: number;
+  sample: Array<{ id: string; clientId: string; docType: string; fileName: string; action?: string }>;
+  dryRun: boolean;
+}
+
 export default function VerificationsPage() {
   const { clients, refresh } = useData();
   const [items, setItems] = useState<Verification[]>([]);
@@ -35,12 +50,15 @@ export default function VerificationsPage() {
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [rejectFor, setRejectFor] = useState<Verification | null>(null);
+  const [bulkPreview, setBulkPreview] = useState<BulkPreview | null>(null);
+  const [bulkLoading, setBulkLoading] = useState(false);
+  const [search, setSearch] = useState("");
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await gasGet("listVerifications", { status: tab, limit: "200" });
+      const res = await gasGet("listVerifications", { status: tab, limit: "1000" });
       const r = res as { items?: Verification[]; error?: string };
       if (r.error) throw new Error(r.error);
       setItems(Array.isArray(r.items) ? r.items : []);
@@ -61,6 +79,60 @@ export default function VerificationsPage() {
     clients.forEach((c) => map.set(c.id, c.entreprise));
     return map;
   }, [clients]);
+
+  // Recherche multi-tokens : "kbis btyl" → match toutes les lignes contenant
+  // kbis ET btyl (insensible à la casse), n'importe où dans entreprise/docType/
+  // fileName/subject/fromEmail/raison sociale du client matché.
+  const filteredItems = useMemo(() => {
+    const tokens = search.toLowerCase().trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return items;
+    return items.filter((v) => {
+      const haystack = [
+        v.entreprise,
+        v.docType,
+        v.fileName,
+        v.subject,
+        v.fromEmail,
+        v.clientId ? clientsById.get(v.clientId) : "",
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return tokens.every((t) => haystack.includes(t));
+    });
+  }, [items, search, clientsById]);
+
+  const openBulkPreview = async () => {
+    setBulkLoading(true);
+    try {
+      const res = await gasPost("bulkAutoValidate", { dryRun: true });
+      const r = res as BulkPreview & { error?: string };
+      if (r.error) throw new Error(r.error);
+      setBulkPreview(r);
+    } catch (e) {
+      alert("Erreur preview : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
+  const runBulk = async () => {
+    setBulkLoading(true);
+    try {
+      const res = await gasPost("bulkAutoValidate", { dryRun: false });
+      const r = res as BulkPreview & { error?: string };
+      if (r.error) throw new Error(r.error);
+      setBulkPreview(null);
+      await load();
+      refresh("clients");
+      refresh("stats");
+      alert(`${r.validated ?? 0} vérifications validées · ${r.clientsUpdated ?? 0} fiches client mises à jour.`);
+    } catch (e) {
+      alert("Erreur : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBulkLoading(false);
+    }
+  };
 
   const validate = async (v: Verification) => {
     setBusyId(v.id);
@@ -87,6 +159,25 @@ export default function VerificationsPage() {
         </p>
       </div>
 
+      <div className="mb-4 relative">
+        <input
+          type="search"
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="🔍 Rechercher (ex: kbis btyl, attestation thecarsociety, devis 2025-13565...)"
+          className="w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent"
+        />
+        {search && (
+          <button
+            onClick={() => setSearch("")}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-700 px-2 text-sm"
+            aria-label="Effacer"
+          >
+            ×
+          </button>
+        )}
+      </div>
+
       <div className="flex items-center gap-2 mb-4 border-b">
         {([
           { id: "pending", label: "En attente" },
@@ -107,8 +198,16 @@ export default function VerificationsPage() {
           </button>
         ))}
         <button
+          onClick={openBulkPreview}
+          disabled={bulkLoading}
+          className="ml-auto px-3 py-1.5 text-xs border border-indigo-200 bg-indigo-50 text-indigo-700 rounded-lg hover:bg-indigo-100 disabled:opacity-50"
+          title="Auto-valider toutes les vérifications avec clientId + docType reconnu"
+        >
+          {bulkLoading ? "..." : "🪄 Auto-valider en lot"}
+        </button>
+        <button
           onClick={load}
-          className="ml-auto px-3 py-1.5 text-xs border rounded-lg text-gray-600 hover:bg-gray-50"
+          className="px-3 py-1.5 text-xs border rounded-lg text-gray-600 hover:bg-gray-50"
         >
           ↻ Rafraîchir
         </button>
@@ -128,24 +227,37 @@ export default function VerificationsPage() {
 
       {loading ? (
         <div className="text-center py-12 text-gray-400 text-sm">Chargement...</div>
-      ) : items.length === 0 ? (
+      ) : filteredItems.length === 0 ? (
         <div className="text-center py-12 text-gray-400 text-sm">
-          {tab === "pending" ? "Aucune vérification en attente." : "Aucun élément."}
+          {search ? (
+            <>Aucun résultat pour <span className="font-mono">&quot;{search}&quot;</span>.</>
+          ) : tab === "pending" ? (
+            "Aucune vérification en attente."
+          ) : (
+            "Aucun élément."
+          )}
         </div>
       ) : (
-        <div className="space-y-3">
-          {items.map((v) => (
-            <VerifCard
-              key={v.id}
-              verif={v}
-              clientName={v.clientId ? clientsById.get(v.clientId) || v.entreprise : v.entreprise}
-              busy={busyId === v.id}
-              tab={tab}
-              onValidate={() => validate(v)}
-              onReject={() => setRejectFor(v)}
-            />
-          ))}
-        </div>
+        <>
+          {search && (
+            <div className="text-xs text-gray-500 mb-2">
+              {filteredItems.length} résultat{filteredItems.length > 1 ? "s" : ""} sur {items.length}
+            </div>
+          )}
+          <div className="space-y-3">
+            {filteredItems.map((v) => (
+              <VerifCard
+                key={v.id}
+                verif={v}
+                clientName={v.clientId ? clientsById.get(v.clientId) || v.entreprise : v.entreprise}
+                busy={busyId === v.id}
+                tab={tab}
+                onValidate={() => validate(v)}
+                onReject={() => setRejectFor(v)}
+              />
+            ))}
+          </div>
+        </>
       )}
 
       {rejectFor && (
@@ -160,6 +272,113 @@ export default function VerificationsPage() {
           }}
         />
       )}
+
+      {bulkPreview && (
+        <BulkConfirmModal
+          preview={bulkPreview}
+          loading={bulkLoading}
+          onClose={() => setBulkPreview(null)}
+          onConfirm={runBulk}
+        />
+      )}
+    </div>
+  );
+}
+
+function BulkConfirmModal({
+  preview,
+  loading,
+  onClose,
+  onConfirm,
+}: {
+  preview: BulkPreview;
+  loading: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+}) {
+  const docTypes = Object.entries(preview.byDocType).sort((a, b) => b[1] - a[1]);
+  const reasons = preview.skipReasons;
+  return (
+    <div
+      className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-xl p-6 w-full max-w-lg max-h-[85vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex justify-between items-start mb-3">
+          <h2 className="text-lg font-semibold">🪄 Auto-validation en lot</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">
+            ×
+          </button>
+        </div>
+
+        <p className="text-sm text-gray-600 mb-4">
+          Mode <strong>safe</strong> : on coche le flag manquant et on remplit les liens vides, mais on
+          n&apos;écrase <em>jamais</em> un lien que tu as déjà classé manuellement.
+        </p>
+
+        <div className="grid grid-cols-3 gap-2 mb-4">
+          <div className="bg-green-50 border border-green-200 rounded-lg p-3 text-center">
+            <div className="text-[10px] uppercase font-semibold text-green-700">Fiches remplies</div>
+            <div className="text-xl font-bold text-green-800">{preview.fresh}</div>
+            <div className="text-[10px] text-green-600 mt-1">flag + lien</div>
+          </div>
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-center">
+            <div className="text-[10px] uppercase font-semibold text-blue-700">Liens ajoutés</div>
+            <div className="text-xl font-bold text-blue-800">{preview.linkOnly}</div>
+            <div className="text-[10px] text-blue-600 mt-1">sur flag déjà coché</div>
+          </div>
+          <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-center">
+            <div className="text-[10px] uppercase font-semibold text-gray-700">Déjà OK</div>
+            <div className="text-xl font-bold text-gray-800">{preview.skipExisting}</div>
+            <div className="text-[10px] text-gray-600 mt-1">sortie de la file</div>
+          </div>
+        </div>
+
+        <div className="text-xs text-gray-500 mb-4">
+          Total à valider : <strong>{preview.wouldValidate}</strong> · Clients touchés : <strong>{preview.clientsTouched}</strong>
+        </div>
+
+        {docTypes.length > 0 && (
+          <div className="mb-4">
+            <div className="text-xs font-semibold text-gray-600 mb-2">Par type de document</div>
+            <div className="flex flex-wrap gap-1.5">
+              {docTypes.map(([dt, n]) => (
+                <span key={dt} className="text-xs bg-indigo-100 text-indigo-800 px-2 py-1 rounded">
+                  {dt} : {n}
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {preview.skipped > 0 && (
+          <div className="mb-4 text-xs text-gray-600 bg-gray-50 rounded-lg p-3">
+            <div className="font-semibold mb-1">Ignorés ({preview.skipped})</div>
+            <ul className="space-y-0.5">
+              {reasons.notPending > 0 && <li>• Déjà traités : {reasons.notPending}</li>}
+              {reasons.noClient > 0 && <li>• Client non identifié : {reasons.noClient}</li>}
+              {reasons.clientNotFound > 0 && <li>• Client introuvable dans la base : {reasons.clientNotFound}</li>}
+              {reasons.unknownDocType > 0 && <li>• Type de doc inconnu : {reasons.unknownDocType}</li>}
+            </ul>
+          </div>
+        )}
+
+        <div className="flex justify-end gap-2 mt-4">
+          <button onClick={onClose} className="px-4 py-2 text-sm text-gray-600 hover:text-gray-800">
+            Annuler
+          </button>
+          <button
+            onClick={onConfirm}
+            disabled={loading || preview.wouldValidate === 0}
+            className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm hover:bg-indigo-700 disabled:opacity-50"
+          >
+            {loading ? "En cours..." : `Valider ${preview.wouldValidate} vérification${preview.wouldValidate > 1 ? "s" : ""}`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

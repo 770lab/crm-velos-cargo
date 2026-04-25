@@ -113,6 +113,10 @@ function handleRequest(e) {
       case "countPendingVerifications":
         result = countPendingVerifications();
         break;
+      case "bulkAutoValidate":
+        var bodyBAV = getBody();
+        result = bulkAutoValidate({ dryRun: bodyBAV.dryRun != null ? bodyBAV.dryRun : e.parameter.dryRun });
+        break;
       case "listEquipe":
         result = listEquipe(e.parameter);
         break;
@@ -2112,6 +2116,183 @@ function countPendingVerifications() {
     if (s === "" || s === "pending" || s === "unassigned") n++;
   }
   return { count: n };
+}
+
+// Mapping docType -> (flag, link) sur la fiche client. Partagé avec validateVerification.
+var DOC_TYPE_TO_CLIENT_FIELDS = {
+  DEVIS: { flag: "devisSignee", link: "devisLien" },
+  KBIS: { flag: "kbisRecu", link: "kbisLien" },
+  LIASSE: { flag: "attestationRecue", link: "attestationLien" },
+  URSSAF: { flag: "attestationRecue", link: "attestationLien" },
+  ATTESTATION: { flag: "attestationRecue", link: "attestationLien" },
+  SIGNATURE: { flag: "signatureOk", link: "signatureLien" },
+  BICYCLE: { flag: "inscriptionBicycle", link: "bicycleLien" },
+  PARCELLE: { flag: "parcelleCadastrale", link: "parcelleCadastraleLien" }
+};
+
+// Auto-valide en lot toutes les vérifications "pending" qui ont un clientId
+// et un docType reconnu. Pas d'effacement : on bascule status -> validated, on
+// pose flag+lien sur la fiche client. dryRun=true renvoie un aperçu sans écrire.
+function bulkAutoValidate(params) {
+  var dryRun = !!(params && (params.dryRun === true || params.dryRun === "true"));
+  var sh = ensureVerificationsSheet();
+  var data = sh.getDataRange().getValues();
+  if (data.length < 2) return { wouldValidate: 0, validated: 0, skipped: 0, dryRun: dryRun };
+
+  var headers = data[0];
+  var col = {
+    id: headers.indexOf("id"),
+    clientId: headers.indexOf("clientId"),
+    docType: headers.indexOf("docType"),
+    driveUrl: headers.indexOf("driveUrl"),
+    status: headers.indexOf("status"),
+    notes: headers.indexOf("notes"),
+    receivedAt: headers.indexOf("receivedAt")
+  };
+
+  var cSheet = SS.getSheetByName("Clients");
+  var cData = cSheet.getDataRange().getValues();
+  var cHeaders = cData[0];
+  var idCol = cHeaders.indexOf("id");
+  var clientRowById = {};
+  for (var ci = 1; ci < cData.length; ci++) {
+    var cid = cData[ci][idCol];
+    if (cid != null && cid !== "") clientRowById[String(cid)] = ci; // 0-based index dans cData
+  }
+
+  var skipReasons = { notPending: 0, noClient: 0, clientNotFound: 0, unknownDocType: 0 };
+  var byDocType = {};
+  var sample = [];
+  // Map: clientId -> { flag -> {linkField, link (null si on ne touche pas au lien), when, setFlag} }
+  var pendingClientUpdates = {};
+  // Liste: { rowIndex (1-based), id, action: "fresh"|"linkOnly"|"skipExisting" }
+  var rowsToValidate = [];
+  var counts = { fresh: 0, linkOnly: 0, skipExisting: 0 };
+  // Mode C : flag toujours posé à true (idempotent), mais le lien n'est rempli que si la
+  // colonne lien côté Clients est vide aujourd'hui. On ne casse jamais un lien que tu as
+  // classé manuellement.
+
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var status = String(row[col.status] || "").toLowerCase();
+    if (status !== "" && status !== "pending" && status !== "unassigned") {
+      skipReasons.notPending++;
+      continue;
+    }
+    var clientId = col.clientId >= 0 ? row[col.clientId] : "";
+    if (!clientId) { skipReasons.noClient++; continue; }
+    var clientRowIdx = clientRowById[String(clientId)];
+    if (clientRowIdx == null) { skipReasons.clientNotFound++; continue; }
+    var docType = col.docType >= 0 ? String(row[col.docType] || "").toUpperCase() : "";
+    var mapping = DOC_TYPE_TO_CLIENT_FIELDS[docType];
+    if (!mapping) { skipReasons.unknownDocType++; continue; }
+
+    var flagCol = cHeaders.indexOf(mapping.flag);
+    var linkCol = cHeaders.indexOf(mapping.link);
+    var currentFlag = flagCol >= 0 ? cData[clientRowIdx][flagCol] : false;
+    var alreadyFlagged = (currentFlag === true || currentFlag === "TRUE");
+    var currentLink = linkCol >= 0 ? cData[clientRowIdx][linkCol] : "";
+    var linkIsEmpty = !currentLink || String(currentLink).trim() === "";
+
+    byDocType[docType] = (byDocType[docType] || 0) + 1;
+
+    var driveUrl = col.driveUrl >= 0 ? String(row[col.driveUrl] || "").split(" ||| ")[0] : "";
+    var receivedAt = col.receivedAt >= 0 ? row[col.receivedAt] : null;
+    var receivedTs = (receivedAt instanceof Date) ? receivedAt.getTime() : (receivedAt ? Date.parse(receivedAt) : 0);
+    var fileName = row[headers.indexOf("fileName")] || "";
+
+    var action;
+    if (alreadyFlagged && !linkIsEmpty) {
+      // Tout est déjà en place côté Clients, on ne touche à rien (ni flag, ni lien).
+      action = "skipExisting";
+    } else if (alreadyFlagged && linkIsEmpty) {
+      // Flag déjà coché mais lien vide → on remplit le lien.
+      action = "linkOnly";
+    } else if (!alreadyFlagged && linkIsEmpty) {
+      // Fiche vide → on coche le flag et on remplit le lien.
+      action = "fresh";
+    } else {
+      // !alreadyFlagged && !linkIsEmpty (cas rare) → on coche le flag, on garde le lien existant.
+      action = "fresh";
+    }
+
+    if (action !== "skipExisting") {
+      if (!pendingClientUpdates[clientId]) pendingClientUpdates[clientId] = {};
+      var slot = pendingClientUpdates[clientId];
+      var prev = slot[mapping.flag];
+      // Si plusieurs verifs pour le même client+docType, le plus récent gagne pour le lien.
+      if (!prev || (receivedTs && receivedTs >= (prev.when || 0))) {
+        slot[mapping.flag] = {
+          linkField: mapping.link,
+          link: linkIsEmpty ? driveUrl : null, // null = ne pas écrire le lien
+          when: receivedTs,
+          setFlag: !alreadyFlagged
+        };
+      }
+    }
+
+    counts[action]++;
+    rowsToValidate.push({ rowIndex: i + 1, id: row[col.id], action: action });
+    if (sample.length < 10) {
+      sample.push({ id: row[col.id], clientId: clientId, docType: docType, fileName: fileName, action: action });
+    }
+  }
+
+  var preview = {
+    wouldValidate: rowsToValidate.length,
+    fresh: counts.fresh,         // flag posé + lien rempli
+    linkOnly: counts.linkOnly,   // flag déjà coché, on rajoute juste le lien
+    skipExisting: counts.skipExisting, // déjà OK, juste sortie de la file
+    skipped: skipReasons.notPending + skipReasons.noClient + skipReasons.clientNotFound + skipReasons.unknownDocType,
+    skipReasons: skipReasons,
+    byDocType: byDocType,
+    clientsTouched: Object.keys(pendingClientUpdates).length,
+    sample: sample,
+    dryRun: dryRun
+  };
+
+  if (dryRun || rowsToValidate.length === 0) {
+    return preview;
+  }
+
+  // Écritures côté Clients : 1 setValues par client (mode C — flag posé seulement
+  // si setFlag=true, lien posé seulement si info.link est non null).
+  var clientsUpdated = 0;
+  Object.keys(pendingClientUpdates).forEach(function(cid) {
+    var rowIdx = clientRowById[cid]; // 0-based dans cData
+    var changed = false;
+    var slot = pendingClientUpdates[cid];
+    Object.keys(slot).forEach(function(flagName) {
+      var info = slot[flagName];
+      var fCol = cHeaders.indexOf(flagName);
+      if (fCol >= 0 && info.setFlag) { cData[rowIdx][fCol] = true; changed = true; }
+      var lCol = cHeaders.indexOf(info.linkField);
+      if (lCol >= 0 && info.link) { cData[rowIdx][lCol] = info.link; changed = true; }
+    });
+    if (changed) {
+      cSheet.getRange(rowIdx + 1, 1, 1, cData[rowIdx].length).setValues([cData[rowIdx]]);
+      clientsUpdated++;
+    }
+  });
+
+  // Écritures côté Verifications : status + notes par lot, avec note différente selon l'action.
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+  for (var k = 0; k < rowsToValidate.length; k++) {
+    var item = rowsToValidate[k];
+    var rIdx = item.rowIndex;
+    if (col.status >= 0) sh.getRange(rIdx, col.status + 1).setValue("validated");
+    if (col.notes >= 0) {
+      var existing = String(data[rIdx - 1][col.notes] || "");
+      var noteAppend = "auto-bulk " + stamp + " (" + item.action + ")";
+      var newNote = existing ? existing + " | " + noteAppend : noteAppend;
+      sh.getRange(rIdx, col.notes + 1).setValue(newNote);
+    }
+  }
+
+  SpreadsheetApp.flush();
+  preview.validated = rowsToValidate.length;
+  preview.clientsUpdated = clientsUpdated;
+  return preview;
 }
 
 // ===========================================================================
