@@ -102,6 +102,7 @@ export default function QrScanner({
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const lastScannedRef = useRef<{ text: string; at: number } | null>(null);
+  const scanCounterRef = useRef(0);
   const [running, setRunning] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [scanCount, setScanCount] = useState(0);
@@ -110,11 +111,9 @@ export default function QrScanner({
     "loading",
   );
   const [debugLog, setDebugLog] = useState<string>("");
+  const [snapshot, setSnapshot] = useState<string | null>(null);
 
-  // Pré-init zbar-wasm + scanner custom au mount. Permet de surfacer toute
-  // erreur de chargement (.wasm 404, CORS, scanner alloc) avant que la
-  // caméra démarre. Une fois "ready", le scanner avec TEST_INVERTED est
-  // prêt à décoder les BicyCode (QR inversés clair/sombre).
+  // Pré-init zbar-wasm + scanner custom au mount.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -123,7 +122,9 @@ export default function QrScanner({
         await getInvertedAwareScanner();
         if (!cancelled) {
           setWasmStatus("ready");
-          setDebugLog("WASM ready (TEST_INVERTED on)");
+          // Marker version explicite pour qu'on voie tout de suite si le
+          // navigateur charge bien le dernier code (vs. cache navigateur).
+          setDebugLog("v3: WASM+scanner ready (INV+canvas-check)");
         }
       } catch (e) {
         if (cancelled) return;
@@ -189,7 +190,9 @@ export default function QrScanner({
             const vh = video.videoHeight;
             const scanner = await getInvertedAwareScanner();
 
-            setScanCount((c) => c + 1);
+            scanCounterRef.current += 1;
+            const cur = scanCounterRef.current;
+            setScanCount(cur);
 
             // ---- Pass 1 : frame entière downsamplée à 1280px ----
             const maxDim = 1280;
@@ -200,6 +203,43 @@ export default function QrScanner({
             canvas.height = h1;
             ctx.drawImage(video, 0, 0, vw, vh, 0, 0, w1, h1);
             const imageData1 = ctx.getImageData(0, 0, w1, h1);
+
+            // Diagnostic anti-canvas-vide : iOS Safari peut rendre du noir
+            // quand on drawImage depuis un <video>. On échantillonne ~256 px
+            // répartis et on calcule la moyenne + le min/max, pour détecter
+            // un canvas tout noir (avg≈0, max=0) ou tout blanc (min=255).
+            // Affiché toutes les 30 frames pour ne pas spammer le state.
+            if (cur % 30 === 0) {
+              let sum = 0;
+              let lo = 255;
+              let hi = 0;
+              const step = Math.max(
+                4,
+                Math.floor(imageData1.data.length / (256 * 4)) * 4,
+              );
+              let n = 0;
+              for (let i = 0; i < imageData1.data.length; i += step) {
+                const r = imageData1.data[i];
+                sum += r;
+                if (r < lo) lo = r;
+                if (r > hi) hi = r;
+                n++;
+              }
+              const avg = n > 0 ? Math.round(sum / n) : 0;
+              setDebugLog(
+                `v3 #${cur} canvas ${w1}x${h1} R-avg=${avg} min=${lo} max=${hi}`,
+              );
+              // Snapshot visuel toutes les 60 frames (12 sec à 5 FPS) pour
+              // que l'user voit ce qu'on passe à zbar.
+              if (cur % 60 === 0) {
+                try {
+                  setSnapshot(canvas.toDataURL("image/jpeg", 0.5));
+                } catch {
+                  /* ignore */
+                }
+              }
+            }
+
             let symbols = await scanImageData(imageData1, scanner);
 
             if (cancelled) return;
@@ -333,6 +373,19 @@ export default function QrScanner({
       {debugLog && (
         <div className="text-[10px] text-gray-400 break-all bg-gray-50 border rounded px-2 py-1">
           debug: {debugLog}
+        </div>
+      )}
+      {snapshot && (
+        <div className="text-[10px] text-gray-500">
+          <div className="mb-1">
+            Aperçu canvas envoyé à zbar (toutes les 12 s) :
+          </div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={snapshot}
+            alt="canvas snapshot"
+            className="w-full max-w-xs rounded border"
+          />
         </div>
       )}
       {errMsg && (
