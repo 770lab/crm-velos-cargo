@@ -181,18 +181,21 @@ export default function PhotoGeminiCapture({
   }, [onCameraToggle]);
 
   // Branche le stream sur le <video> dès que l'overlay est monté.
+  // Pas de cleanup ici qui dépendrait de cameraOpen : la closure capturerait
+  // l'ANCIENNE valeur (false), et au flip false→true la cleanup précédente
+  // arrêterait les tracks du flux qu'on vient d'acquérir → écran noir. La
+  // libération de la caméra est gérée explicitement par closeCamera() et par
+  // l'effet d'unmount juste en-dessous.
   useEffect(() => {
     if (cameraOpen && videoRef.current && streamRef.current) {
-      videoRef.current.srcObject = streamRef.current;
-      videoRef.current.play().catch(() => {});
+      const v = videoRef.current;
+      v.srcObject = streamRef.current;
+      const tryPlay = () => v.play().catch(() => {});
+      tryPlay();
+      // iOS Safari peut ignorer le premier play() si l'autoplay-gesture est
+      // perdu derrière l'await getUserMedia. On retente sur loadedmetadata.
+      v.addEventListener("loadedmetadata", tryPlay, { once: true });
     }
-    return () => {
-      // Si le composant est démonté pendant que la caméra tourne, on libère.
-      if (!cameraOpen && streamRef.current) {
-        streamRef.current.getTracks().forEach((t) => t.stop());
-        streamRef.current = null;
-      }
-    };
   }, [cameraOpen]);
 
   // Sécurité : à la destruction du composant, libérer la caméra.
