@@ -584,22 +584,54 @@ function Inner({ mode }: { mode: ScanMode }) {
             {/* Livraison terminée pour ce client → photo du BL signé +
                 bouton "Marquer comme livré". Les 2 blocs s'affichent dès que
                 tous les vélos du client ont été marqués livrés. */}
-            {mode === "livraison" && allDone && focusClientId && (
-              <>
-                <div className="mb-3">
-                  <BlSignedUploader
+            {mode === "livraison" && allDone && focusClientId && (() => {
+              // Calcule le prochain client de la tournée à livrer pour
+              // proposer un redirect après "Marquer comme livré". On parcourt
+              // prog.clients dans l'ordre (= ordre du planning) et on prend
+              // le 1er après le client courant qui n'a pas encore tous ses
+              // vélos livrés. Si rien après, on cherche avant (cas où le
+              // chauffeur fait sa tournée dans un ordre différent).
+              let nextClient: typeof prog.clients[number] | null = null;
+              if ("clients" in prog && focusClient) {
+                const list = prog.clients;
+                const idx = list.findIndex((c) => c.clientId === focusClient.clientId);
+                for (let i = idx + 1; i < list.length; i++) {
+                  if (list[i].totals.livre < list[i].totals.total) {
+                    nextClient = list[i];
+                    break;
+                  }
+                }
+                if (!nextClient && idx > 0) {
+                  for (let i = 0; i < idx; i++) {
+                    if (list[i].totals.livre < list[i].totals.total) {
+                      nextClient = list[i];
+                      break;
+                    }
+                  }
+                }
+              }
+              const nextUrl = nextClient
+                ? `/crm-velos-cargo/livraison?tourneeId=${encodeURIComponent(tourneeId)}&clientId=${encodeURIComponent(nextClient.clientId)}`
+                : null;
+              return (
+                <>
+                  <div className="mb-3">
+                    <BlSignedUploader
+                      tourneeId={tourneeId}
+                      clientId={focusClientId}
+                    />
+                  </div>
+                  <DeliveredButton
                     tourneeId={tourneeId}
                     clientId={focusClientId}
+                    clientName={focusClient?.entreprise}
+                    nextUrl={nextUrl}
+                    nextClientName={nextClient?.entreprise}
+                    onDelivered={loadProgression}
                   />
-                </div>
-                <DeliveredButton
-                  tourneeId={tourneeId}
-                  clientId={focusClientId}
-                  clientName={focusClient?.entreprise}
-                  onDelivered={loadProgression}
-                />
-              </>
-            )}
+                </>
+              );
+            })()}
 
             {tourneeAllDone && cfg.nextLink && (
               <a
@@ -623,18 +655,25 @@ function Inner({ mode }: { mode: ScanMode }) {
 
 // Bouton "✅ Marquer comme livré" qui apparaît quand tous les vélos du client
 // sont scannés livrés sur la page livraison. Côté serveur, ça passe le statut
-// de la livraison en "livree" et remplit dateEffective. Sans ce bouton le
-// statut restait "planifiee" et le dot "BL signé" sur la page Clients ne
-// passait jamais en vert.
+// de la livraison en "livree" et remplit dateEffective. Une fois validé, on
+// redirige vers la prochaine livraison de la tournée pour que le chauffeur
+// enchaîne sans repasser par le planning.
 function DeliveredButton({
   tourneeId,
   clientId,
   clientName,
+  nextUrl,
+  nextClientName,
   onDelivered,
 }: {
   tourneeId: string;
   clientId: string;
   clientName?: string;
+  /** URL de la livraison suivante (null si tournée terminée). Le chauffeur
+   *  est redirigé automatiquement ~2.5s après le succès, le temps de voir
+   *  l'état "Livraison validée 🎉". */
+  nextUrl?: string | null;
+  nextClientName?: string;
   onDelivered?: () => void;
 }) {
   const [busy, setBusy] = useState(false);
@@ -655,6 +694,13 @@ function DeliveredButton({
       }
       setDone(true);
       if (onDelivered) onDelivered();
+      // Redirection auto vers le prochain client à livrer. 2.5s pour laisser
+      // voir le message "Livraison validée" avant de naviguer.
+      if (nextUrl) {
+        setTimeout(() => {
+          window.location.href = nextUrl;
+        }, 2500);
+      }
     } catch (e) {
       setErrMsg(e instanceof Error ? e.message : String(e));
     } finally {
@@ -672,6 +718,24 @@ function DeliveredButton({
         <div className="text-xs text-emerald-700 mt-1">
           Statut passé à « Livrée » · BL archivé sur Drive
         </div>
+        {nextUrl && nextClientName ? (
+          <div className="mt-3 bg-white border border-emerald-300 rounded-lg p-2 text-sm text-emerald-900">
+            <div className="font-medium">→ Prochaine livraison : {nextClientName}</div>
+            <div className="text-xs text-emerald-700 mt-0.5">
+              Redirection automatique dans quelques secondes…
+            </div>
+            <a
+              href={nextUrl}
+              className="inline-block mt-1.5 text-xs underline text-emerald-800"
+            >
+              Y aller maintenant
+            </a>
+          </div>
+        ) : (
+          <div className="mt-3 text-sm text-emerald-900 font-medium">
+            🏁 Tournée terminée — plus de livraison à effectuer.
+          </div>
+        )}
       </div>
     );
   }
@@ -685,6 +749,11 @@ function DeliveredButton({
       >
         {busy ? "Validation…" : "✅ Marquer comme livré"}
       </button>
+      {nextClientName && (
+        <div className="text-[11px] text-gray-500 text-center">
+          Après validation : redirection vers la prochaine livraison ({nextClientName}).
+        </div>
+      )}
       {errMsg && (
         <div className="bg-red-50 border border-red-200 text-red-800 text-xs rounded p-2">
           {errMsg}
