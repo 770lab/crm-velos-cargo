@@ -27,7 +27,17 @@ const STAGE_ACCESS: Record<EquipeRole, ReadonlySet<StageKey>> = {
   apporteur: new Set<StageKey>([]),
 };
 
-type View = "semaine" | "mois" | "liste";
+type View = "jour" | "3jours" | "semaine" | "mois" | "liste";
+
+// Labels courts pour le sélecteur de vue (limité par la largeur sur mobile :
+// 5 modes au lieu de 3). Le label affiché reste compact, l'état est verbeux.
+const VIEW_LABELS: Record<View, string> = {
+  jour: "Jour",
+  "3jours": "3 j",
+  semaine: "Sem.",
+  mois: "Mois",
+  liste: "Liste",
+};
 
 interface Tournee {
   tourneeId: string | null;
@@ -62,7 +72,23 @@ function livraisonMatchesUser(l: LivraisonRow, userId: string, role: EquipeRole)
 export default function LivraisonsPage() {
   const { livraisons, carte, refresh } = useData();
   const currentUser = useCurrentUser();
+  // Vue initiale : récupérée du localStorage si déjà choisie, sinon "jour" sur
+  // mobile (< 768px, la grille 7 colonnes est illisible) et "semaine" sur desktop.
+  // SSR-safe : on commence par "semaine" et on ajuste au mount via useEffect.
   const [view, setView] = useState<View>("semaine");
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = window.localStorage.getItem("livraisons.view") as View | null;
+    if (saved && ["jour", "3jours", "semaine", "mois", "liste"].includes(saved)) {
+      setView(saved);
+      return;
+    }
+    if (window.innerWidth < 768) setView("jour");
+  }, []);
+  const setViewPersist = (v: View) => {
+    setView(v);
+    if (typeof window !== "undefined") window.localStorage.setItem("livraisons.view", v);
+  };
   const [refDate, setRefDate] = useState<Date>(() => new Date());
   const [openTournee, setOpenTournee] = useState<Tournee | null>(null);
   const [search, setSearch] = useState("");
@@ -201,15 +227,15 @@ export default function LivraisonsPage() {
             className="px-3 py-1.5 border-2 border-green-300 rounded-lg text-sm w-56 focus:border-green-500 focus:outline-none"
           />
           <div className="inline-flex rounded-lg border bg-white overflow-hidden">
-            {(["semaine", "mois", "liste"] as View[]).map((v) => (
+            {(["jour", "3jours", "semaine", "mois", "liste"] as View[]).map((v) => (
               <button
                 key={v}
-                onClick={() => setView(v)}
-                className={`px-3 py-1.5 text-sm capitalize ${
+                onClick={() => setViewPersist(v)}
+                className={`px-2 sm:px-3 py-1.5 text-xs sm:text-sm whitespace-nowrap ${
                   view === v ? "bg-green-600 text-white" : "text-gray-600 hover:bg-gray-50"
                 }`}
               >
-                {v}
+                {VIEW_LABELS[v]}
               </button>
             ))}
           </div>
@@ -220,6 +246,12 @@ export default function LivraisonsPage() {
         <NavBar refDate={refDate} setRefDate={setRefDate} view={view} />
       )}
 
+      {view === "jour" && (
+        <DayView refDate={refDate} tourneesByDate={tourneesByDate} onOpen={setOpenTournee} />
+      )}
+      {view === "3jours" && (
+        <MultiDayView refDate={refDate} tourneesByDate={tourneesByDate} onOpen={setOpenTournee} nbDays={3} />
+      )}
       {view === "semaine" && (
         <WeekView refDate={refDate} tourneesByDate={tourneesByDate} onOpen={setOpenTournee} />
       )}
@@ -277,6 +309,14 @@ function NavBar({
   view: View;
 }) {
   const label = useMemo(() => {
+    if (view === "jour") {
+      return refDate.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+    }
+    if (view === "3jours") {
+      const end = new Date(refDate);
+      end.setDate(end.getDate() + 2);
+      return `${refDate.toLocaleDateString("fr-FR", { day: "numeric", month: "short" })} — ${end.toLocaleDateString("fr-FR", { day: "numeric", month: "short", year: "numeric" })}`;
+    }
     if (view === "semaine") {
       const start = startOfWeek(refDate);
       const end = new Date(start);
@@ -286,16 +326,19 @@ function NavBar({
     return refDate.toLocaleDateString("fr-FR", { month: "long", year: "numeric" });
   }, [refDate, view]);
 
-  const step = view === "semaine" ? 7 : 30;
   const moveBack = () => {
     const d = new Date(refDate);
-    if (view === "semaine") d.setDate(d.getDate() - step);
+    if (view === "jour") d.setDate(d.getDate() - 1);
+    else if (view === "3jours") d.setDate(d.getDate() - 3);
+    else if (view === "semaine") d.setDate(d.getDate() - 7);
     else d.setMonth(d.getMonth() - 1);
     setRefDate(d);
   };
   const moveFwd = () => {
     const d = new Date(refDate);
-    if (view === "semaine") d.setDate(d.getDate() + step);
+    if (view === "jour") d.setDate(d.getDate() + 1);
+    else if (view === "3jours") d.setDate(d.getDate() + 3);
+    else if (view === "semaine") d.setDate(d.getDate() + 7);
     else d.setMonth(d.getMonth() + 1);
     setRefDate(d);
   };
@@ -314,6 +357,111 @@ function NavBar({
       </div>
       <div className="text-sm font-medium text-gray-700 capitalize">{label}</div>
       <div className="w-24" />
+    </div>
+  );
+}
+
+// Vue 1 jour : pleine largeur, idéale sur mobile. Affiche toutes les tournées
+// du jour de refDate sans tronquer (contrairement à la WeekView où chaque
+// colonne ne fait que 14% de la largeur écran).
+function DayView({
+  refDate,
+  tourneesByDate,
+  onOpen,
+}: {
+  refDate: Date;
+  tourneesByDate: Map<string, Tournee[]>;
+  onOpen: (t: Tournee) => void;
+}) {
+  const iso = isoDate(refDate);
+  const list = tourneesByDate.get(iso) || [];
+  const today = isoDate(new Date());
+  const isToday = iso === today;
+
+  return (
+    <div className="bg-white rounded-xl border overflow-hidden">
+      <div className={`px-4 py-3 border-b ${isToday ? "bg-blue-50 text-blue-800" : "bg-gray-50 text-gray-700"}`}>
+        <div className="text-sm font-medium capitalize">
+          {refDate.toLocaleDateString("fr-FR", { weekday: "long" })}
+        </div>
+        <div className="text-2xl font-bold">
+          {refDate.getDate()}{" "}
+          <span className="text-base font-normal text-gray-500 capitalize">
+            {refDate.toLocaleDateString("fr-FR", { month: "long" })}
+          </span>
+        </div>
+      </div>
+      <div className="p-3 space-y-2 min-h-[40vh]">
+        {list.length === 0 ? (
+          <div className="text-sm text-gray-400 italic text-center py-8">Aucune tournée ce jour-là.</div>
+        ) : (
+          list.map((t) => (
+            <TourneeCard key={t.tourneeId || t.livraisons[0].id} tournee={t} onClick={() => onOpen(t)} />
+          ))
+        )}
+        <DayStaffingSummary tournees={list} />
+      </div>
+    </div>
+  );
+}
+
+// Vue multi-jours (utilisée pour le mode "3 jours" — peut servir pour d'autres
+// fenêtres si besoin). Plus lisible que la semaine sur mobile : 3 colonnes au
+// lieu de 7, donc chaque colonne fait ~33% de la largeur.
+function MultiDayView({
+  refDate,
+  tourneesByDate,
+  onOpen,
+  nbDays,
+}: {
+  refDate: Date;
+  tourneesByDate: Map<string, Tournee[]>;
+  onOpen: (t: Tournee) => void;
+  nbDays: number;
+}) {
+  const days = Array.from({ length: nbDays }, (_, i) => {
+    const d = new Date(refDate);
+    d.setDate(d.getDate() + i);
+    return d;
+  });
+  const today = isoDate(new Date());
+  const colsClass = nbDays === 3 ? "grid-cols-3" : nbDays === 2 ? "grid-cols-2" : "grid-cols-1";
+
+  return (
+    <div className="bg-white rounded-xl border overflow-hidden">
+      <div className={`grid ${colsClass} border-b bg-gray-50 text-xs text-gray-600`}>
+        {days.map((d) => {
+          const iso = isoDate(d);
+          const isToday = iso === today;
+          return (
+            <div
+              key={iso}
+              className={`px-3 py-2 border-r last:border-r-0 ${isToday ? "bg-blue-50 text-blue-800" : ""}`}
+            >
+              <div className="font-medium capitalize">{d.toLocaleDateString("fr-FR", { weekday: "short" })}</div>
+              <div className="text-base font-bold text-gray-900">
+                {d.getDate()}
+                <span className="text-xs font-normal text-gray-500 ml-1">{d.toLocaleDateString("fr-FR", { month: "short" })}</span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className={`grid ${colsClass} min-h-[60vh]`}>
+        {days.map((d) => {
+          const iso = isoDate(d);
+          const list = tourneesByDate.get(iso) || [];
+          return (
+            <div key={iso} className="border-r last:border-r-0 p-2 space-y-1.5">
+              {list.length === 0 && <div className="text-[11px] text-gray-300">—</div>}
+              {list.map((t) => (
+                <TourneeCard key={t.tourneeId || t.livraisons[0].id} tournee={t} onClick={() => onOpen(t)} compact />
+              ))}
+              <DayStaffingSummary tournees={list} />
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
