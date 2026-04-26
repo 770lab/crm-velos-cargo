@@ -2902,6 +2902,7 @@ function getTourneeProgression(tourneeId) {
   var iLTid = lHeaders.indexOf("tourneeId");
   var iLCid = lHeaders.indexOf("clientId");
   var iLDate = lHeaders.indexOf("datePrevue");
+  var iLNb = lHeaders.indexOf("nbVelos");
 
   var clientsSheet = SS.getSheetByName("Clients");
   var cData = clientsSheet ? clientsSheet.getDataRange().getValues() : [[]];
@@ -2922,6 +2923,10 @@ function getTourneeProgression(tourneeId) {
   var iVPhotoQr = vHeaders.indexOf("photoQrPrise");
   var iVMont = vHeaders.indexOf("dateMontage");
 
+  // nbVelos commandés par la livraison (clé : clientId de cette tournée).
+  // C'est ça le dénominateur attendu, PAS le nombre de lignes Velos pour le client
+  // (un client peut avoir des vélos en stock qui ne sont pas dans cette tournée-ci).
+  var nbVelosByClient = {};
   var orderedClientIds = [];
   var datePrevue = null;
   for (var i = 1; i < lData.length; i++) {
@@ -2929,6 +2934,10 @@ function getTourneeProgression(tourneeId) {
     if (!datePrevue && iLDate >= 0) datePrevue = lData[i][iLDate] || null;
     var cid = String(lData[i][iLCid] || "").trim();
     if (cid && orderedClientIds.indexOf(cid) === -1) orderedClientIds.push(cid);
+    if (cid && iLNb >= 0) {
+      var n = Number(lData[i][iLNb]) || 0;
+      nbVelosByClient[cid] = (nbVelosByClient[cid] || 0) + n;
+    }
   }
   if (orderedClientIds.length === 0) return { error: "Tournée introuvable: " + tourneeId };
 
@@ -2949,7 +2958,9 @@ function getTourneeProgression(tourneeId) {
   var clients = orderedClientIds.map(function(cid) {
     var c = clientById(cid) || {};
     var velos = [];
-    var ct = { total: 0, prepare: 0, charge: 0, livre: 0, monte: 0 };
+    // total = nbVelos de la ligne Livraison (commandé pour CE jour-cette tournée),
+    // pas le nb de lignes Velos du client (qui peut inclure du surplus hors tournée).
+    var ct = { total: nbVelosByClient[cid] || 0, prepare: 0, charge: 0, livre: 0, monte: 0 };
     for (var vi = 1; vi < vData.length; vi++) {
       if (String(vData[vi][iVCid]) !== String(cid)) continue;
       if (iVAnnule >= 0 && isTrue(vData[vi][iVAnnule])) continue;
@@ -2962,7 +2973,6 @@ function getTourneeProgression(tourneeId) {
       var charDone = !!(dateChar && String(dateChar).trim());
       var livDone = !!(dateLivS && String(dateLivS).trim()) || photoQr;
       var montDone = !!(dateMont && String(dateMont).trim());
-      ct.total++;
       if (prepDone) ct.prepare++;
       if (charDone) ct.charge++;
       if (livDone) ct.livre++;
@@ -3921,6 +3931,10 @@ function proposeTournee(payload) {
           .trim();
         try {
           var parsed = JSON.parse(cleaned);
+          // Garde-fou anti-split : Gemini ignore parfois la règle 7. On dégage tout
+          // arrêt dont nbVelos != nbVelosRestants du client et on bascule le client
+          // dans clientsNonAffectes (ou clientsTropGros si la flotte ne peut pas absorber).
+          _sanitizeProposeSplit(parsed, clientsEnrichis, camionsAvecRestant, clientsTropGros);
           return {
             ok: true,
             date: date,
@@ -3955,6 +3969,63 @@ function proposeTournee(payload) {
     }
   }
   return { error: "Gemini HTTP " + lastCode, body: lastBody.slice(0, 300) };
+}
+
+// Garde-fou serveur : un client = une livraison entière. Si Gemini renvoie
+// un arrêt avec nbVelos < nbVelosRestants, on retire l'arrêt et on bascule
+// le client soit en clientsTropGros (capacité réelle insuffisante), soit en
+// clientsNonAffectes (la flotte aurait pu mais Gemini a mal alloué).
+// Mute parsed.tournees / parsed.clientsNonAffectes en place.
+function _sanitizeProposeSplit(parsed, clientsEnrichis, camions, clientsTropGros) {
+  if (!parsed || !Array.isArray(parsed.tournees)) return;
+  var byId = {};
+  clientsEnrichis.forEach(function(c) { byId[String(c.id)] = c; });
+  var capaMax = camions.reduce(function(m, c) {
+    if (c.type === "retrait") return m;
+    return Math.max(m, Number(c.capaciteVelos) || 0);
+  }, 0);
+  var aRetrait = camions.some(function(c) { return c.type === "retrait"; });
+
+  parsed.clientsNonAffectes = Array.isArray(parsed.clientsNonAffectes) ? parsed.clientsNonAffectes : [];
+
+  parsed.tournees.forEach(function(t) {
+    if (!t || !Array.isArray(t.arrets)) return;
+    var kept = [];
+    t.arrets.forEach(function(a) {
+      var ref = byId[String(a.clientId)];
+      if (!ref) {
+        kept.push(a);
+        return;
+      }
+      var demande = Number(ref.nbVelosRestants) || 0;
+      var propose = Number(a.nbVelos) || 0;
+      if (propose === demande) {
+        kept.push(a);
+        return;
+      }
+      // Split détecté : on dégage l'arrêt.
+      if (demande > capaMax && !aRetrait) {
+        clientsTropGros.push({
+          clientId: ref.id,
+          entreprise: ref.entreprise,
+          ville: ref.ville,
+          nbVelosRestants: demande,
+          raison: "Commande de " + demande + "v > capacité max camion dispo (" + capaMax + "v) et pas de retrait client. Gemini avait splitté en " + propose + "v — corrigé."
+        });
+      } else {
+        parsed.clientsNonAffectes.push({
+          clientId: ref.id,
+          entreprise: ref.entreprise,
+          nbVelos: demande,
+          raison: "Split refusé (Gemini proposait " + propose + "v / " + demande + "v). Un client = une livraison intégrale."
+        });
+      }
+    });
+    t.arrets = kept;
+    t.totalVelos = kept.reduce(function(s, a) { return s + (Number(a.nbVelos) || 0); }, 0);
+  });
+  // Retire les tournées vidées par le sanitizer.
+  parsed.tournees = parsed.tournees.filter(function(t) { return t.arrets && t.arrets.length > 0; });
 }
 
 function _buildProposeTourneePrompt(date, camions, clients, affectesExistants, mode, capa) {
