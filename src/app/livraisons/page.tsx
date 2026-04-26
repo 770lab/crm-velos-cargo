@@ -1225,6 +1225,7 @@ function TourneeModal({
               return single ? [single] : [];
             })()}
             initialMonteurIds={tournee.livraisons[0]?.monteurIds || []}
+            initialPreparateurIds={tournee.livraisons[0]?.preparateurIds || []}
             onSaved={onChanged}
           />
         )}
@@ -1671,6 +1672,7 @@ function EquipeAssignBlock({
   initialChauffeurId,
   initialChefEquipeIds,
   initialMonteurIds,
+  initialPreparateurIds,
   onSaved,
 }: {
   tourneeId: string;
@@ -1678,12 +1680,14 @@ function EquipeAssignBlock({
   initialChauffeurId: string | null;
   initialChefEquipeIds: string[];
   initialMonteurIds: string[];
+  initialPreparateurIds: string[];
   onSaved: () => void;
 }) {
   const { equipe } = useData();
   const [chauffeurId, setChauffeurId] = useState<string>(initialChauffeurId || "");
   const [chefEquipeIds, setChefEquipeIds] = useState<string[]>(initialChefEquipeIds);
   const [monteurIds, setMonteurIds] = useState<string[]>(initialMonteurIds);
+  const [preparateurIds, setPreparateurIds] = useState<string[]>(initialPreparateurIds);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
@@ -1691,12 +1695,14 @@ function EquipeAssignBlock({
   const chauffeurs = equipe.filter((m) => m.role === "chauffeur" && m.actif !== false);
   const chefs = equipe.filter((m) => m.role === "chef" && m.actif !== false);
   const monteurs = equipe.filter((m) => m.role === "monteur" && m.actif !== false);
+  const preparateurs = equipe.filter((m) => m.role === "preparateur" && m.actif !== false);
 
   const hasEquipe = equipe.length > 0;
   const dirty =
     chauffeurId !== (initialChauffeurId || "") ||
     JSON.stringify([...chefEquipeIds].sort()) !== JSON.stringify([...initialChefEquipeIds].sort()) ||
-    JSON.stringify([...monteurIds].sort()) !== JSON.stringify([...initialMonteurIds].sort());
+    JSON.stringify([...monteurIds].sort()) !== JSON.stringify([...initialMonteurIds].sort()) ||
+    JSON.stringify([...preparateurIds].sort()) !== JSON.stringify([...initialPreparateurIds].sort());
 
   const save = async () => {
     setSaving(true);
@@ -1708,6 +1714,7 @@ function EquipeAssignBlock({
         chefEquipeId: chefEquipeIds[0] || "",
         chefEquipeIds,
         monteurIds,
+        preparateurIds,
       });
       if ((r as { error?: string }).error) throw new Error((r as { error?: string }).error);
       setSavedAt(new Date());
@@ -1725,6 +1732,10 @@ function EquipeAssignBlock({
 
   const toggleMonteur = (id: string) => {
     setMonteurIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+
+  const togglePreparateur = (id: string) => {
+    setPreparateurIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
   };
 
   return (
@@ -1774,6 +1785,36 @@ function EquipeAssignBlock({
                   className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
                     on
                       ? "bg-blue-600 text-white border-blue-600"
+                      : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                  }`}
+                >
+                  {on ? "✓ " : ""}
+                  {m.nom}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
+      <div className="mb-3">
+        <label className="block text-xs text-gray-500 mb-1">
+          📦 Préparateurs <span className="text-gray-400">({preparateurIds.length} sélectionné{preparateurIds.length > 1 ? "s" : ""})</span>
+        </label>
+        {preparateurs.length === 0 ? (
+          <div className="text-xs text-gray-400 italic">Aucun préparateur enregistré</div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {preparateurs.map((m) => {
+              const on = preparateurIds.includes(m.id);
+              return (
+                <button
+                  key={m.id}
+                  type="button"
+                  onClick={() => togglePreparateur(m.id)}
+                  className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                    on
+                      ? "bg-orange-600 text-white border-orange-600"
                       : "border-gray-300 text-gray-700 hover:bg-gray-50"
                   }`}
                 >

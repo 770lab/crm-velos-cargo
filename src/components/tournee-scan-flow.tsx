@@ -123,6 +123,9 @@ function Inner({ mode }: { mode: ScanMode }) {
   const [history, setHistory] = useState<ScanEvent[]>([]);
   const [scannerEnabled, setScannerEnabled] = useState<boolean>(true);
   const [busy, setBusy] = useState<boolean>(false);
+  // En mode préparation, si on scanne un FNUCI inconnu on propose d'assigner
+  // à un client de la tournée (fusionne réception + préparation).
+  const [pendingFnuci, setPendingFnuci] = useState<string | null>(null);
 
   useEffect(() => { refresh("equipe"); }, [refresh]);
 
@@ -167,8 +170,14 @@ function Inner({ mode }: { mode: ScanMode }) {
           status = "hors-tournee";
           msg = `⚠ Pas dans cette tournée — ${err.veloClientName || "autre client"}`;
         } else if (err.code === "FNUCI_INCONNU") {
+          if (mode === "preparation") {
+            // Fusion réception+préparation : on demande à quel client assigner.
+            setPendingFnuci(fnuci);
+            setBusy(false);
+            return;
+          }
           status = "unknown";
-          msg = "FNUCI inconnu — passe par Réception";
+          msg = "FNUCI inconnu — scanne-le d'abord en préparation";
         }
         const evt: ScanEvent = { fnuci, status, msg, at: Date.now() };
         setHistory((h) => [evt, ...h].slice(0, 10));
@@ -182,7 +191,54 @@ function Inner({ mode }: { mode: ScanMode }) {
       setBusy(false);
       setTimeout(() => setScannerEnabled(true), 800);
     }
-  }, [busy, cfg.endpoint, tourneeId, userId, loadProgression]);
+  }, [busy, cfg.endpoint, tourneeId, userId, loadProgression, mode]);
+
+  // Assigne le FNUCI en attente à un client de la tournée puis valide la préparation.
+  const assignAndPrepare = useCallback(async (clientId: string) => {
+    if (!pendingFnuci) return;
+    const fnuci = pendingFnuci;
+    setPendingFnuci(null);
+    setBusy(true);
+    try {
+      const a = await gasPost("assignFnuciToClient", { fnuci, clientId }) as
+        { ok?: true; alreadyAssigned?: boolean; veloId?: string; existingClientName?: string | null; error?: string };
+      if (a.error) {
+        beep(false);
+        const evt: ScanEvent = {
+          fnuci,
+          status: "error",
+          msg: a.existingClientName ? `⚠ Déjà chez ${a.existingClientName}` : a.error,
+          at: Date.now(),
+        };
+        setHistory((h) => [evt, ...h].slice(0, 10));
+      } else {
+        const r = (await gasPost(cfg.endpoint, { fnuci, tourneeId, userId })) as ScanResp;
+        if ("ok" in r && r.ok) {
+          beep(true);
+          const evt: ScanEvent = {
+            fnuci: r.fnuci,
+            status: "ok",
+            msg: "Assigné + " + cfg.title.toLowerCase(),
+            clientName: r.clientName,
+            at: Date.now(),
+          };
+          setHistory((h) => [evt, ...h].slice(0, 10));
+        } else {
+          beep(false);
+          const evt: ScanEvent = { fnuci, status: "error", msg: ("error" in r ? r.error : "Erreur"), at: Date.now() };
+          setHistory((h) => [evt, ...h].slice(0, 10));
+        }
+      }
+      await loadProgression();
+    } catch (e) {
+      beep(false);
+      const evt: ScanEvent = { fnuci, status: "error", msg: String(e), at: Date.now() };
+      setHistory((h) => [evt, ...h].slice(0, 10));
+    } finally {
+      setBusy(false);
+      setTimeout(() => setScannerEnabled(true), 400);
+    }
+  }, [pendingFnuci, cfg.endpoint, cfg.title, tourneeId, userId, loadProgression]);
 
   const changeUser = () => {
     localStorage.removeItem(cfg.storageKey);
@@ -287,11 +343,39 @@ function Inner({ mode }: { mode: ScanMode }) {
           </div>
         )}
 
-        {!pickingUser && userId && prog && (
+        {pendingFnuci && prog && (
+          <div className="bg-orange-50 border-2 border-orange-300 rounded-xl shadow p-4 space-y-3 mb-3">
+            <div className="text-sm">
+              <div className="font-semibold text-orange-900">📦 FNUCI inconnu — à quel client ?</div>
+              <div className="font-mono text-xs bg-white rounded px-2 py-1 mt-1 inline-block">{pendingFnuci}</div>
+            </div>
+            <div className="space-y-1.5">
+              {prog.clients.map((c) => {
+                const reste = c.totals.total - c.totals.prepare;
+                return (
+                  <button
+                    key={c.clientId}
+                    onClick={() => assignAndPrepare(c.clientId)}
+                    disabled={busy}
+                    className="w-full text-left border bg-white rounded-lg p-2.5 hover:bg-orange-100 hover:border-orange-400 disabled:opacity-50"
+                  >
+                    <div className="font-medium text-sm">{c.entreprise}</div>
+                    <div className="text-xs text-gray-500">{c.codePostal} {c.ville} · {reste > 0 ? `${reste} vélos restants à préparer` : "complet"}</div>
+                  </button>
+                );
+              })}
+            </div>
+            <button onClick={() => { setPendingFnuci(null); setScannerEnabled(true); }} className="w-full text-xs text-gray-500 hover:text-gray-700 py-1">
+              Annuler
+            </button>
+          </div>
+        )}
+
+        {!pickingUser && userId && prog && !pendingFnuci && (
           <>
             <div className="bg-white rounded-xl shadow p-4 space-y-3 mb-3">
               <div className="text-sm text-gray-700">Scanne le QR FNUCI du vélo.</div>
-              <QrScanner enabled={scannerEnabled && !allDone} onScan={handleScan} />
+              <QrScanner enabled={scannerEnabled && !allDone && !pendingFnuci} onScan={handleScan} />
               <form
                 onSubmit={(e) => {
                   e.preventDefault();

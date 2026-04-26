@@ -8,6 +8,7 @@ const ROLE_LABEL: Record<EquipeRole, string> = {
   chauffeur: "Chauffeur",
   chef: "Chef d'équipe",
   monteur: "Monteur",
+  preparateur: "Préparateur",
   apporteur: "Apporteur d'affaires",
 };
 
@@ -15,6 +16,7 @@ const ROLE_ICON: Record<EquipeRole, string> = {
   chauffeur: "🚚",
   chef: "👷",
   monteur: "🔧",
+  preparateur: "📦",
   apporteur: "🤝",
 };
 
@@ -22,6 +24,7 @@ const ROLE_COLOR: Record<EquipeRole, string> = {
   chauffeur: "bg-blue-100 text-blue-800 border-blue-200",
   chef: "bg-purple-100 text-purple-800 border-purple-200",
   monteur: "bg-emerald-100 text-emerald-800 border-emerald-200",
+  preparateur: "bg-orange-100 text-orange-800 border-orange-200",
   apporteur: "bg-amber-100 text-amber-800 border-amber-200",
 };
 
@@ -34,7 +37,7 @@ export default function EquipePage() {
   const [loadingInactifs, setLoadingInactifs] = useState(false);
 
   const byRole = useMemo(() => {
-    const groups: Record<EquipeRole, EquipeMember[]> = { chauffeur: [], chef: [], monteur: [], apporteur: [] };
+    const groups: Record<EquipeRole, EquipeMember[]> = { chauffeur: [], chef: [], monteur: [], preparateur: [], apporteur: [] };
     for (const m of equipe) {
       if (m.actif === false) continue;
       if (groups[m.role]) groups[m.role].push(m);
@@ -59,7 +62,7 @@ export default function EquipePage() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Équipe</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Chauffeurs, chefs d&apos;équipe et monteurs affectables aux tournées. Les apporteurs d&apos;affaires sont mis en CC des mails clients quand leur nom est renseigné sur la fiche.
+          Chauffeurs, chefs d&apos;équipe, préparateurs et monteurs affectables aux tournées. Les apporteurs d&apos;affaires sont mis en CC des mails clients quand leur nom est renseigné sur la fiche.
         </p>
       </div>
 

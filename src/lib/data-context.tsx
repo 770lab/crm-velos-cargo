@@ -88,6 +88,7 @@ interface LivraisonRow {
   chefEquipeId?: string | null;
   chefEquipeIds?: string[];
   monteurIds?: string[];
+  preparateurIds?: string[];
   nbMonteurs?: number;
   client: {
     entreprise: string;
@@ -102,7 +103,7 @@ interface LivraisonRow {
   _count: { velos: number };
 }
 
-type EquipeRole = "chauffeur" | "chef" | "monteur" | "apporteur";
+type EquipeRole = "chauffeur" | "chef" | "monteur" | "apporteur" | "preparateur";
 
 interface EquipeMember {
   id: string;

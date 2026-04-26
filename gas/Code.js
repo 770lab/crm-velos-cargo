@@ -596,7 +596,7 @@ function ensureLivraisonsSchema() {
     sheet = SS.insertSheet("Livraisons");
     var initialCols = [
       "id","clientId","datePrevue","dateEffective","statut","notes",
-      "nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs","chefEquipeIds"
+      "nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs","chefEquipeIds","preparateurIds"
     ];
     sheet.getRange(1, 1, 1, initialCols.length).setValues([initialCols]);
     return { sheet: sheet, headers: initialCols };
@@ -604,7 +604,7 @@ function ensureLivraisonsSchema() {
 
   var lastCol = sheet.getLastColumn();
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  var needed = ["nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs","chefEquipeIds"];
+  var needed = ["nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs","chefEquipeIds","preparateurIds"];
   var added = false;
   for (var k = 0; k < needed.length; k++) {
     if (headers.indexOf(needed[k]) === -1) {
@@ -805,6 +805,12 @@ function getLivraisons() {
       catch (e) { liv.chefEquipeIds = []; }
     } else if (!liv.chefEquipeIds) {
       liv.chefEquipeIds = [];
+    }
+    if (typeof liv.preparateurIds === "string" && liv.preparateurIds) {
+      try { liv.preparateurIds = JSON.parse(liv.preparateurIds); }
+      catch (e) { liv.preparateurIds = []; }
+    } else if (!liv.preparateurIds) {
+      liv.preparateurIds = [];
     }
     liv.nbMonteurs = Number(liv.nbMonteurs) || 0;
     return liv;
@@ -2482,6 +2488,7 @@ function assignTournee(tourneeId, assignment) {
   var iMonteurs = headers.indexOf("monteurIds");
   var iNbMonteurs = headers.indexOf("nbMonteurs");
   var iChefIds = headers.indexOf("chefEquipeIds");
+  var iPreparateurs = headers.indexOf("preparateurIds");
   if (iTourneeId < 0 || iChauffeur < 0 || iChef < 0 || iMonteurs < 0) {
     return { error: "Colonnes équipe manquantes, relance ensureLivraisonsSchema" };
   }
@@ -2491,6 +2498,9 @@ function assignTournee(tourneeId, assignment) {
   var chefEquipeIdsJson = Array.isArray(assignment.chefEquipeIds)
     ? JSON.stringify(assignment.chefEquipeIds)
     : (assignment.chefEquipeIds || "");
+  var preparateurIdsJson = Array.isArray(assignment.preparateurIds)
+    ? JSON.stringify(assignment.preparateurIds)
+    : (assignment.preparateurIds || "");
   var updated = 0;
   for (var i = 1; i < data.length; i++) {
     if (String(data[i][iTourneeId]) === String(tourneeId)) {
@@ -2498,6 +2508,7 @@ function assignTournee(tourneeId, assignment) {
       if (assignment.chefEquipeId !== undefined) sheet.getRange(i + 1, iChef + 1).setValue(assignment.chefEquipeId || "");
       if (assignment.chefEquipeIds !== undefined && iChefIds >= 0) sheet.getRange(i + 1, iChefIds + 1).setValue(chefEquipeIdsJson);
       if (assignment.monteurIds !== undefined) sheet.getRange(i + 1, iMonteurs + 1).setValue(monteurIdsJson);
+      if (assignment.preparateurIds !== undefined && iPreparateurs >= 0) sheet.getRange(i + 1, iPreparateurs + 1).setValue(preparateurIdsJson);
       if (assignment.nbMonteurs !== undefined && iNbMonteurs >= 0) sheet.getRange(i + 1, iNbMonteurs + 1).setValue(Number(assignment.nbMonteurs) || 0);
       updated++;
     }
