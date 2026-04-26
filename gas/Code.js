@@ -153,6 +153,10 @@ function handleRequest(e) {
       case "getClientPreparation":
         result = getClientPreparation(e.parameter.clientId);
         break;
+      case "markVeloMonte":
+        var bodyMVM = getBody();
+        result = markVeloMonte(bodyMVM);
+        break;
       case "uploadVeloPhoto":
         var bodyUVP = getBody();
         result = uploadVeloPhoto(bodyUVP);
@@ -1916,7 +1920,7 @@ function ensureVelosSchema() {
   if (!sheet) return { sheet: null, headers: [], annuleCol: -1 };
   var lastCol = sheet.getLastColumn();
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  var needed = ["annule", "fnuci", "photoVeloUrl", "photoFnuciUrl", "photoDate", "korpValide"];
+  var needed = ["annule", "fnuci", "photoVeloUrl", "photoFnuciUrl", "photoDate", "korpValide", "dateMontage", "monteParId", "photoMontageUrl"];
   for (var k = 0; k < needed.length; k++) {
     if (headers.indexOf(needed[k]) === -1) {
       lastCol++;
@@ -2667,6 +2671,81 @@ function getClientPreparation(clientId) {
     nbVelosSansFnuci: velos.length - avecFnuci.length,
     fnuciAttendus: avecFnuci.map(function(v) { return v.fnuci; }),
   };
+}
+
+// Marque un vélo comme monté + sauvegarde la photo de preuve.
+// Body : { fnuci, monteurId?, photoData (base64), mimeType? }
+// La photo sert de preuve de réalisation pour la paie du monteur.
+function markVeloMonte(body) {
+  body = body || {};
+  if (!body.fnuci) return { error: "fnuci requis" };
+  if (!body.photoData) return { error: "photo (preuve montage) requise" };
+  var clean = String(body.fnuci).trim();
+  var monteurId = body.monteurId || null;
+  var mimeType = body.mimeType || "image/jpeg";
+
+  var meta = ensureVelosSchema();
+  if (!meta.sheet) return { error: "Feuille Velos introuvable" };
+  var headers = meta.headers;
+  var iId = headers.indexOf("id");
+  var iClientId = headers.indexOf("clientId");
+  var iFnuci = headers.indexOf("fnuci");
+  var iAnnule = headers.indexOf("annule");
+  var iDateMontage = headers.indexOf("dateMontage");
+  var iMonteParId = headers.indexOf("monteParId");
+  var iPhotoMontage = headers.indexOf("photoMontageUrl");
+  if (iDateMontage < 0 || iPhotoMontage < 0) return { error: "Colonnes dateMontage/photoMontageUrl absentes (relance ensureVelosSchema)" };
+
+  var data = meta.sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var f = String(row[iFnuci] || "").trim();
+    if (f !== clean) continue;
+    var isAnnule = iAnnule >= 0 && (row[iAnnule] === true || row[iAnnule] === "TRUE");
+    if (isAnnule) continue;
+
+    var veloId = row[iId];
+    var cid = String(row[iClientId] || "");
+    var existing = row[iDateMontage];
+    var alreadyMonte = !!(existing && String(existing).trim());
+
+    // Upload de la photo dans le Drive du client (sous Photos montage / yyyy-MM-dd)
+    var clientFolder = _getClientFolder(cid);
+    var photosRoot = getOrCreateFolder(clientFolder, "Photos montage");
+    var today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+    var dayFolder = getOrCreateFolder(photosRoot, today);
+    var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "HHmmss");
+    var ext = mimeType === "image/png" ? "png" : "jpg";
+    var fullName = clean + "_montage_" + stamp + "." + ext;
+    var decoded = Utilities.base64Decode(body.photoData);
+    var blob = Utilities.newBlob(decoded, mimeType, fullName);
+    var file = dayFolder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    var photoUrl = file.getUrl();
+
+    var nowIso = new Date().toISOString();
+    if (!alreadyMonte) {
+      meta.sheet.getRange(i + 1, iDateMontage + 1).setValue(nowIso);
+      if (iMonteParId >= 0 && monteurId) {
+        meta.sheet.getRange(i + 1, iMonteParId + 1).setValue(String(monteurId));
+      }
+    }
+    // On écrit toujours la dernière photo (même si déjà monté → preuve mise à jour)
+    meta.sheet.getRange(i + 1, iPhotoMontage + 1).setValue(photoUrl);
+    SpreadsheetApp.flush();
+
+    return {
+      ok: true,
+      veloId: veloId,
+      fnuci: clean,
+      clientId: cid,
+      clientName: _getClientName(cid),
+      alreadyMonte: alreadyMonte,
+      dateMontage: alreadyMonte ? String(existing) : nowIso,
+      photoUrl: photoUrl,
+    };
+  }
+  return { error: "FNUCI inconnu — passe d'abord par Réception cartons", fnuci: clean };
 }
 
 function _getClientName(clientId) {
