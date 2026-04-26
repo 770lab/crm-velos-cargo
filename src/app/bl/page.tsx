@@ -19,8 +19,9 @@ type Progression =
   | { error: string };
 
 const LOGO_PATH = "/crm-velos-cargo/logo-av.png";
-const LEGAL_BANNER =
-  "LES ARTISANS VERTS - 6 Passage Eugène Barbier, 92400 Courbevoie - 01 87 66 27 08 - APE 4322B - TVA FR34878062793 - jonathan@artisansverts.energy - SAS au capital de 40 000€ - SIRET 87806279300038 - Assurance décennale MAAF Assurances n° 193068812 V - MCE - 001 valable du 01/01/2025 au 31/12/2025.";
+
+// Mentions légales reprises du footer DEVIS Artisans Verts (cf bat127, ITE, PAC).
+const LEGAL_BANNER_2026 = `LES ARTISANS VERTS SAS Société par actions simplifiée au capital de 40 000 € Siège social : 6 passage Eugène Barbier, 92400 Courbevoie · E-mail : contact@artisansverts.energy Téléphone : 01 87 66 27 08 SIRET : 878 062 793 00038 TVA intracommunautaire : FR34 878062793 · Assurance décennale : GROUPE LEADER Insurance N° de police : LINS267132 Période de validité : du 01/01/2026 au 31/12/2026`;
 
 export default function BlPageWrapper() {
   return (
@@ -55,181 +56,93 @@ function BlPage() {
   return (
     <>
       <style>{`
-        @page { size: A4; margin: 0; }
+        @page { size: 210mm 297mm; margin: 0; }
         @media print {
           .no-print { display: none !important; }
-          body { background: white !important; margin: 0 !important; }
-          .bl-sheet { box-shadow: none !important; margin: 0 !important; }
+          html, body { margin: 0; padding: 0; background: #fff; width: 210mm; }
+          .dv-page { box-shadow: none !important; margin: 0 !important; page-break-after: always; page-break-inside: avoid; }
+          .dv-page:last-child { page-break-after: auto; }
+          .dv-table thead tr { background: #3a7d44 !important; color: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          .dv-table th { background: #3a7d44 !important; color: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         }
-        body { background: #e5e5e5; }
-        .bl-sheet {
-          box-sizing: border-box;
+        body { background: #dde3dd; }
+
+        .dv-page {
+          background: #fff;
           width: 210mm;
           min-height: 297mm;
-          margin: 0.5cm auto;
-          padding: 12mm 14mm 14mm 14mm;
-          background: white;
-          color: #111;
-          font-family: Helvetica, Arial, sans-serif;
+          margin: 16px auto;
+          padding: 0;
           font-size: 9pt;
-          line-height: 1.35;
-          page-break-after: always;
+          line-height: 1.4;
+          color: #1a1a1a;
+          font-family: Arial, Helvetica, sans-serif;
+          box-shadow: 0 2px 20px rgba(0,0,0,.12);
           position: relative;
-          box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .dv-inner {
+          padding: 14mm 14mm 10mm 14mm;
           display: flex;
           flex-direction: column;
+          min-height: 297mm;
+          box-sizing: border-box;
         }
-        .bl-sheet:last-child { page-break-after: auto; }
+        .dv-content { flex: 1 1 0; min-height: 0; }
+        .dv-page-footer { flex-shrink: 0; padding-top: 6px; }
 
-        .legal {
-          font-size: 6.8pt;
-          color: #444;
-          text-align: center;
-          line-height: 1.35;
-          padding: 0 2mm;
-        }
-        .legal-bottom { margin-top: auto; padding-top: 6mm; }
+        .dv-logo { height: 26mm; width: auto; display: block; margin-bottom: 4mm; }
 
-        .logo {
-          width: 32mm;
-          height: auto;
-          display: block;
-          margin-top: 4mm;
-        }
+        .dv-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
+        .dv-head-left .doc-title { font-size: 13pt; font-weight: 700; color: #1a1a1a; margin-bottom: 4px; }
+        .dv-head-left .doc-meta { font-size: 8pt; line-height: 1.7; color: #333; }
+        .dv-head-right { text-align: right; }
+        .dv-head-right .client-name { font-size: 11pt; font-weight: 700; margin-bottom: 4px; }
+        .dv-head-right .client-info { font-size: 8.5pt; line-height: 1.7; color: #333; }
 
-        .row-2col {
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 8mm;
-          margin-top: 4mm;
-        }
-        .meta-block { font-size: 8.8pt; line-height: 1.5; }
-        .meta-title { font-size: 12.5pt; font-weight: 700; margin: 0 0 1.5mm 0; }
-        .meta-block .lbl { color: #444; }
-        .meta-block b { font-weight: 700; }
+        .dv-travaux { display: flex; justify-content: space-between; align-items: flex-start; margin: 6px 0 10px 0; padding-bottom: 8px; border-bottom: 1px solid #e2e8f0; }
+        .dv-travaux-left { font-size: 8pt; line-height: 1.7; color: #333; flex: 1; padding-right: 20px; }
+        .dv-totaux { min-width: 200px; }
+        .dv-totaux table { width: 100%; border-collapse: collapse; font-size: 8.5pt; }
+        .dv-totaux td { padding: 1.5px 4px; }
+        .dv-totaux td.r { text-align: right; white-space: nowrap; }
+        .dv-totaux .ttc { font-weight: 700; font-size: 10pt; }
+        .dv-totaux .rap { font-weight: 700; font-size: 11pt; color: #2d6a4f; }
 
-        .client-block {
-          text-align: right;
-          font-size: 9pt;
-          line-height: 1.55;
-        }
-        .client-name { font-size: 12pt; font-weight: 700; }
-
-        .liv-line {
-          margin-top: 4mm;
-          font-size: 8.8pt;
-        }
-        .liv-line .lbl { color: #444; font-weight: 600; }
-        .liv-line b { font-weight: 700; }
-
-        .totaux {
-          margin-top: 4mm;
-          margin-left: auto;
-          width: 75mm;
-          font-size: 9pt;
-        }
-        .totaux-row {
-          display: flex; justify-content: space-between;
-          padding: 1.2mm 0;
-        }
-        .totaux-row.bold {
-          font-weight: 700;
-          font-size: 10pt;
-        }
-        .totaux-row.final {
-          border-top: 1px solid #111;
-          margin-top: 2mm;
-          padding-top: 3mm;
-          font-weight: 700;
-          font-size: 12pt;
-        }
-
-        .detail-table {
-          margin-top: 5mm;
-          width: 100%;
-          border-collapse: collapse;
-        }
-        .detail-table thead th {
-          font-size: 8.5pt;
-          font-weight: 700;
-          text-align: left;
-          padding: 2.5mm 2mm;
-          background: #f0f0f0;
-          border-bottom: 1px solid #aaa;
-        }
-        .detail-table thead th.num { text-align: right; }
-        .detail-table tbody td {
-          font-size: 8.5pt;
-          padding: 3mm 2mm;
-          vertical-align: top;
-          border-bottom: 1px solid #d0d0d0;
-        }
-        .detail-table tbody td.num { text-align: right; }
-        .detail-row .name { font-weight: 700; font-size: 9pt; }
-        .detail-row ul {
-          margin: 1mm 0 0 4mm;
-          padding-left: 3mm;
-          color: #222;
-        }
-        .detail-row li {
+        .dv-carac {
+          border: 1px solid #ccc;
+          border-bottom: none;
+          padding: 6px 8px;
           font-size: 8pt;
-          margin: 0.3mm 0;
-          line-height: 1.35;
+          line-height: 1.5;
+          background: #fafafa;
         }
-        .detail-row .qr-line {
-          margin-top: 2mm;
-          font-size: 9pt;
-        }
-        .detail-row .qr-badge {
-          display: inline-block;
-          background: #fff3b0;
-          border: 1px solid #d4b500;
-          padding: 1mm 2.5mm;
-          border-radius: 1mm;
-          font-weight: 700;
-          font-family: ui-monospace, Menlo, Consolas, monospace;
-        }
-        .detail-row .id-interne {
-          font-size: 7.5pt; color: #666;
-          font-family: ui-monospace, Menlo, Consolas, monospace;
-          margin-top: 1mm;
-        }
+        .dv-carac-title { font-weight: 700; text-decoration: underline; margin-bottom: 2px; }
 
-        .page-foot {
-          margin-top: 6mm;
-          display: grid;
-          grid-template-columns: 1fr 1.3fr 1fr 1.5fr;
-          border: 1px solid #aaa;
-          font-size: 8pt;
-        }
-        .page-foot > div {
-          padding: 3mm 4mm;
-          border-right: 1px solid #ccc;
-          text-align: center;
-          line-height: 1.4;
-        }
-        .page-foot > div:last-child {
-          border-right: 0;
-          text-align: left;
-          min-height: 16mm;
-        }
-        .page-foot .lbl { color: #777; font-size: 7.5pt; }
-        .page-foot b { font-weight: 700; }
+        .dv-table { width: 100%; border-collapse: collapse; font-size: 8pt; margin-bottom: 10px; }
+        .dv-table thead tr { background: #3a7d44; color: #fff; }
+        .dv-table th { padding: 5px 6px; text-align: left; font-size: 8pt; font-weight: 700; border: 1px solid #1e5040; }
+        .dv-table th.r { text-align: right; }
+        .dv-table th.c { text-align: center; }
+        .dv-table td { padding: 5px 6px; border: 1px solid #ccc; vertical-align: top; }
+        .dv-table td.r { text-align: right; white-space: nowrap; }
+        .dv-table td.c { text-align: center; white-space: nowrap; }
+        .dv-table ul { list-style: none; padding: 0; margin: 0; }
+        .dv-table ul li { padding: 0; font-size: 7.5pt; line-height: 1.35; }
+        .dv-table .ul-title { text-decoration: underline; margin: 3px 0 1px; font-size: 8pt; }
+        .dv-fnuci-list { margin-top: 4px; padding: 4px 6px; background: #f6f6f6; border: 1px dashed #bbb; border-radius: 2px; font-size: 7.5pt; line-height: 1.5; }
+        .dv-fnuci-badge { display: inline-block; background: #fff3b0; border: 1px solid #d4b500; padding: 0 4px; border-radius: 2px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 7.5pt; margin: 1px 2px; }
 
-        .signs {
-          margin-top: 5mm;
-          display: grid;
-          grid-template-columns: 1fr 1fr;
-          gap: 5mm;
-        }
-        .sign-box {
-          border: 1px solid #aaa;
-          padding: 3mm 4mm;
-          font-size: 8pt;
-          min-height: 28mm;
-        }
-        .sign-title { font-weight: 700; margin-bottom: 6mm; }
-        .sign-meta { color: #555; line-height: 1.6; }
+        .dv-sign { border: 1px solid #ccc; display: flex; font-size: 8pt; margin: 8px 0; }
+        .dv-sign-cell { flex: 1; padding: 10px 12px; min-height: 28mm; }
+        .dv-sign-cell + .dv-sign-cell { border-left: 1px solid #ccc; }
+        .dv-sign-title { font-weight: 700; margin-bottom: 6mm; }
+
+        .dv-foot-meta { width: 100%; border-collapse: collapse; margin-bottom: 8px; }
+        .dv-foot-meta td { border: 1px solid #ccc; padding: 5px 10px; text-align: center; font-size: 8pt; color: #555; vertical-align: middle; }
+        .dv-foot-meta td b { display: block; font-size: 9pt; color: #1a1a1a; margin-top: 2px; }
+        .dv-foot-meta td.paraphe { text-align: left; vertical-align: top; height: 18mm; }
+
+        .dv-legal { text-align: center; font-size: 7.2pt; color: #1a1a1a; line-height: 1.6; }
       `}</style>
 
       <div className="no-print fixed top-0 left-0 right-0 bg-white border-b shadow-sm z-50 px-4 py-2 flex items-center justify-between">
@@ -252,151 +165,162 @@ function BlPage() {
 
       {clients.map((c) => {
         const ref = blRef(c.clientId);
+        const adresseLivraison = [c.adresse, c.codePostal, c.ville].filter(Boolean).join(", ");
+        const nbVelos = c.velos.length;
         return (
-          <div key={c.clientId} className="bl-sheet">
-            {/* BANDEAU LÉGAL HAUT */}
-            <div className="legal">{LEGAL_BANNER}</div>
+          <div key={c.clientId} className="dv-page">
+            <div className="dv-inner">
+              <div className="dv-content">
+                {/* LOGO */}
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img src={LOGO_PATH} alt="Les Artisans Verts" className="dv-logo" />
 
-            {/* LOGO */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src={LOGO_PATH} alt="Les Artisans Verts" className="logo" />
-
-            {/* TITRE + META à GAUCHE / CLIENT à DROITE */}
-            <div className="row-2col">
-              <div className="meta-block">
-                <h1 className="meta-title">Bon de livraison {ref} du {dateStr}</h1>
-                <div><span className="lbl">Tournée :</span> <b>{tourneeId}</b></div>
-                <div><span className="lbl">Date de livraison :</span> <b>{dateStr}</b></div>
-                <div><span className="lbl">Référence client :</span> <b>{c.clientId}</b></div>
-                {c.telephone && <div><span className="lbl">Client téléphone :</span> <b>{c.telephone}</b></div>}
-                {c.contact && <div><span className="lbl">Contact :</span> <b>{c.contact}</b></div>}
-              </div>
-
-              <div className="client-block">
-                <div className="client-name">{c.entreprise}</div>
-                {c.contact && <div>à l&apos;attention de {c.contact}</div>}
-                <div>{c.adresse}</div>
-                <div>{c.codePostal} - {c.ville}</div>
-              </div>
-            </div>
-
-            {/* ADRESSE LIVRAISON + FOURNIS PAR */}
-            <div className="liv-line">
-              <span className="lbl">Adresse de la livraison :</span>{" "}
-              <b>{[c.adresse, c.codePostal, c.ville].filter(Boolean).join(", ")}</b>
-            </div>
-            <div className="liv-line">
-              <span className="lbl">Fournis par :</span>{" "}
-              <b>Vélos cargo livrés et installés par Vélos Cargo / Artisans Verts Energy</b>
-            </div>
-
-            {/* TOTAUX À DROITE (style DEVIS) */}
-            <div className="totaux">
-              <div className="totaux-row">
-                <span>Nombre de vélos prévus</span>
-                <span>{c.velos.length}</span>
-              </div>
-              <div className="totaux-row">
-                <span>Nombre de vélos remis</span>
-                <span>{c.velos.length}</span>
-              </div>
-              <div className="totaux-row bold">
-                <span>Date de livraison</span>
-                <span>{dateStr}</span>
-              </div>
-              <div className="totaux-row final">
-                <span>Total vélos remis</span>
-                <span>{c.velos.length}</span>
-              </div>
-            </div>
-
-            {/* TABLEAU DÉTAIL */}
-            <table className="detail-table">
-              <thead>
-                <tr>
-                  <th>Détail</th>
-                  <th className="num" style={{ width: "20mm" }}>Quantité</th>
-                  <th style={{ width: "12mm" }}>Unité</th>
-                  <th className="num" style={{ width: "40mm" }}>N° vélo (QR / FNUCI)</th>
-                </tr>
-              </thead>
-              <tbody>
-                {c.velos.map((v, i) => (
-                  <tr key={v.veloId} className="detail-row">
-                    <td>
-                      <div className="name">
-                        Vélo n°{i + 1} — TRA-EQ-131 : Acquisition de vélo cargo à assistance électrique neuf
-                      </div>
-                      <ul>
-                        <li>Marque <b>Thaleos</b>, référence <b>AX-ELE004</b></li>
-                        <li>Capacité de la batterie : <b>403,20 Wh</b></li>
-                        <li>Poids total autorisé en charge : <b>185,00 KG</b></li>
-                        <li>Dimensions du vélo (L × l × H) : <b>185 × 65 × 115 cm</b></li>
-                        <li>Poids du vélo : <b>28,00 KG</b></li>
-                        <li>Roues : Rayon acier (12G) jantes en alliage aluminium</li>
-                        <li>Freins : Disques mécaniques, alliage ED - 160 mm</li>
-                        <li>Norme(s) : <b>EN 15194:2023 + EN 17860</b> (cargo bike)</li>
-                        <li>Indice de protection IP67 · Transmission Shimano 7 vitesses · Moteur 36 V - 250 W · Autonomie 40 à 50 km</li>
-                        <li>Conforme aux directives 2006/42/CE, 2011/65/UE, 2014/30/UE et 2023/1542/UE</li>
-                        <li>Kwh Cumac : <b>83 000,00</b></li>
-                      </ul>
-                      <div className="qr-line">
-                        <b>N° vélo (QR / FNUCI) :</b>{" "}
-                        <span className="qr-badge">{v.fnuci || "À scanner par le préparateur"}</span>
-                      </div>
-                      <div className="id-interne">ID interne : {v.veloId}</div>
-                    </td>
-                    <td className="num">1,00</td>
-                    <td>U</td>
-                    <td className="num">
-                      <span className="qr-badge">{v.fnuci || "—"}</span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-
-            {/* PIED DE PAGE 4 CELLULES (style DEVIS) */}
-            <div className="page-foot">
-              <div>
-                <div className="lbl">Page</div>
-                <b>1 / 1</b>
-              </div>
-              <div>
-                <div className="lbl">Numéro de BL</div>
-                <b>{ref}</b>
-              </div>
-              <div>
-                <div className="lbl">Date du BL</div>
-                <b>{dateStr}</b>
-              </div>
-              <div>
-                <div className="lbl">Paraphe :</div>
-              </div>
-            </div>
-
-            {/* SIGNATURES */}
-            <div className="signs">
-              <div className="sign-box">
-                <div className="sign-title">Signature livreur</div>
-                <div className="sign-meta">
-                  Date : ____________________<br />
-                  Nom : ____________________<br />
-                  Signature :
+                {/* HEADER : meta gauche / client droite */}
+                <div className="dv-head">
+                  <div className="dv-head-left">
+                    <div className="doc-title">Bon de livraison {ref} du {dateStr}</div>
+                    <div className="doc-meta">
+                      Tournée : <strong>{tourneeId}</strong><br />
+                      Référence client : <strong>{c.clientId}</strong><br />
+                      Date de livraison : <strong>{dateStr}</strong>
+                      {c.telephone && <><br />Client téléphone : {c.telephone}</>}
+                      {c.contact && <><br />Contact : {c.contact}</>}
+                    </div>
+                  </div>
+                  <div className="dv-head-right">
+                    <div className="client-name">{c.entreprise}</div>
+                    <div className="client-info">
+                      {c.contact && <>à l&apos;attention de {c.contact}<br /></>}
+                      {c.adresse}<br />
+                      {c.codePostal} - {c.ville}
+                    </div>
+                  </div>
                 </div>
-              </div>
-              <div className="sign-box">
-                <div className="sign-title">Signature client (bon pour réception)</div>
-                <div className="sign-meta">
-                  Date : ____________________<br />
-                  Nom : ____________________<br />
-                  Cachet / signature :
-                </div>
-              </div>
-            </div>
 
-            {/* BANDEAU LÉGAL BAS */}
-            <div className="legal legal-bottom">{LEGAL_BANNER}</div>
+                {/* ADRESSE LIVRAISON + Posé par + récap quantité */}
+                <div className="dv-travaux">
+                  <div className="dv-travaux-left">
+                    <strong>Adresse de la livraison :</strong> {adresseLivraison}<br />
+                    <strong>Posé par :</strong> Matériel(s) fourni(s), livré(s) et installé(s) par Vélos Cargo / Artisans Verts Energy<br />
+                    <strong>Date de livraison effective :</strong> {dateStr}
+                  </div>
+                  <div className="dv-totaux">
+                    <table>
+                      <tbody>
+                        <tr><td>Vélos prévus</td><td className="r">{nbVelos}</td></tr>
+                        <tr><td>Vélos remis</td><td className="r">{nbVelos}</td></tr>
+                        <tr style={{ borderTop: "1.5px solid #333", borderBottom: "1px solid #333" }}>
+                          <td className="ttc">Total remis</td>
+                          <td className="r ttc">{nbVelos}</td>
+                        </tr>
+                        <tr style={{ borderTop: "2px solid #333" }}>
+                          <td style={{ padding: "3px 0" }}><strong style={{ fontSize: "9pt" }}>Date</strong></td>
+                          <td className="r rap" style={{ padding: "3px 0" }}>{dateStr}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+
+                {/* Caractéristiques site de livraison */}
+                <div className="dv-carac">
+                  <div className="dv-carac-title">Caractéristiques site de livraison</div>
+                  <div>• Adresse : <strong>{adresseLivraison} ({c.entreprise})</strong></div>
+                  {c.contact && <div>• Contact sur site : <strong>{c.contact}</strong></div>}
+                  {c.telephone && <div>• Téléphone : <strong>{c.telephone}</strong></div>}
+                </div>
+
+                {/* TABLEAU DÉTAIL */}
+                <table className="dv-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: "60%" }}>Détail</th>
+                      <th className="c" style={{ width: "12%" }}>Quantité</th>
+                      <th className="c" style={{ width: "10%" }}>Unité</th>
+                      <th className="c" style={{ width: "18%" }}>FNUCI</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>
+                        <div style={{ fontWeight: 700, marginBottom: "3px" }}>
+                          TRA-EQ-131 : Acquisition de vélos-cargos à assistance électrique neufs
+                        </div>
+                        <ul>
+                          <li>• Marque <strong>Thaleos</strong>, référence <strong>AX-ELE004</strong></li>
+                          <li>• Capacité de la batterie : <strong>403,20 Wh</strong></li>
+                          <li>• Poids total autorisé en charge : <strong>185,00 KG</strong></li>
+                          <li>• Dimensions du vélo (L x l x H) : <strong>185 x 65 x 115 cm</strong></li>
+                          <li>• Poids du vélo : <strong>28,00 KG</strong></li>
+                          <li>• roues (caractéristiques) : Rayon acier (12G) jantes en alliage aluminium</li>
+                          <li>• freins (caractéristiques, référence) : Disques mécaniques, alliage ED - 160 mm</li>
+                          <li>• NORME(S) : <strong>EN15194:2023</strong> + <strong>EN17860</strong> (cargo bike)</li>
+                          <li style={{ marginTop: "2px" }}>
+                            • - Indice de protection : <strong>IP 67</strong>, - Transmission mécanique : 7 vitesses (Shimano), - Batterie : Lithium-ion, 403.2 Wh, - Moteur : 36 V - 250 W - 11.2 Ah, - Assistance électrique : Conforme à la norme EN 15194 et EN 17860, - Nombre de vitesse d&apos;assistance électrique : 5 vitesses, - Autonomie : 40 à 50 km (varie selon le poids de l&apos;utilisateur, la nature du terrain et la vitesse moyenne), - Béquille : Alliage ED - dimensions : 32.5 cm, - Panier : Avant (7kg) / dimensions Avant : 320 x 300 x 130 mm, - Porte-bagages : Arrière (50kg), acier noir / dimensions Arrière : 530 x 430 x 150 mm, - Pneus : CST 24 x 3.0 caoutchouc, - Chambre à air : CST 24 x 3.0 butyle noir, - Levier de freins : Alliage noir, coupure moteur intégré, - Rayons : Rayon acier (12G) jantes en alliage aluminium, - Jeu de direction : Fileté, Ø22.23027, 8 pièces, acier ED, dimensions : H = 33 mm, - Guidon : « Swallow bar » en acier noir, dimensions : Ø22.2 x 25.4 x 580 mm, - Potence : Acier noir, dimensions : Ø28.6 mm, - Poignées : Caoutchouc noir, dimensions : 130 mm, - Selle : Confort, noire, - Tige de selle : acier noir, dimensions : Ø28.6 x 350 mm, - Conforme aux directives 2006/42/CE, 2011/65/UE, 2014/30/UE et 2023/1542/UE.
+                          </li>
+                          <li>• Kwh Cumac : <strong>498 000,00</strong></li>
+                        </ul>
+                      </td>
+                      <td className="c">{nbVelos},00</td>
+                      <td className="c">U</td>
+                      <td style={{ verticalAlign: "top", padding: "5px 6px" }}>
+                        {nbVelos > 0 ? (
+                          <div style={{ fontSize: "7.5pt", lineHeight: 1.45 }}>
+                            {c.velos.map((v, i) => (
+                              <div key={v.veloId} style={{ marginBottom: "1px" }}>
+                                <span style={{ color: "#666" }}>{i + 1}.</span>{" "}
+                                <span className="dv-fnuci-badge">{v.fnuci || "à scanner"}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <span style={{ fontSize: "7.5pt", color: "#666" }}>—</span>
+                        )}
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <div style={{ fontWeight: 700 }}>Frais de livraison, déballage et montage</div>
+                      </td>
+                      <td className="c">1,00</td>
+                      <td className="c">U</td>
+                      <td className="c">—</td>
+                    </tr>
+                  </tbody>
+                </table>
+
+                {/* SIGNATURES */}
+                <div className="dv-sign">
+                  <div className="dv-sign-cell">
+                    <div className="dv-sign-title">Signature livreur</div>
+                    Date : ____________________<br />
+                    Nom : ____________________<br />
+                    Signature :
+                  </div>
+                  <div className="dv-sign-cell">
+                    <div className="dv-sign-title">Signature client (bon pour réception)</div>
+                    Date : ____________________<br />
+                    Nom : ____________________<br />
+                    Cachet / signature :
+                  </div>
+                </div>
+              </div>{/* /dv-content */}
+
+              {/* FOOTER de page : meta + mentions légales */}
+              <div className="dv-page-footer">
+                <table className="dv-foot-meta">
+                  <tbody>
+                    <tr>
+                      <td style={{ width: "14%" }}>Page<b>1 / 1</b></td>
+                      <td style={{ width: "30%" }}>Numéro de BL<b>{ref}</b></td>
+                      <td style={{ width: "30%" }}>Date du BL<b>{dateStr}</b></td>
+                      <td className="paraphe" style={{ width: "26%" }}>Paraphe :</td>
+                    </tr>
+                  </tbody>
+                </table>
+                <div className="dv-legal">{LEGAL_BANNER_2026}</div>
+              </div>
+            </div>{/* /dv-inner */}
           </div>
         );
       })}
