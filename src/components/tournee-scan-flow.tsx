@@ -468,6 +468,7 @@ function Inner({ mode }: { mode: ScanMode }) {
                   total: c.totals.total,
                   prepare: c.totals[cfg.totalsKey],
                 })) : undefined}
+                lockedClientId={mode === "preparation" && focusClientId ? focusClientId : undefined}
               />
             </div>
 

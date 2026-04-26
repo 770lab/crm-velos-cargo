@@ -51,6 +51,7 @@ export default function PhotoGeminiCapture({
   onAfter,
   disabled,
   clients,
+  lockedClientId,
 }: {
   tourneeId: string;
   userId: string | null;
@@ -61,6 +62,10 @@ export default function PhotoGeminiCapture({
    * pour assigner automatiquement les FNUCI extraits à ce client (workflow
    * préparateur en stock). */
   clients?: GeminiClientOption[];
+  /** Si défini, fige l'attribution sur ce client (ex: page ouverte depuis la
+   * vignette "Prép. 0/7" d'un client précis). Le dropdown disparaît, on affiche
+   * juste un bandeau "Préparation pour <nom>". Évite les erreurs de sélection. */
+  lockedClientId?: string;
 }) {
   const cameraRef = useRef<HTMLInputElement | null>(null);
   const galleryRef = useRef<HTMLInputElement | null>(null);
@@ -73,6 +78,16 @@ export default function PhotoGeminiCapture({
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [shooting, setShooting] = useState(false);
+
+  // Si lockedClientId fourni, on force forceClientId à cette valeur. L'effet
+  // garantit que ça reste sync même si la URL change pendant la session.
+  useEffect(() => {
+    if (lockedClientId) setForceClientId(lockedClientId);
+  }, [lockedClientId]);
+
+  const lockedClient = lockedClientId
+    ? clients?.find((c) => c.clientId === lockedClientId)
+    : undefined;
 
   const addFiles = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -250,7 +265,28 @@ export default function PhotoGeminiCapture({
 
   return (
     <div className="space-y-2">
-      {clients && clients.length > 0 && (
+      {lockedClient ? (
+        <div className="bg-emerald-50 border border-emerald-300 rounded-lg p-2.5 flex items-center justify-between gap-2">
+          <div>
+            <div className="text-[10px] uppercase tracking-wide text-emerald-700 font-semibold">
+              🔒 Photos pour
+            </div>
+            <div className="text-sm font-bold text-emerald-900">{lockedClient.entreprise}</div>
+            <div className="text-[11px] text-emerald-800">
+              {lockedClient.prepare}/{lockedClient.total} déjà fait
+              {lockedClient.total - lockedClient.prepare > 0
+                ? ` · reste ${lockedClient.total - lockedClient.prepare}`
+                : " · complet"}
+            </div>
+          </div>
+          <a
+            href="/crm-velos-cargo/livraisons"
+            className="text-[11px] text-emerald-700 underline whitespace-nowrap"
+          >
+            ← changer
+          </a>
+        </div>
+      ) : clients && clients.length > 0 ? (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-2 space-y-1">
           <label className="text-[11px] font-semibold text-amber-900">
             Pour quel client ? (assignation auto des FNUCI extraits)
@@ -271,7 +307,7 @@ export default function PhotoGeminiCapture({
             })}
           </select>
         </div>
-      )}
+      ) : null}
 
       <div className="grid grid-cols-3 gap-2">
         <button
