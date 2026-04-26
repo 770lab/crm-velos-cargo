@@ -248,7 +248,21 @@ function ClientDetailPage() {
                 if (res.error) {
                   alert("Erreur : " + res.error);
                 } else {
-                  alert("Parcelle trouvée : " + res.parcelle + (res.contenance ? " (" + res.contenance + " m²)" : ""));
+                  // Affichage explicite des 3 composants de la ref cadastrale +
+                  // avertissement : si le user valide la mauvaise parcelle, il
+                  // peut ne pas etre paye sur le dossier CEE. Le lien stocke
+                  // pointe maintenant directement sur la parcelle exacte
+                  // (cadastre.data.gouv.fr) au lieu d'une vue France entiere.
+                  const parts = [
+                    `Commune INSEE : ${res.commune || "—"}`,
+                    `Section : ${res.section || "—"}`,
+                    `Numéro : ${res.numero || "—"}`,
+                    res.contenance ? `Contenance : ${res.contenance} m²` : "",
+                  ].filter(Boolean).join("\n");
+                  alert(
+                    "Parcelle cadastrale trouvée :\n\n" + parts +
+                    "\n\n⚠️ Vérifie sur la carte que c'est bien la parcelle du lieu de livraison avant de valider — un mauvais identifiant peut bloquer le paiement du dossier CEE."
+                  );
                 }
                 load();
                 setSaving(null);
@@ -315,6 +329,12 @@ function ClientDetailPage() {
           </div>
         </div>
       </div>
+
+      {/* Bons de livraison signes par le client. Le chauffeur les prend en
+          photo a la livraison ; il y en a 1 par tournee (un meme client peut
+          avoir plusieurs tournees s'il y a plusieurs gros camions). On
+          deduplique par tourneeId via velo.livraison. */}
+      <BlSignesSection velos={client.velos} />
 
       <div className="grid grid-cols-3 gap-4 mb-8">
         <div className="bg-white rounded-xl border p-4 text-center">
@@ -646,6 +666,69 @@ function DocCardExpanded({
 function StatusBadge({ ok }: { ok: boolean }) {
   return (
     <span className={`inline-block w-3 h-3 rounded-full ${ok ? "bg-green-500" : "bg-gray-200"}`} />
+  );
+}
+
+// Section "Bons de livraison signes" placee en haut de la fiche client.
+// Le chauffeur prend en photo le BL tamponne par le client a la livraison ;
+// il y en a 1 par tournee (un client gros peut avoir plusieurs tournees).
+// On deduplique via velo.livraison.tourneeId pour eviter les doublons quand
+// plusieurs velos partagent la meme livraison.
+function BlSignesSection({ velos }: { velos: Velo[] }) {
+  const seenTournees = new Set<string>();
+  const bls: Array<{ tourneeId: string; datePrevue: string | null; statut: string; urlBlSigne: string | null }> = [];
+  for (const v of velos) {
+    const liv = v.livraison;
+    if (!liv) continue;
+    const key = liv.id || `t-${liv.datePrevue || ""}`;
+    if (seenTournees.has(key)) continue;
+    seenTournees.add(key);
+    bls.push({
+      tourneeId: (liv as { tourneeId?: string }).tourneeId || liv.id,
+      datePrevue: liv.datePrevue,
+      statut: liv.statut,
+      urlBlSigne: liv.urlBlSigne || null,
+    });
+  }
+
+  if (bls.length === 0) return null;
+
+  return (
+    <div className="bg-white rounded-xl border p-4 mb-6">
+      <h2 className="font-semibold text-gray-900 mb-3">📋 Bons de livraison signés</h2>
+      <div className="space-y-2">
+        {bls.map((b) => (
+          <div
+            key={b.tourneeId + "-" + (b.datePrevue || "")}
+            className={`flex items-center justify-between gap-3 px-3 py-2 rounded-lg border ${
+              b.urlBlSigne ? "bg-emerald-50 border-emerald-200" : "bg-gray-50 border-gray-200"
+            }`}
+          >
+            <div className="text-sm">
+              <div className="font-medium text-gray-900">
+                Tournée du {b.datePrevue ? new Date(b.datePrevue).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" }) : "—"}
+              </div>
+              <div className="text-xs text-gray-500">
+                {b.statut === "livree" ? "Livrée" : b.statut === "en_cours" ? "En cours" : b.statut === "planifiee" ? "Planifiée" : b.statut}
+                {" · "}Tournée <span className="font-mono">{b.tourneeId}</span>
+              </div>
+            </div>
+            {b.urlBlSigne ? (
+              <a
+                href={b.urlBlSigne}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs font-medium text-emerald-700 bg-white border border-emerald-300 rounded-lg px-3 py-1.5 hover:bg-emerald-100 whitespace-nowrap"
+              >
+                📄 Voir le BL signé
+              </a>
+            ) : (
+              <span className="text-xs text-gray-500 italic whitespace-nowrap">Pas encore tamponné</span>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

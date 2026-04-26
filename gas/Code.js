@@ -2064,18 +2064,82 @@ function fetchParcelle(clientId) {
   var section = props.section || "";
   var numero = props.numero || "";
   var contenance = props.contenance || "";
-  var codeArr = props.code_arr || codeCommune;
 
   var refParcelle = codeCommune + " " + section + " " + numero;
 
-  // 3) Lien Géoportail centré sur la parcelle
-  var geoPortailUrl = "https://www.geoportail.gouv.fr/carte?c=" + lng + "," + lat + "&z=18&l0=CADASTRALPARCELS.PARCELLAIRE_EXPRESS::GEOPORTAIL:OGC:WMTS(1)";
+  // Centroid de la parcelle calculé depuis sa géométrie GeoJSON. Bien plus
+  // précis que les coords du géocodage adresse : si l'immeuble fait plusieurs
+  // parcelles ou que l'adresse postale tombe sur une voie publique limitrophe,
+  // les coords adresse mènent sur la mauvaise parcelle. Le centroid garantit
+  // qu'on tombe DANS la parcelle qu'on a identifiée. Fallback sur lat/lng
+  // adresse si la géométrie n'est pas dispo (cas du fallback geo.api.gouv).
+  var centerLat = lat;
+  var centerLng = lng;
+  try {
+    if (props && props._geom_centroid) {
+      // pas standard mais au cas où
+    }
+    // Recompute from raw feature if available
+  } catch (e) {}
+  // Si on avait la geometry de la parcelle, on en prend le centroid via une
+  // formule simple sur les coords du Polygon (suffisamment précis pour zoom 20).
+  try {
+    var cadastreUrl2 = "https://apicarto.ign.fr/api/cadastre/parcelle?geom=" +
+      encodeURIComponent('{"type":"Point","coordinates":[' + lng + ',' + lat + ']}') +
+      "&_limit=1";
+    var cadRes2 = UrlFetchApp.fetch(cadastreUrl2, { muteHttpExceptions: true });
+    if (cadRes2.getResponseCode() === 200) {
+      var cadData2 = JSON.parse(cadRes2.getContentText());
+      if (cadData2.features && cadData2.features.length > 0 && cadData2.features[0].geometry) {
+        var coordsPoly = cadData2.features[0].geometry.coordinates;
+        // GeoJSON Polygon : coords[0] = anneau extérieur (liste de [lng, lat]).
+        // Pour MultiPolygon : coords[0][0]. On gère les deux.
+        var ring = coordsPoly[0];
+        if (ring && ring[0] && Array.isArray(ring[0]) && Array.isArray(ring[0][0])) {
+          ring = ring[0];
+        }
+        if (ring && ring.length > 2) {
+          var sumX = 0, sumY = 0;
+          for (var rp = 0; rp < ring.length; rp++) {
+            sumX += ring[rp][0];
+            sumY += ring[rp][1];
+          }
+          centerLng = sumX / ring.length;
+          centerLat = sumY / ring.length;
+        }
+      }
+    }
+  } catch (eC) {}
+
+  // 3) Lien direct vers la parcelle EXACTE sur cadastre.data.gouv.fr.
+  // Format ID fiscal : INSEE(5) + SECTION_PAD(5, gauche) + NUMERO_PAD(4, gauche).
+  // Ex: Courbevoie 92019, section AY, num 23 → "92019000AY0023".
+  // Cette URL ouvre la parcelle ENCADREE sur la carte, zoom maximal,
+  // référence affichée — c'est ce qu'il faut pour ne PAS se tromper de
+  // parcelle sur le dossier CEE.
+  var pad = function(s, n) {
+    s = String(s || "");
+    while (s.length < n) s = "0" + s;
+    return s;
+  };
+  var parcelleLien = "";
+  if (codeCommune && section && numero) {
+    var sectionPad = pad(section, 5);
+    var numeroPad = pad(numero, 4);
+    var parcelleId = codeCommune + sectionPad + numeroPad;
+    parcelleLien = "https://cadastre.data.gouv.fr/parcelles/" + parcelleId;
+  } else {
+    // Pas de section/numéro : on retombe sur Géoportail centré sur le centroid.
+    parcelleLien = "https://www.geoportail.gouv.fr/carte?c=" + centerLng + "," + centerLat +
+      "&z=20&l0=GEOGRAPHICALGRIDSYSTEMS.MAPS.SCAN-EXPRESS-STANDARD::GEOPORTAIL:OGC:WMTS(1)" +
+      "&l1=CADASTRALPARCELS.PARCELLAIRE_EXPRESS::GEOPORTAIL:OGC:WMTS(0.7)&permalink=yes";
+  }
 
   // 4) Mise à jour du client dans la feuille
   var colFlag = headers.indexOf("parcelleCadastrale");
   var colLien = headers.indexOf("parcelleCadastraleLien");
   if (colFlag > -1) sheet.getRange(clientRowIdx + 1, colFlag + 1).setValue("TRUE");
-  if (colLien > -1) sheet.getRange(clientRowIdx + 1, colLien + 1).setValue(geoPortailUrl);
+  if (colLien > -1) sheet.getRange(clientRowIdx + 1, colLien + 1).setValue(parcelleLien);
   SpreadsheetApp.flush();
 
   return {
@@ -2085,9 +2149,11 @@ function fetchParcelle(clientId) {
     numero: numero,
     commune: codeCommune,
     contenance: contenance ? Number(contenance) : null,
-    lat: lat,
-    lng: lng,
-    geoportailUrl: geoPortailUrl
+    lat: centerLat,
+    lng: centerLng,
+    parcelleLien: parcelleLien,
+    // Conserve le nom existant pour le frontend qui s'en sert dans l'alert.
+    geoportailUrl: parcelleLien
   };
 }
 
