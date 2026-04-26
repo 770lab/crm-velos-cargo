@@ -4716,9 +4716,11 @@ function getRouting(opts) {
 function extractFnuciFromImage(body) {
   body = body || {};
   if (!body.imageBase64) return { error: "imageBase64 requis" };
-  if (!body.tourneeId) return { error: "tourneeId requis" };
+  // tourneeId requis sauf en mode "identify" (montage : on veut juste lire le
+  // FNUCI sur la photo sans toucher au sheet).
   var etape = body.etape || "preparation";
-  if (etape !== "preparation" && etape !== "chargement" && etape !== "livraisonScan") {
+  if (etape !== "identify" && !body.tourneeId) return { error: "tourneeId requis" };
+  if (etape !== "preparation" && etape !== "chargement" && etape !== "livraisonScan" && etape !== "identify") {
     return { error: "etape invalide: " + etape };
   }
   var forceClientId = body.forceClientId ? String(body.forceClientId) : null;
@@ -4810,6 +4812,13 @@ function extractFnuciFromImage(body) {
   });
 
   var results = extracted.map(function (fnuci) {
+    // Mode "identify" : on extrait le FNUCI mais on ne marque rien et on
+    // n'assigne rien. Sert au workflow montage où la photo de l'étiquette
+    // ou du QR vélo sert seulement à identifier le bon vélo avant l'upload
+    // de la preuve via uploadMontagePhoto.
+    if (etape === "identify") {
+      return { fnuci: fnuci, assigned: null, result: null };
+    }
     var markBody = { fnuci: fnuci, tourneeId: body.tourneeId, userId: body.userId || null };
     var assigned = null;
     if (forceClientId) {
