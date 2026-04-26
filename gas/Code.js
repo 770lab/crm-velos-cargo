@@ -4058,7 +4058,14 @@ function proposeTournee(payload) {
       temperature: 0.1,
       maxOutputTokens: 32768,
       responseMimeType: "application/json",
-      thinkingConfig: { thinkingBudget: 0 }
+      // thinkingBudget: -1 = auto (Gemini choisit son budget de raisonnement).
+      // Avec budget=0, Gemini "raisonne dans la réponse" et finit par injecter
+      // son raisonnement DANS les valeurs JSON (ex: explication d'un calcul de
+      // durée écrite à l'intérieur d'une string UUID monteurId), entre dans une
+      // boucle de répétition (mêmes phrases relancées), épuise les tokens et la
+      // string n'est jamais fermée → MAX_TOKENS + JSON invalide.
+      // Avec thinking actif, le raisonnement est isolé hors du JSON de sortie.
+      thinkingConfig: { thinkingBudget: -1 }
     }
   };
 
