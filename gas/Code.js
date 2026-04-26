@@ -3298,7 +3298,10 @@ function unmarkVeloEtape(body) {
 }
 
 // Désaffilie un vélo de son client : vide clientId + toutes les dates d'étape +
-// le tourneeIdScan. Le FNUCI reste sur le vélo, il pourra être réassigné ailleurs.
+// le tourneeIdScan + le FNUCI. Le vélo redevient une "ligne vierge" du dépôt,
+// prête à être ré-attribuée à n'importe quel client avec un nouveau scan FNUCI.
+// (Le FNUCI est désormais vidé pour permettre de re-scanner après un test ou
+// une erreur d'attribution — sinon la ligne reste bloquée avec son FNUCI.)
 function unsetVeloClient(body) {
   body = body || {};
   var meta = ensureVelosSchema();
@@ -3322,8 +3325,10 @@ function unsetVeloClient(body) {
     else if (matchByFnuci && String(row[iFnuci] || "").trim() === matchByFnuci) hit = true;
     if (!hit) continue;
 
+    var fnuciAvant = String(row[iFnuci] || "").trim() || null;
     if (iClientId >= 0) meta.sheet.getRange(i + 1, iClientId + 1).setValue("");
     if (iTid >= 0) meta.sheet.getRange(i + 1, iTid + 1).setValue("");
+    if (iFnuci >= 0) meta.sheet.getRange(i + 1, iFnuci + 1).setValue("");
     dateCols.forEach(function(col) {
       var c = headers.indexOf(col);
       if (c >= 0) meta.sheet.getRange(i + 1, c + 1).setValue("");
@@ -3332,7 +3337,7 @@ function unsetVeloClient(body) {
     return {
       ok: true,
       veloId: row[iId],
-      fnuci: String(row[iFnuci] || "").trim() || null,
+      fnuci: fnuciAvant, // FNUCI qui vient d'être effacé, retourné pour info
     };
   }
   return { error: "Vélo introuvable" };

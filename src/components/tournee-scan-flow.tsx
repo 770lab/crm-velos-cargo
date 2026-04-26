@@ -456,42 +456,67 @@ function Inner({ mode }: { mode: ScanMode }) {
 
             {(() => {
               const clientsToShow = focusClient ? [focusClient] : prog.clients;
-              const scannedVelos: { v: Velo; clientName: string }[] = [];
+              // En mode préparation : on inclut TOUS les vélos avec FNUCI affecté
+              // (même si datePreparation pas encore set), pour permettre la
+              // désaffiliation d'un FNUCI scanné par erreur ou en test.
+              // En mode chargement/livraison/montage : on garde le filtre étape
+              // actuelle puisque le vélo doit déjà être passé par la prep.
+              const includeFnuciWaiting = mode === "preparation";
+              type Item = { v: Velo; clientName: string; etapeDone: boolean };
+              const items: Item[] = [];
               clientsToShow.forEach((c) => {
                 c.velos.forEach((v) => {
-                  if (v[cfg.doneKey]) scannedVelos.push({ v, clientName: c.entreprise });
+                  const etapeDone = !!v[cfg.doneKey];
+                  if (etapeDone) {
+                    items.push({ v, clientName: c.entreprise, etapeDone: true });
+                  } else if (includeFnuciWaiting && v.fnuci) {
+                    items.push({ v, clientName: c.entreprise, etapeDone: false });
+                  }
                 });
               });
-              if (scannedVelos.length === 0) return null;
+              if (items.length === 0) return null;
+              const nbDone = items.filter((it) => it.etapeDone).length;
+              const nbWaiting = items.length - nbDone;
               return (
                 <div className="bg-white rounded-xl shadow p-3 mb-3">
                   <div className="text-xs text-gray-500 mb-2">
-                    Vélos déjà {cfg.title.toLowerCase()}és ({scannedVelos.length}) — clique pour annuler le scan
+                    {nbDone} {cfg.title.toLowerCase()}é{nbDone > 1 ? "s" : ""}
+                    {nbWaiting > 0 && (
+                      <> · {nbWaiting} FNUCI affecté{nbWaiting > 1 ? "s" : ""} en attente</>
+                    )}
+                    {" "}— bouton Annuler pour défaire l&apos;étape, Désaffilier pour libérer le vélo (vide aussi le FNUCI).
                   </div>
                   <div className="space-y-1.5 max-h-72 overflow-y-auto">
-                    {scannedVelos.map(({ v, clientName }) => (
-                      <div key={v.veloId} className="border rounded-lg p-2 flex items-center justify-between gap-2">
+                    {items.map(({ v, clientName, etapeDone }) => (
+                      <div key={v.veloId} className={`border rounded-lg p-2 flex items-center justify-between gap-2 ${etapeDone ? "" : "bg-yellow-50 border-yellow-200"}`}>
                         <div className="min-w-0 flex-1">
                           <div className="text-xs font-mono truncate">{v.fnuci || v.veloId}</div>
-                          {!focusClient && (
-                            <div className="text-[10px] text-gray-500 truncate">{clientName}</div>
-                          )}
+                          <div className="flex gap-2 items-baseline">
+                            {!focusClient && (
+                              <div className="text-[10px] text-gray-500 truncate">{clientName}</div>
+                            )}
+                            {!etapeDone && (
+                              <div className="text-[10px] text-yellow-800 font-medium">en attente de {cfg.title.toLowerCase()}</div>
+                            )}
+                          </div>
                         </div>
                         <div className="flex gap-1 shrink-0">
-                          <button
-                            onClick={() => undoScan(v.veloId, v.fnuci)}
-                            disabled={busy}
-                            className="text-[11px] px-2 py-1 rounded bg-orange-100 text-orange-800 hover:bg-orange-200 disabled:opacity-50"
-                            title={`Annuler ${cfg.title}`}
-                          >
-                            ↺ Annuler
-                          </button>
+                          {etapeDone && (
+                            <button
+                              onClick={() => undoScan(v.veloId, v.fnuci)}
+                              disabled={busy}
+                              className="text-[11px] px-2 py-1 rounded bg-orange-100 text-orange-800 hover:bg-orange-200 disabled:opacity-50"
+                              title={`Annuler ${cfg.title}`}
+                            >
+                              ↺ Annuler
+                            </button>
+                          )}
                           {mode === "preparation" && (
                             <button
                               onClick={() => desaffilier(v.veloId, v.fnuci)}
                               disabled={busy}
                               className="text-[11px] px-2 py-1 rounded bg-red-100 text-red-800 hover:bg-red-200 disabled:opacity-50"
-                              title="Retirer du client (retour dépôt)"
+                              title="Retirer du client + vider le FNUCI (le vélo retourne au stock dépôt)"
                             >
                               ✕ Désaffilier
                             </button>
