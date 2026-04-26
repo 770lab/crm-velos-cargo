@@ -12,6 +12,8 @@
     "@libsql/client": "^0.17.2",
     "@prisma/adapter-libsql": "^7.8.0",
     "@prisma/client": "^7.8.0",
+    "@zxing/browser": "^0.1.5",
+    "@zxing/library": "^0.21.3",
     "date-fns": "^4.1.0",
     "html5-qrcode": "^2.3.8",
     "jsqr": "^1.4.0",

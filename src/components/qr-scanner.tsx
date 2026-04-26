@@ -1,18 +1,27 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import jsQR from "jsqr";
+import { BrowserMultiFormatReader } from "@zxing/browser";
+import { DecodeHintType, BarcodeFormat } from "@zxing/library";
 
-// Scanner QR utilisé au dépôt. Stratégie unique : flux vidéo HD + extraction
-// de frames via canvas + décodage avec jsQR (pure JS, pas de dépendance native).
+// Scanner QR utilisé au dépôt. Décodeur : @zxing/browser (port officiel de
+// la lib ZXing, référence industrielle pour QR).
 //
-// Pourquoi pas BarcodeDetector natif ni html5-qrcode :
-// - BarcodeDetector existe sur iOS Safari 17+ mais ne décode jamais les QR
-//   en pratique (constructeur OK, detect() retourne toujours [] sur iPhone).
-// - html5-qrcode lit le canvas via une boucle interne qui ne marche pas
-//   non plus sur iOS Safari (caméra OK, callback de détection jamais appelé).
+// Historique des essais (tous échoués sur iPhone Safari) :
+// - BarcodeDetector natif iOS 17+ : detect() retourne toujours [] sur les
+//   frames vidéo. Bug iOS connu.
+// - html5-qrcode : caméra OK, callback de détection jamais appelé. Lecture
+//   canvas interne incompatible iOS.
+// - jsQR à résolution réduite : trop peu de pixels par module.
+// - jsQR à résolution native : décode correctement les QR de test mais rate
+//   les BicyCode qui ont des bordures noires épaisses et un contraste limite.
 //
-// jsQR + canvas + requestAnimationFrame = approche la plus fiable, marche
-// partout, et reste rapide tant qu'on downsample la frame à ~800px max.
+// ZXing gère mieux les conditions difficiles (low-light, angle, contraste
+// limite) grâce à son binarizer adaptatif. Il est aussi multi-formats — on
+// reste sur QR_CODE pour la perf mais on pourrait étendre.
+//
+// Compteur de frames affiché en bas pour debug : si le compteur ne bouge
+// pas, c'est que le code n'est pas le bon (cache navigateur). S'il monte
+// mais ne détecte rien, c'est que le QR est vraiment illisible.
 
 export default function QrScanner({
   enabled,
@@ -25,9 +34,8 @@ export default function QrScanner({
 }) {
   const [running, setRunning] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
-
+  const [frameCount, setFrameCount] = useState(0);
   const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
   useEffect(() => {
     if (!enabled) {
@@ -37,13 +45,13 @@ export default function QrScanner({
 
     let cancelled = false;
     let stream: MediaStream | null = null;
-    let rafId: number | null = null;
 
-    if (!canvasRef.current) {
-      canvasRef.current = document.createElement("canvas");
-    }
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    const hints = new Map<DecodeHintType, unknown>();
+    hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
+    hints.set(DecodeHintType.TRY_HARDER, true);
+    const reader = new BrowserMultiFormatReader(hints);
+
+    let stopFn: (() => void) | null = null;
 
     const start = async () => {
       try {
@@ -65,36 +73,25 @@ export default function QrScanner({
         if (cancelled) return;
         setRunning(true);
 
-        const tick = () => {
-          if (cancelled || !videoRef.current || !ctx) return;
-          const video = videoRef.current;
-          if (video.readyState >= video.HAVE_ENOUGH_DATA && video.videoWidth > 0) {
-            // Pas de downsample : on décode à la résolution native de la
-            // caméra (typiquement 1280×720 sur iPhone, parfois 1920×1080).
-            // Un QR BicyCode collé sur un cadre vélo et visé à 20 cm fait
-            // ~10-15 % de la largeur de l'image, soit ~150 px de côté à
-            // 1280 px — donc ~5 px/module pour un QR de 30 modules. C'est
-            // le seuil minimal de jsQR ; downsampler à 800 px tombait à
-            // ~3 px/module et le décodeur ne trouvait plus rien.
-            // Coût CPU : ~150 ms/frame en 1280×720 sur un iPhone récent,
-            // donc ~6 FPS effectifs — largement suffisant pour scanner.
-            const vw = video.videoWidth;
-            const vh = video.videoHeight;
-            canvas.width = vw;
-            canvas.height = vh;
-            ctx.drawImage(video, 0, 0, vw, vh);
-            const imageData = ctx.getImageData(0, 0, vw, vh);
-            const code = jsQR(imageData.data, imageData.width, imageData.height, {
-              inversionAttempts: "attemptBoth",
-            });
-            if (code && code.data) {
-              onScan(code.data.trim());
-              return; // stop le tick, le parent réactivera via enabled
+        // decodeFromVideoElement : ZXing gère lui-même la boucle de détection
+        // (callback à chaque frame analysée). Plus simple et plus efficace que
+        // de gérer notre propre requestAnimationFrame.
+        const controls = await reader.decodeFromVideoElement(
+          videoRef.current,
+          (result, err) => {
+            // Compteur de frames pour debug. ZXing appelle ce callback à
+            // chaque tentative de décodage, qu'elle réussisse ou non.
+            setFrameCount((c) => c + 1);
+            if (cancelled) return;
+            if (result) {
+              const text = result.getText();
+              if (text) onScan(text.trim());
             }
+            // err non-null à chaque frame sans QR détecté : on ignore.
+            void err;
           }
-          rafId = requestAnimationFrame(tick);
-        };
-        rafId = requestAnimationFrame(tick);
+        );
+        stopFn = () => controls.stop();
       } catch (e) {
         const msg = String(e);
         setErrMsg(msg);
@@ -106,7 +103,7 @@ export default function QrScanner({
 
     return () => {
       cancelled = true;
-      if (rafId) cancelAnimationFrame(rafId);
+      if (stopFn) stopFn();
       if (stream) stream.getTracks().forEach((t) => t.stop());
       setRunning(false);
     };
@@ -130,6 +127,7 @@ export default function QrScanner({
         <div className="absolute top-2 right-2 bg-black/60 text-white text-[11px] px-2 py-1 rounded-full flex items-center gap-1">
           <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
           recherche QR…
+          <span className="opacity-60 ml-1">[{frameCount}]</span>
         </div>
       )}
       {errMsg && (
