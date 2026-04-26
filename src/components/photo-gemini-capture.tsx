@@ -208,6 +208,8 @@ export default function PhotoGeminiCapture({
     };
   }, []);
 
+  const wasOpenRef = useRef(false);
+
   const captureFrame = useCallback(async () => {
     const video = videoRef.current;
     if (!video || video.videoWidth === 0) return;
@@ -273,6 +275,54 @@ export default function PhotoGeminiCapture({
     setIdentifying(false);
     if (onAfter) onAfter();
   }, [items, tourneeId, userId, etape, forceClientId, onAfter]);
+
+  // Auto-déclenchement de l'identification quand on ferme la caméra continue.
+  // wasOpenRef évite de tirer sur le mount initial (cameraOpen=false dès le départ).
+  useEffect(() => {
+    if (wasOpenRef.current && !cameraOpen) {
+      const hasPending = items.some((i) => i.status === "pending");
+      if (hasPending) {
+        Promise.resolve().then(() => identifyAll());
+      }
+    }
+    wasOpenRef.current = cameraOpen;
+  }, [cameraOpen, items, identifyAll]);
+
+  // Retry d'un item qui a foiré (réseau, FNUCI_INCONNU, 0 codes extraits…).
+  // On garde la photo, on relance juste l'extraction + marquage côté serveur.
+  const retryItem = useCallback(async (id: string) => {
+    if (!tourneeId) return;
+    let snapshot: BatchItem | undefined;
+    setItems((prev) => {
+      snapshot = prev.find((it) => it.id === id);
+      return prev.map((it) =>
+        it.id === id ? { ...it, status: "processing", resp: undefined, errorMsg: undefined } : it,
+      );
+    });
+    if (!snapshot || !snapshot.base64) return;
+    try {
+      const resp = (await gasUpload("extractFnuciFromImage", {
+        imageBase64: snapshot.base64,
+        mimeType: snapshot.mimeType,
+        tourneeId,
+        userId,
+        etape,
+        forceClientId: forceClientId || undefined,
+      })) as ExtractResp;
+      setItems((prev) =>
+        prev.map((it) => (it.id === id ? { ...it, status: "done", resp } : it)),
+      );
+    } catch (e) {
+      setItems((prev) =>
+        prev.map((it) =>
+          it.id === id
+            ? { ...it, status: "error", errorMsg: e instanceof Error ? e.message : String(e) }
+            : it,
+        ),
+      );
+    }
+    if (onAfter) onAfter();
+  }, [tourneeId, userId, etape, forceClientId, onAfter]);
 
   const pendingCount = items.filter((i) => i.status === "pending").length;
   const processingCount = items.filter((i) => i.status === "processing").length;
@@ -420,6 +470,7 @@ export default function PhotoGeminiCapture({
                 key={it.id}
                 item={it}
                 onRemove={() => removeItem(it.id)}
+                onRetry={() => retryItem(it.id)}
                 canRemove={!identifying && it.status !== "processing"}
               />
             ))}
@@ -535,16 +586,19 @@ function ContinuousCameraOverlay({
 function BatchItemCard({
   item,
   onRemove,
+  onRetry,
   canRemove,
 }: {
   item: BatchItem;
   onRemove: () => void;
+  onRetry: () => void;
   canRemove: boolean;
 }) {
+  const failed = needsRetry(item);
   const borderClass =
-    item.status === "done"
+    item.status === "done" && !failed
       ? "border-green-300 bg-green-50"
-      : item.status === "error"
+      : item.status === "error" || failed
         ? "border-red-300 bg-red-50"
         : item.status === "processing"
           ? "border-amber-300 bg-amber-50"
@@ -573,9 +627,32 @@ function BatchItemCard({
       <div className="px-2 py-1.5 space-y-0.5">
         <StatusBadge item={item} />
         <ResultDetail item={item} />
+        {failed && item.status !== "processing" && (
+          <button
+            type="button"
+            onClick={onRetry}
+            className="mt-1 w-full px-2 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded text-[11px] font-medium"
+          >
+            ↻ Réessayer
+          </button>
+        )}
       </div>
     </div>
   );
+}
+
+// Détecte si une carte est dans un état "à réessayer" : erreur réseau, ou
+// résultat serveur partiel/total (FNUCI_INCONNU, capacité dépassée, 0 codes
+// extraits…). N'inclut PAS pending/processing.
+function needsRetry(item: BatchItem): boolean {
+  if (item.status === "error") return true;
+  if (item.status !== "done" || !item.resp) return false;
+  if ("error" in item.resp) return true;
+  if (item.resp.results.length === 0) return true;
+  return item.resp.results.some((r) => {
+    const x = r.result as { ok?: boolean } | null;
+    return !x || x.ok !== true;
+  });
 }
 
 function StatusBadge({ item }: { item: BatchItem }) {
