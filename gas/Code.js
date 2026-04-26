@@ -126,6 +126,15 @@ function handleRequest(e) {
       case "archiveMembre":
         result = archiveMembre(e.parameter.id);
         break;
+      case "loginEquipe":
+        result = loginEquipe(getBody());
+        break;
+      case "setMembreCode":
+        result = setMembreCode(getBody());
+        break;
+      case "clearMembreCode":
+        result = clearMembreCode(getBody());
+        break;
       case "assignTournee":
         var bodyAT = getBody();
         result = assignTournee(bodyAT.tourneeId || e.parameter.tourneeId, {
@@ -2363,7 +2372,7 @@ function bulkAutoValidate(params) {
 // ===========================================================================
 
 var EQUIPE_SHEET_NAME = "Equipe";
-var EQUIPE_COLS = ["id", "nom", "role", "telephone", "email", "actif", "notes", "createdAt"];
+var EQUIPE_COLS = ["id", "nom", "role", "telephone", "email", "actif", "notes", "createdAt", "pinHash"];
 var EQUIPE_ROLES = ["admin", "chauffeur", "chef", "monteur", "apporteur", "preparateur"];
 
 function ensureEquipeSheet() {
@@ -2392,7 +2401,92 @@ function _equipeRowToObject(row, headers) {
   });
   if (obj.actif === "TRUE") obj.actif = true;
   else if (obj.actif === "FALSE") obj.actif = false;
+  // Ne pas renvoyer le hash en clair, juste un booléen "a un code".
+  if (obj.pinHash !== undefined) {
+    obj.hasCode = !!(obj.pinHash && String(obj.pinHash).trim());
+    delete obj.pinHash;
+  }
   return obj;
+}
+
+function _hashPin(pin) {
+  var raw = Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, "velos-cargo:" + String(pin || ""));
+  return raw.map(function(b) { var h = (b < 0 ? b + 256 : b).toString(16); return h.length === 1 ? "0" + h : h; }).join("");
+}
+
+// Login membre : vérifie nom + code 4 chiffres. Si le membre n'a pas (encore)
+// de pinHash, on accepte sans code (transition douce).
+function loginEquipe(body) {
+  body = body || {};
+  var nomQ = String(body.nom || "").trim().toLowerCase();
+  if (!nomQ) return { error: "Nom requis" };
+  var sh = ensureEquipeSheet();
+  var data = sh.getDataRange().getValues();
+  if (data.length < 2) return { error: "Aucun membre" };
+  var headers = data[0];
+  var iId = headers.indexOf("id");
+  var iNom = headers.indexOf("nom");
+  var iRole = headers.indexOf("role");
+  var iActif = headers.indexOf("actif");
+  var iPin = headers.indexOf("pinHash");
+
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (String(row[iNom] || "").trim().toLowerCase() !== nomQ) continue;
+    var actif = row[iActif];
+    if (actif === "FALSE" || actif === false) continue;
+    var stored = iPin >= 0 ? String(row[iPin] || "").trim() : "";
+    if (!stored) {
+      // Pas encore de code défini : on laisse passer (compat).
+      return { ok: true, member: { id: row[iId], nom: row[iNom], role: row[iRole] }, hasCode: false };
+    }
+    if (!body.pin) return { error: "Code requis", needsCode: true };
+    if (_hashPin(body.pin) !== stored) return { error: "Code incorrect", needsCode: true };
+    return { ok: true, member: { id: row[iId], nom: row[iNom], role: row[iRole] }, hasCode: true };
+  }
+  return { error: "Membre inconnu" };
+}
+
+// Définit/réinitialise le code d'un membre. Aucune vérif d'auth côté backend
+// (l'app cache le bouton aux non-admin) — c'est une app interne.
+function setMembreCode(body) {
+  body = body || {};
+  if (!body.id) return { error: "id requis" };
+  var pin = String(body.pin || "").trim();
+  if (!/^\d{4}$/.test(pin)) return { error: "Code = 4 chiffres exactement" };
+  var sh = ensureEquipeSheet();
+  var data = sh.getDataRange().getValues();
+  var headers = data[0];
+  var iId = headers.indexOf("id");
+  var iPin = headers.indexOf("pinHash");
+  if (iPin < 0) return { error: "Colonne pinHash absente — relance ensureEquipeSheet" };
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][iId]) === String(body.id)) {
+      sh.getRange(i + 1, iPin + 1).setValue(_hashPin(pin));
+      SpreadsheetApp.flush();
+      return { ok: true, id: body.id };
+    }
+  }
+  return { error: "Membre introuvable: " + body.id };
+}
+
+function clearMembreCode(body) {
+  body = body || {};
+  if (!body.id) return { error: "id requis" };
+  var sh = ensureEquipeSheet();
+  var data = sh.getDataRange().getValues();
+  var headers = data[0];
+  var iId = headers.indexOf("id");
+  var iPin = headers.indexOf("pinHash");
+  if (iPin < 0) return { error: "Colonne pinHash absente" };
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][iId]) === String(body.id)) {
+      sh.getRange(i + 1, iPin + 1).setValue("");
+      SpreadsheetApp.flush();
+      return { ok: true, id: body.id };
+    }
+  }
+  return { error: "Membre introuvable: " + body.id };
 }
 
 function listEquipe(params) {
@@ -2426,7 +2520,7 @@ function upsertMembre(body) {
     for (var i = 1; i < data.length; i++) {
       if (String(data[i][idCol]) === String(body.id)) {
         EQUIPE_COLS.forEach(function(col) {
-          if (col === "id" || col === "createdAt") return;
+          if (col === "id" || col === "createdAt" || col === "pinHash") return;
           if (body[col] !== undefined) {
             var c = headers.indexOf(col);
             if (c >= 0) {
@@ -2447,6 +2541,7 @@ function upsertMembre(body) {
   var row = headers.map(function(h) {
     if (h === "id") return id;
     if (h === "createdAt") return new Date().toISOString();
+    if (h === "pinHash") return ""; // jamais positionné depuis upsertMembre
     if (h === "actif") {
       if (body.actif === false || body.actif === "false") return "FALSE";
       return "TRUE";

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { gasGet } from "@/lib/gas";
+import { gasGet, gasPost } from "@/lib/gas";
 import { setCurrentUser, getCurrentUser, type CurrentUser } from "@/lib/current-user";
 import type { EquipeMember, EquipeRole } from "@/lib/data-context";
 
@@ -23,11 +23,22 @@ const ROLE_ICON: Record<EquipeRole, string> = {
 };
 const ORDER: EquipeRole[] = ["admin", "preparateur", "chauffeur", "chef", "monteur", "apporteur"];
 
+type Step = "pick" | "code";
+
+type LoginResp =
+  | { ok: true; member: { id: string; nom: string; role: EquipeRole }; hasCode: boolean }
+  | { ok?: false; error: string; needsCode?: boolean };
+
 export function AuthGate({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null | undefined>(undefined);
   const [members, setMembers] = useState<EquipeMember[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  const [step, setStep] = useState<Step>("pick");
+  const [picked, setPicked] = useState<EquipeMember | null>(null);
+  const [code, setCode] = useState("");
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     setUser(getCurrentUser());
@@ -60,10 +71,95 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   if (user === undefined) return null;
   if (user) return <>{children}</>;
 
-  const pickUser = (m: EquipeMember) => {
-    setCurrentUser({ id: m.id, nom: m.nom, role: m.role });
-    setUser({ id: m.id, nom: m.nom, role: m.role });
+  const submitLogin = async (member: EquipeMember, pin: string) => {
+    setBusy(true);
+    setSubmitError(null);
+    try {
+      const r = (await gasPost("loginEquipe", { nom: member.nom, pin })) as LoginResp;
+      if (r.ok) {
+        setCurrentUser({ id: r.member.id, nom: r.member.nom, role: r.member.role });
+        setUser({ id: r.member.id, nom: r.member.nom, role: r.member.role });
+        return;
+      }
+      if (r.needsCode) {
+        setStep("code");
+        setSubmitError(pin ? "Code incorrect" : null);
+      } else {
+        setSubmitError(r.error || "Erreur de connexion");
+      }
+    } catch (e) {
+      setSubmitError(String(e));
+    } finally {
+      setBusy(false);
+    }
   };
+
+  const pickUser = async (m: EquipeMember) => {
+    setPicked(m);
+    setCode("");
+    setSubmitError(null);
+    if (m.hasCode) {
+      // Le membre a un code défini, demande direct
+      setStep("code");
+    } else {
+      // Pas de code, login direct (compat). Backend renverra ok sans code.
+      await submitLogin(m, "");
+    }
+  };
+
+  const onSubmitCode = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!picked || code.length !== 4) return;
+    submitLogin(picked, code);
+  };
+
+  const back = () => {
+    setStep("pick");
+    setPicked(null);
+    setCode("");
+    setSubmitError(null);
+  };
+
+  if (step === "code" && picked) {
+    return (
+      <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center p-4">
+        <div className="w-full max-w-sm">
+          <button onClick={back} className="text-gray-400 hover:text-white text-sm mb-4">← Choisir un autre nom</button>
+          <div className="bg-gray-800 rounded-2xl p-6 shadow-xl">
+            <div className="text-center mb-4">
+              <div className="text-3xl mb-1">{ROLE_ICON[picked.role]}</div>
+              <div className="text-xl font-semibold text-white">{picked.nom}</div>
+              <div className="text-xs text-gray-500 mt-1">{ROLE_LABEL[picked.role]}</div>
+            </div>
+            <form onSubmit={onSubmitCode} className="space-y-3">
+              <label className="block text-xs text-gray-400 text-center">Code à 4 chiffres</label>
+              <input
+                autoFocus
+                inputMode="numeric"
+                pattern="\d{4}"
+                maxLength={4}
+                value={code}
+                onChange={(e) => setCode(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                className="w-full text-center text-3xl tracking-[0.5em] font-mono px-4 py-3 bg-gray-700 border border-gray-600 rounded-xl text-white focus:outline-none focus:border-green-500"
+                placeholder="••••"
+              />
+              {submitError && <p className="text-red-400 text-sm text-center">{submitError}</p>}
+              <button
+                type="submit"
+                disabled={busy || code.length !== 4}
+                className="w-full py-3 bg-green-600 hover:bg-green-700 disabled:opacity-50 text-white font-semibold rounded-xl"
+              >
+                {busy ? "..." : "Se connecter"}
+              </button>
+              <p className="text-center text-gray-500 text-xs">
+                Pas de code ? Demande à l&apos;admin.
+              </p>
+            </form>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-start p-4 py-10">
@@ -91,6 +187,12 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
           </div>
         )}
 
+        {submitError && (
+          <div className="bg-red-900/30 border border-red-700 text-red-300 text-sm rounded p-3 mb-4">
+            {submitError}
+          </div>
+        )}
+
         {!grouped && !loadError && (
           <div className="text-center text-gray-500 text-sm py-10">Chargement…</div>
         )}
@@ -110,9 +212,11 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
                   <button
                     key={m.id}
                     onClick={() => pickUser(m)}
-                    className="bg-gray-800 hover:bg-green-700 border border-gray-700 hover:border-green-500 text-white text-sm font-medium py-3 px-3 rounded-xl transition-colors text-left truncate"
+                    disabled={busy}
+                    className="bg-gray-800 hover:bg-green-700 border border-gray-700 hover:border-green-500 text-white text-sm font-medium py-3 px-3 rounded-xl transition-colors text-left truncate flex items-center justify-between gap-2 disabled:opacity-60"
                   >
-                    {m.nom}
+                    <span className="truncate">{m.nom}</span>
+                    {m.hasCode && <span className="text-xs text-gray-500" title="Code requis">🔒</span>}
                   </button>
                 ))}
               </div>

@@ -186,6 +186,11 @@ function MembreModal({
   const [notes, setNotes] = useState(member?.notes || "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showPinForm, setShowPinForm] = useState(false);
+  const [pin, setPin] = useState("");
+  const [pinBusy, setPinBusy] = useState(false);
+  const [pinMsg, setPinMsg] = useState<string | null>(null);
+  const [hasCode, setHasCode] = useState<boolean>(member?.hasCode === true);
   const isEdit = !!member;
   const isArchived = member?.actif === false;
 
@@ -213,6 +218,45 @@ function MembreModal({
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoading(false);
+    }
+  };
+
+  const savePin = async () => {
+    if (!member?.id) return;
+    if (!/^\d{4}$/.test(pin)) {
+      setPinMsg("Code = 4 chiffres exactement");
+      return;
+    }
+    setPinBusy(true);
+    setPinMsg(null);
+    try {
+      const r = await gasPost("setMembreCode", { id: member.id, pin });
+      if ((r as { error?: string }).error) throw new Error((r as { error?: string }).error);
+      setPinMsg(`Code ${pin} enregistré. Communique-le à ${member.nom}.`);
+      setHasCode(true);
+      setPin("");
+    } catch (e) {
+      setPinMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPinBusy(false);
+    }
+  };
+
+  const clearPin = async () => {
+    if (!member?.id) return;
+    if (!confirm(`Supprimer le code de ${member.nom} ? Il pourra à nouveau se connecter sans code.`)) return;
+    setPinBusy(true);
+    setPinMsg(null);
+    try {
+      const r = await gasPost("clearMembreCode", { id: member.id });
+      if ((r as { error?: string }).error) throw new Error((r as { error?: string }).error);
+      setPinMsg("Code supprimé.");
+      setHasCode(false);
+      setPin("");
+    } catch (e) {
+      setPinMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPinBusy(false);
     }
   };
 
@@ -306,6 +350,69 @@ function MembreModal({
               placeholder="Ex : permis C, disponible seulement mardi/jeudi…"
             />
           </div>
+
+          {isEdit && !isArchived && (
+            <div className="border-t pt-3 mt-1">
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs text-gray-500">
+                  Code d&apos;accès {hasCode ? <span className="text-green-700 font-semibold">🔒 défini</span> : <span className="text-orange-600">aucun (login libre)</span>}
+                </label>
+                {!showPinForm ? (
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      onClick={() => { setShowPinForm(true); setPinMsg(null); setPin(""); }}
+                      className="text-xs text-blue-600 hover:underline"
+                    >
+                      {hasCode ? "Changer" : "Définir"}
+                    </button>
+                    {hasCode && (
+                      <button
+                        type="button"
+                        onClick={clearPin}
+                        disabled={pinBusy}
+                        className="text-xs text-red-600 hover:underline disabled:opacity-50"
+                      >
+                        Supprimer
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => { setShowPinForm(false); setPin(""); setPinMsg(null); }}
+                    className="text-xs text-gray-500 hover:underline"
+                  >
+                    Annuler
+                  </button>
+                )}
+              </div>
+              {showPinForm && (
+                <div className="flex gap-2">
+                  <input
+                    inputMode="numeric"
+                    pattern="\d{4}"
+                    maxLength={4}
+                    value={pin}
+                    onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                    placeholder="••••"
+                    className="flex-1 text-center text-xl tracking-[0.4em] font-mono px-3 py-2 border rounded-lg"
+                  />
+                  <button
+                    type="button"
+                    onClick={savePin}
+                    disabled={pinBusy || pin.length !== 4}
+                    className="px-4 py-2 bg-blue-600 text-white rounded-lg text-sm hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {pinBusy ? "..." : "Valider"}
+                  </button>
+                </div>
+              )}
+              {pinMsg && (
+                <div className="mt-2 text-xs bg-blue-50 text-blue-800 rounded-lg p-2">{pinMsg}</div>
+              )}
+            </div>
+          )}
         </div>
 
         {error && <div className="mt-3 text-xs text-red-600 bg-red-50 rounded-lg p-2">{error}</div>}

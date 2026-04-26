@@ -114,6 +114,7 @@ interface EquipeMember {
   actif: boolean;
   notes: string | null;
   createdAt?: string | null;
+  hasCode?: boolean;
 }
 
 type CamionType = "gros" | "moyen" | "petit" | "retrait";
