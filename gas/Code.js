@@ -2873,7 +2873,29 @@ function getClientPreparation(clientId) {
   var iClientId = headers.indexOf("clientId");
   var iFnuci = headers.indexOf("fnuci");
   var iAnnule = headers.indexOf("annule");
+  // Colonnes nécessaires pour le workflow montage (3 photos par vélo) :
+  // la page /montage affiche l'état d'avancement de chaque vélo (combien de
+  // slots photo remplis sur 3) et le statut Préparation/Chargement/Livraison.
+  var iDatePreparation = headers.indexOf("datePreparation");
+  var iDateChargement = headers.indexOf("dateChargement");
+  var iDateLivraisonScan = headers.indexOf("dateLivraisonScan");
+  var iDateMontage = headers.indexOf("dateMontage");
+  var iUrlEtiquette = headers.indexOf("urlPhotoMontageEtiquette");
+  var iUrlQrVelo = headers.indexOf("urlPhotoMontageQrVelo");
+  var iPhotoMonte = headers.indexOf("photoMontageUrl");
   var data = meta.sheet.getDataRange().getValues();
+
+  // Helper : sérialise une cellule date/string en ISO string (ou null si vide).
+  var dateToIso = function(v) {
+    if (!v) return null;
+    if (v instanceof Date) return v.toISOString();
+    var s = String(v).trim();
+    return s || null;
+  };
+  var asUrl = function(v) {
+    var s = String(v || "").trim();
+    return s || null;
+  };
 
   var velos = [];
   for (var j = 1; j < data.length; j++) {
@@ -2883,6 +2905,13 @@ function getClientPreparation(clientId) {
     velos.push({
       veloId: r[iId],
       fnuci: String(r[iFnuci] || "").trim() || null,
+      datePreparation: iDatePreparation >= 0 ? dateToIso(r[iDatePreparation]) : null,
+      dateChargement: iDateChargement >= 0 ? dateToIso(r[iDateChargement]) : null,
+      dateLivraisonScan: iDateLivraisonScan >= 0 ? dateToIso(r[iDateLivraisonScan]) : null,
+      dateMontage: iDateMontage >= 0 ? dateToIso(r[iDateMontage]) : null,
+      urlPhotoMontageEtiquette: iUrlEtiquette >= 0 ? asUrl(r[iUrlEtiquette]) : null,
+      urlPhotoMontageQrVelo: iUrlQrVelo >= 0 ? asUrl(r[iUrlQrVelo]) : null,
+      photoMontageUrl: iPhotoMonte >= 0 ? asUrl(r[iPhotoMonte]) : null,
     });
   }
 
@@ -2897,6 +2926,9 @@ function getClientPreparation(clientId) {
     nbVelosAvecFnuci: avecFnuci.length,
     nbVelosSansFnuci: velos.length - avecFnuci.length,
     fnuciAttendus: avecFnuci.map(function(v) { return v.fnuci; }),
+    // Le tableau velos[] détaillé est nécessaire à la page /montage pour
+    // afficher chaque vélo + son état (3 photos preuve par vélo).
+    velos: velos,
   };
 }
 
