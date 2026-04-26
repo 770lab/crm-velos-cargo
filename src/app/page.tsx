@@ -1,19 +1,126 @@
 "use client";
 
 import Link from "next/link";
-import { useData } from "@/lib/data-context";
+import { useEffect, useMemo, useState } from "react";
+import { gasGet } from "@/lib/gas";
+
+// Périodes proposées dans le toolbar du dashboard. "tout" = pas de fenêtre,
+// stats globales du portefeuille (l'état historique). Les autres options
+// filtrent les compteurs de production (livrés / certificats / facturables /
+// facturés) sur la fenêtre, sans toucher aux KPI de stock (clients, vélos
+// total, planifiés).
+type Period = "tout" | "jour" | "semaine" | "mois" | "annee" | "custom";
+
+interface Stats {
+  totalClients: number;
+  totalVelos: number;
+  velosLivres: number;
+  velosPlanifies?: number;
+  certificatsRecus: number;
+  velosFacturables: number;
+  velosFactures: number;
+  clientsDocsComplets: number;
+  progression: number;
+  periodFrom?: string | null;
+  periodTo?: string | null;
+}
+
+function isoDay(d: Date) {
+  return d.toISOString().slice(0, 10);
+}
+function startOfWeekMon(d: Date) {
+  // Semaine ISO : lundi = jour 1.
+  const x = new Date(d);
+  const day = (x.getDay() + 6) % 7;
+  x.setDate(x.getDate() - day);
+  x.setHours(0, 0, 0, 0);
+  return x;
+}
+
+function computeWindow(period: Period, customFrom: string, customTo: string): { from: string; to: string } | null {
+  const now = new Date();
+  if (period === "tout") return null;
+  if (period === "jour") {
+    const iso = isoDay(now);
+    return { from: iso, to: iso };
+  }
+  if (period === "semaine") {
+    const start = startOfWeekMon(now);
+    const end = new Date(start);
+    end.setDate(end.getDate() + 6);
+    return { from: isoDay(start), to: isoDay(end) };
+  }
+  if (period === "mois") {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    const end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    return { from: isoDay(start), to: isoDay(end) };
+  }
+  if (period === "annee") {
+    return { from: `${now.getFullYear()}-01-01`, to: `${now.getFullYear()}-12-31` };
+  }
+  if (period === "custom" && customFrom && customTo) {
+    return { from: customFrom, to: customTo };
+  }
+  return null;
+}
+
+const PERIOD_LABELS: Record<Period, string> = {
+  tout: "Tout",
+  jour: "Aujourd'hui",
+  semaine: "Semaine",
+  mois: "Mois",
+  annee: "Année",
+  custom: "📅 Dates",
+};
 
 export default function Dashboard() {
-  const { stats, loading } = useData();
+  const [period, setPeriod] = useState<Period>("tout");
+  const [customFrom, setCustomFrom] = useState<string>(isoDay(new Date()));
+  const [customTo, setCustomTo] = useState<string>(isoDay(new Date()));
+  const [showCustom, setShowCustom] = useState(false);
+  const [stats, setStats] = useState<Stats | null>(null);
+  const [loading, setLoading] = useState(true);
 
-  if (loading || !stats) {
+  const window = useMemo(
+    () => computeWindow(period, customFrom, customTo),
+    [period, customFrom, customTo],
+  );
+
+  useEffect(() => {
+    let cancelled = false;
+    const load = async () => {
+      setLoading(true);
+      try {
+        const params: Record<string, string> = window
+          ? { from: window.from, to: window.to }
+          : {};
+        const r = (await gasGet("getStats", params)) as Stats;
+        if (!cancelled) setStats(r);
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [window]);
+
+  if (loading && !stats) {
     return (
       <div className="flex items-center justify-center h-64">
         <div className="text-gray-400">Chargement...</div>
       </div>
     );
   }
+  if (!stats) return null;
 
+  const isFiltered = !!window;
+  const periodSuffix = isFiltered ? ` · ${PERIOD_LABELS[period].toLowerCase()}` : "";
+
+  // Compteurs : on distingue les KPI "stock" (toujours globaux) des KPI
+  // "production" (filtrés si une fenêtre est active). Cela évite que le user
+  // se demande pourquoi "Clients" tombe à 0 quand il sélectionne "Aujourd'hui".
   const cards = [
     {
       label: "Clients",
@@ -21,6 +128,7 @@ export default function Dashboard() {
       sub: `${stats.clientsDocsComplets} dossiers complets`,
       color: "bg-blue-500",
       href: "/clients",
+      stock: true,
     },
     {
       label: "Vélos total",
@@ -28,6 +136,7 @@ export default function Dashboard() {
       sub: `${stats.progression}% livrés`,
       color: "bg-green-500",
       href: "/clients",
+      stock: true,
     },
     {
       label: "Vélos planifiés",
@@ -35,34 +144,39 @@ export default function Dashboard() {
       sub: "dans une tournée à venir",
       color: "bg-sky-500",
       href: "/livraisons",
+      stock: true,
     },
     {
-      label: "Vélos livrés",
+      label: "Vélos livrés" + periodSuffix,
       value: stats.velosLivres,
-      sub: `sur ${stats.totalVelos}`,
+      sub: isFiltered ? "sur la période" : `sur ${stats.totalVelos}`,
       color: "bg-emerald-500",
       href: "/livraisons",
+      stock: false,
     },
     {
-      label: "Certificats reçus",
+      label: "Certificats reçus" + periodSuffix,
       value: stats.certificatsRecus,
-      sub: `sur ${stats.totalVelos}`,
+      sub: isFiltered ? "sur la période" : `sur ${stats.totalVelos}`,
       color: "bg-purple-500",
       href: "/clients",
+      stock: false,
     },
     {
-      label: "Facturables",
+      label: "Facturables" + periodSuffix,
       value: stats.velosFacturables,
       sub: "livré + certificat + photo QR",
       color: "bg-amber-500",
       href: "/livraisons",
+      stock: false,
     },
     {
-      label: "Facturés",
+      label: "Facturés" + periodSuffix,
       value: stats.velosFactures,
       sub: `reste ${stats.velosFacturables - stats.velosFactures} à facturer`,
       color: "bg-teal-500",
       href: "/livraisons",
+      stock: false,
     },
   ];
 
@@ -73,21 +187,76 @@ export default function Dashboard() {
   const velosParJour =
     joursRestants > 0 ? Math.ceil(restant / joursRestants) : restant;
 
+  const handlePeriod = (p: Period) => {
+    setPeriod(p);
+    setShowCustom(p === "custom");
+  };
+
   return (
     <div>
-      <div className="mb-8">
+      <div className="mb-6">
         <h1 className="text-2xl font-bold text-gray-900">Tableau de bord</h1>
-        <p className="text-gray-500 mt-1">
+        <p className="text-gray-500 mt-1 text-sm">
           Opération vélos cargo — objectif 2 mois
         </p>
       </div>
+
+      {/* Toolbar période — segmented control. Sur mobile, scrollable
+          horizontalement. La case "📅 Dates" ouvre un mini-form custom. */}
+      <div className="bg-white border rounded-xl p-1.5 mb-3 inline-flex flex-wrap gap-1">
+        {(["tout", "jour", "semaine", "mois", "annee", "custom"] as Period[]).map((p) => (
+          <button
+            key={p}
+            onClick={() => handlePeriod(p)}
+            className={`px-3 py-1.5 text-sm rounded-lg whitespace-nowrap transition-colors ${
+              period === p
+                ? "bg-gray-900 text-white"
+                : "text-gray-700 hover:bg-gray-100"
+            }`}
+          >
+            {PERIOD_LABELS[p]}
+          </button>
+        ))}
+      </div>
+      {showCustom && (
+        <div className="bg-white border rounded-xl p-3 mb-4 flex flex-wrap items-end gap-3">
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Du</label>
+            <input
+              type="date"
+              value={customFrom}
+              onChange={(e) => setCustomFrom(e.target.value)}
+              className="px-2 py-1 border rounded-lg text-sm"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-gray-500 mb-1">Au</label>
+            <input
+              type="date"
+              value={customTo}
+              onChange={(e) => setCustomTo(e.target.value)}
+              className="px-2 py-1 border rounded-lg text-sm"
+            />
+          </div>
+          <p className="text-[11px] text-gray-400 ml-auto self-center">
+            Filtre les compteurs de production (livrés, certificats, facturés). Les compteurs Clients / Vélos total / Planifiés restent sur le portefeuille global.
+          </p>
+        </div>
+      )}
+      {isFiltered && !showCustom && (
+        <p className="text-[11px] text-gray-400 mb-4">
+          Compteurs « livrés / certificats / facturables / facturés » filtrés sur la période. Les autres restent globaux.
+        </p>
+      )}
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
         {cards.map((card) => (
           <Link
             key={card.label}
             href={card.href}
-            className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 hover:shadow-md hover:border-gray-300 transition-all cursor-pointer block"
+            className={`bg-white rounded-xl shadow-sm border p-6 hover:shadow-md hover:border-gray-300 transition-all cursor-pointer block ${
+              isFiltered && !card.stock ? "border-gray-300 ring-1 ring-gray-100" : "border-gray-200"
+            }`}
           >
             <div className="flex items-center gap-3 mb-3">
               <div className={`w-3 h-3 rounded-full ${card.color}`} />

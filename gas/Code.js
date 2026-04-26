@@ -35,7 +35,9 @@ function handleRequest(e) {
         result = bulkUpdateClients(bodyBU.clientIds || [], bodyBU.data || {});
         break;
       case "getStats":
-        result = getStats();
+        // params optionnels {from, to} pour filtrer les compteurs livrés/certificats/facturables/facturés
+        // sur une fenêtre. Sans from/to => stats globales (tout le portefeuille).
+        result = getStats(e.parameter);
         break;
       case "getCarte":
         result = getCarte();
@@ -642,7 +644,15 @@ function updateVelos(body) {
 
 // ---- STATS ----
 
-function getStats() {
+function getStats(params) {
+  params = params || {};
+  // Fenetre optionnelle pour filtrer les compteurs de production
+  // (velosLivres / certificats / facturables / factures). Sans fenetre on
+  // renvoie les stats globales du portefeuille. Format yyyy-MM-dd attendu.
+  var fromDate = params.from && /^\d{4}-\d{2}-\d{2}$/.test(String(params.from)) ? String(params.from) : null;
+  var toDate = params.to && /^\d{4}-\d{2}-\d{2}$/.test(String(params.to)) ? String(params.to) : null;
+  var hasWindow = !!(fromDate && toDate);
+
   var clientsSheet = SS.getSheetByName("Clients");
   var cData = clientsSheet.getDataRange().getValues();
   var cHeaders = cData[0];
@@ -669,14 +679,32 @@ function getStats() {
     if (v instanceof Date) return true;
     return !!String(v || "").trim();
   };
+  // Helper : la dateLivraisonScan tombe-t-elle dans la fenetre [from, to] ?
+  // Sert a filtrer les KPI de production sur la periode choisie.
+  var inWindow = function(v) {
+    var d = v[iDateLivStats];
+    if (!d) return false;
+    var iso = d instanceof Date
+      ? Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy-MM-dd")
+      : String(d).substring(0, 10);
+    return iso >= fromDate && iso <= toDate;
+  };
   var velosLivres = vRowsActive.filter(function(v) {
+    if (hasWindow) return iDateLivStats >= 0 && inWindow(v);
     if (iDateLivStats >= 0 && nonEmptyStats(v[iDateLivStats])) return true;
     if (iPhotoQrStats >= 0 && isBool(v[iPhotoQrStats])) return true;
     return false;
   }).length;
-  var certificatsRecus = vRowsActive.filter(function(v) { return isBool(v[vHeaders.indexOf("certificatRecu")]); }).length;
-  var velosFacturables = vRowsActive.filter(function(v) { return isBool(v[vHeaders.indexOf("facturable")]); }).length;
-  var velosFactures = vRowsActive.filter(function(v) { return isBool(v[vHeaders.indexOf("facture")]); }).length;
+  // En mode fenetre, on ne compte les certificats/facturables/factures que
+  // pour les velos livres dans la fenetre — sinon on melangerait des dossiers
+  // de mois differents. Si on veut rester simple : on filtre par date de
+  // livraison comme proxy de l'instant ou le velo passe ces flags.
+  var velosInWindowOnly = hasWindow
+    ? vRowsActive.filter(function(v) { return iDateLivStats >= 0 && inWindow(v); })
+    : vRowsActive;
+  var certificatsRecus = velosInWindowOnly.filter(function(v) { return isBool(v[vHeaders.indexOf("certificatRecu")]); }).length;
+  var velosFacturables = velosInWindowOnly.filter(function(v) { return isBool(v[vHeaders.indexOf("facturable")]); }).length;
+  var velosFactures = velosInWindowOnly.filter(function(v) { return isBool(v[vHeaders.indexOf("facture")]); }).length;
 
   var docFields = ["devisSignee","kbisRecu","attestationRecue","signatureOk","inscriptionBicycle","parcelleCadastrale"];
   var clientsDocsComplets = cRows.filter(function(c) {
@@ -703,7 +731,10 @@ function getStats() {
     velosFactures: velosFactures,
     clientsDocsComplets: clientsDocsComplets,
     progression: progression,
-    livraisonsParStatut: {}
+    livraisonsParStatut: {},
+    // Echo de la fenetre appliquee aux compteurs (null si stats globales).
+    periodFrom: fromDate,
+    periodTo: toDate,
   };
 }
 
