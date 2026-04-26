@@ -2401,6 +2401,12 @@ function _equipeRowToObject(row, headers) {
   });
   if (obj.actif === "TRUE") obj.actif = true;
   else if (obj.actif === "FALSE") obj.actif = false;
+  // Coerce les champs texte en string — les téléphones tapés tels quels
+  // peuvent être interprétés comme nombre par Sheets.
+  ["nom", "telephone", "email", "notes"].forEach(function(k) {
+    if (obj[k] != null && typeof obj[k] !== "string") obj[k] = String(obj[k]);
+    if (obj[k] === "") obj[k] = null;
+  });
   // Ne pas renvoyer le hash en clair, juste un booléen "a un code".
   if (obj.pinHash !== undefined) {
     obj.hasCode = !!(obj.pinHash && String(obj.pinHash).trim());

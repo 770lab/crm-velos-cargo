@@ -179,11 +179,11 @@ function MembreModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
-  const [nom, setNom] = useState(member?.nom || "");
+  const [nom, setNom] = useState(String(member?.nom || ""));
   const [role, setRole] = useState<EquipeRole>(member?.role || creatingRole || "monteur");
-  const [telephone, setTelephone] = useState(member?.telephone || "");
-  const [email, setEmail] = useState(member?.email || "");
-  const [notes, setNotes] = useState(member?.notes || "");
+  const [telephone, setTelephone] = useState(String(member?.telephone ?? ""));
+  const [email, setEmail] = useState(String(member?.email ?? ""));
+  const [notes, setNotes] = useState(String(member?.notes ?? ""));
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPinForm, setShowPinForm] = useState(false);
