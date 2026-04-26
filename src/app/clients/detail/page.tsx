@@ -33,6 +33,10 @@ interface Velo {
   photoMontageUrl?: string | null;
   /** URL Drive du Bon de Livraison signé (1 par tournée, attaché au vélo via tourneeIdScan). */
   urlBlSigne?: string | null;
+  /** True si le client a plusieurs livraisons mais ce vélo n'a pas son
+   *  tourneeIdScan rempli — donc on ne sait pas à quelle tournée il appartient.
+   *  Cas typique : scan partiel du chauffeur, à reprendre. */
+  livraisonOrpheline?: boolean;
   livraison: {
     id: string;
     datePrevue: string | null;
@@ -146,6 +150,34 @@ function ClientDetailPage() {
   const certRecus = client.velos.filter((v) => v.certificatRecu).length;
   const facturables = client.velos.filter((v) => v.facturable).length;
   const docsValides = DOC_CONFIG.filter((d) => client[d.field as keyof ClientDetail] as boolean).length;
+  const velosMontes = client.velos.filter((v) => !!v.monte).length;
+  const velosFactures = client.velos.filter((v) => v.facture).length;
+  const totalVelos = client.velos.length;
+  const orphelinsCount = client.velos.filter((v) => v.livraisonOrpheline).length;
+
+  // Recommandation d'action suivante : pousse le user a faire la prochaine
+  // etape utile sur le dossier client. Affichage en haut de page pour eviter
+  // qu'il scroll au hasard pour comprendre ce qui manque.
+  const nextAction: { label: string; tone: "blue" | "amber" | "emerald" | "gray"; icon: string } =
+    docsValides < 6
+      ? { label: `Compléter le dossier administratif (${6 - docsValides} document${6 - docsValides > 1 ? "s" : ""} restant${6 - docsValides > 1 ? "s" : ""})`, tone: "amber", icon: "📄" }
+      : totalVelos > 0 && velosLivres === 0
+      ? { label: "Planifier la tournée de livraison", tone: "blue", icon: "🚚" }
+      : velosLivres < totalVelos
+      ? { label: `Continuer les livraisons (${velosLivres}/${totalVelos})`, tone: "blue", icon: "🚚" }
+      : velosMontes < totalVelos
+      ? { label: `Continuer le montage chez le client (${velosMontes}/${totalVelos})`, tone: "blue", icon: "🔧" }
+      : facturables < totalVelos
+      ? { label: `Marquer les vélos facturables (${facturables}/${totalVelos})`, tone: "amber", icon: "💰" }
+      : velosFactures < facturables
+      ? { label: `Émettre la facture (${velosFactures}/${facturables} facturés)`, tone: "amber", icon: "🧾" }
+      : { label: "Dossier complet — vélos livrés, montés et facturés", tone: "emerald", icon: "✅" };
+  const toneClasses: Record<typeof nextAction.tone, string> = {
+    blue: "bg-blue-50 border-blue-200 text-blue-900",
+    amber: "bg-amber-50 border-amber-200 text-amber-900",
+    emerald: "bg-emerald-50 border-emerald-200 text-emerald-900",
+    gray: "bg-gray-50 border-gray-200 text-gray-700",
+  };
 
   const toggleAll = () => {
     if (selected.size === client.velos.length) {
@@ -161,6 +193,19 @@ function ClientDetailPage() {
         <Link href="/clients" className="text-sm text-gray-500 hover:text-gray-700">
           &larr; Retour aux clients
         </Link>
+      </div>
+
+      <div className={`mb-4 rounded-xl border px-4 py-3 flex items-start gap-3 ${toneClasses[nextAction.tone]}`}>
+        <div className="text-2xl shrink-0">{nextAction.icon}</div>
+        <div className="min-w-0">
+          <div className="text-[11px] uppercase tracking-wide font-semibold opacity-70">Action suivante</div>
+          <div className="text-sm font-medium">{nextAction.label}</div>
+          {orphelinsCount > 0 && (
+            <div className="text-xs mt-1 opacity-80">
+              ⚠ {orphelinsCount} vélo{orphelinsCount > 1 ? "s" : ""} sans tournée identifiée — refaire le scan livraison.
+            </div>
+          )}
+        </div>
       </div>
 
       <div className="flex items-start justify-between mb-8">
@@ -448,6 +493,13 @@ function ClientDetailPage() {
                       }`}
                     >
                       {v.livraison.statut}
+                    </span>
+                  ) : v.livraisonOrpheline ? (
+                    <span
+                      className="px-2 py-1 rounded-full bg-amber-100 text-amber-800 text-[10px]"
+                      title="Le client a plusieurs tournées mais ce vélo n'a pas été scanné — impossible de déterminer sa tournée. Refaire le scan livraison."
+                    >
+                      ⚠ orphelin
                     </span>
                   ) : (
                     <span className="text-gray-300">-</span>
