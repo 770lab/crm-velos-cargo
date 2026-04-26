@@ -1880,8 +1880,8 @@ function RappelVeilleModal({
   const nbASelectionner = stops.filter((st) => selected.has(st.livraison.id) && stopHasEmail(st)).length;
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4">
-      <div className="bg-white rounded-xl p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4" onClick={(e) => e.stopPropagation()}>
+      <div className="bg-white rounded-xl p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-start mb-4">
           <div>
             <h2 className="text-lg font-semibold">📧 Rappels veille de livraison</h2>
