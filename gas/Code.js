@@ -425,19 +425,114 @@ function getClient(id) {
   var velosRows = velosData.slice(1);
 
   var iAnnuleGV = velosHeaders.indexOf("annule");
+  var iClientIdGV = velosHeaders.indexOf("clientId");
+  var iFnuciGV = velosHeaders.indexOf("fnuci");
+  var iDateMontageGV = velosHeaders.indexOf("dateMontage");
+  var iDateLivScanGV = velosHeaders.indexOf("dateLivraisonScan");
+  var iUrlEtiquetteGV = velosHeaders.indexOf("urlPhotoMontageEtiquette");
+  var iUrlQrVeloGV = velosHeaders.indexOf("urlPhotoMontageQrVelo");
+  var iUrlMonteGV = velosHeaders.indexOf("photoMontageUrl");
+  var iTourneeIdScanGV = velosHeaders.indexOf("tourneeIdScan");
+
+  // Index des livraisons pour ce client (1 ligne par couple client/tournée).
+  // Permet de remonter statut + urlBlSigne par tournée pour chaque vélo livré.
+  var livraisonsByTournee = {};
+  var livSheet = SS.getSheetByName("Livraisons");
+  if (livSheet) {
+    var livData = livSheet.getDataRange().getValues();
+    if (livData.length > 1) {
+      var livHeaders = livData[0];
+      var iLId = livHeaders.indexOf("id");
+      var iLClient = livHeaders.indexOf("clientId");
+      var iLTournee = livHeaders.indexOf("tourneeId");
+      var iLStatut = livHeaders.indexOf("statut");
+      var iLDatePrevue = livHeaders.indexOf("datePrevue");
+      var iLDateEffective = livHeaders.indexOf("dateEffective");
+      var iLUrlBl = livHeaders.indexOf("urlBlSigne");
+      for (var li = 1; li < livData.length; li++) {
+        if (String(livData[li][iLClient]) !== String(id)) continue;
+        var tId = String(livData[li][iLTournee] || "");
+        livraisonsByTournee[tId] = {
+          id: livData[li][iLId],
+          tourneeId: tId,
+          statut: String(livData[li][iLStatut] || "planifiee"),
+          datePrevue: livData[li][iLDatePrevue]
+            ? (livData[li][iLDatePrevue] instanceof Date
+                ? Utilities.formatDate(livData[li][iLDatePrevue], Session.getScriptTimeZone(), "yyyy-MM-dd")
+                : String(livData[li][iLDatePrevue]))
+            : null,
+          dateEffective: iLDateEffective >= 0 && livData[li][iLDateEffective]
+            ? (livData[li][iLDateEffective] instanceof Date
+                ? livData[li][iLDateEffective].toISOString()
+                : String(livData[li][iLDateEffective]))
+            : null,
+          urlBlSigne: iLUrlBl >= 0 ? (String(livData[li][iLUrlBl] || "").trim() || null) : null,
+        };
+      }
+    }
+  }
+
+  var asUrl = function(v) { var s = String(v || "").trim(); return s || null; };
+  var asBoolFlag = function(v) { return v === true || v === "TRUE"; };
+
   client.velos = velosRows
     .filter(function(v) {
-      if (v[velosHeaders.indexOf("clientId")] !== id) return false;
-      if (iAnnuleGV >= 0 && (v[iAnnuleGV] === true || v[iAnnuleGV] === "TRUE")) return false;
+      if (v[iClientIdGV] !== id) return false;
+      if (iAnnuleGV >= 0 && asBoolFlag(v[iAnnuleGV])) return false;
       return true;
     })
     .map(function(v) {
       var velo = {};
       velosHeaders.forEach(function(h, j) { velo[h] = v[j]; });
-      ["certificatRecu","photoQrPrise","facturable","facture"].forEach(function(f) {
-        velo[f] = velo[f] === true || velo[f] === "TRUE";
-      });
-      velo.livraison = null;
+
+      // Le frontend attend `reference` et `qrCode` (anciens champs) ; depuis le
+      // workflow scan FNUCI, l'identité du vélo est portée par `fnuci`. On rétablit
+      // le mapping pour que la fiche client affiche l'identifiant scanné.
+      var fnuciVal = iFnuciGV >= 0 ? String(v[iFnuciGV] || "").trim() : "";
+      if (!velo.reference && fnuciVal) velo.reference = fnuciVal;
+      if (!velo.qrCode && fnuciVal) velo.qrCode = fnuciVal;
+
+      // Les flags hérités (`certificatRecu`, `photoQrPrise`, `facturable`, `facture`)
+      // ne sont plus écrits par le nouveau workflow. On les recompose à partir des
+      // colonnes effectivement remplies par le scan/montage/livraison :
+      //  - certificatRecu  ← FNUCI affilié (= identification BicyCode reçue)
+      //  - photoQrPrise    ← url photo QR vélo OU dateMontage présents
+      //  - monte           ← dateMontage
+      //  - livre           ← dateLivraisonScan
+      var dateMontage = iDateMontageGV >= 0 ? v[iDateMontageGV] : null;
+      var dateLivraisonScan = iDateLivScanGV >= 0 ? v[iDateLivScanGV] : null;
+      var urlEtiquette = iUrlEtiquetteGV >= 0 ? asUrl(v[iUrlEtiquetteGV]) : null;
+      var urlQrVelo = iUrlQrVeloGV >= 0 ? asUrl(v[iUrlQrVeloGV]) : null;
+      var urlMonte = iUrlMonteGV >= 0 ? asUrl(v[iUrlMonteGV]) : null;
+      var hasDateMontage = !!(dateMontage && String(dateMontage).trim());
+      var hasDateLivScan = !!(dateLivraisonScan && String(dateLivraisonScan).trim());
+
+      velo.certificatRecu = asBoolFlag(velo.certificatRecu) || !!fnuciVal;
+      velo.photoQrPrise = asBoolFlag(velo.photoQrPrise) || !!urlQrVelo || hasDateMontage;
+      velo.facturable = asBoolFlag(velo.facturable);
+      velo.facture = asBoolFlag(velo.facture);
+      velo.monte = hasDateMontage;
+      velo.livre = hasDateLivScan;
+
+      // URLs des 3 photos montage + BL signé, pour permettre au CRM de les
+      // afficher en cliquant sur le vélo (lien Drive direct).
+      velo.urlPhotoMontageEtiquette = urlEtiquette;
+      velo.urlPhotoMontageQrVelo = urlQrVelo;
+      velo.photoMontageUrl = urlMonte;
+
+      // Livraison : on relie via tourneeIdScan si dispo, sinon on prend la 1re
+      // livraison trouvée pour ce client (cas legacy).
+      var tournId = iTourneeIdScanGV >= 0 ? String(v[iTourneeIdScanGV] || "").trim() : "";
+      var liv = null;
+      if (tournId && livraisonsByTournee[tournId]) {
+        liv = livraisonsByTournee[tournId];
+      } else {
+        var keys = Object.keys(livraisonsByTournee);
+        if (keys.length > 0) liv = livraisonsByTournee[keys[0]];
+      }
+      velo.livraison = liv;
+      velo.urlBlSigne = liv ? liv.urlBlSigne : null;
+
       return velo;
     });
 
