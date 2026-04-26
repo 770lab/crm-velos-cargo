@@ -1764,6 +1764,14 @@ function fmtHM(totalMinutesFromMidnight: number): string {
   return `${String(h).padStart(2, "0")}h${String(m).padStart(2, "0")}`;
 }
 
+// Arrondit au quart d'heure supérieur ou inférieur le plus proche de :00/:30
+function roundDown30(min: number): number {
+  return Math.floor(min / 30) * 30;
+}
+function roundUp30(min: number): number {
+  return Math.ceil(min / 30) * 30;
+}
+
 function RappelVeilleModal({
   tournee,
   segments,
@@ -1827,8 +1835,8 @@ function RappelVeilleModal({
     const cid = st.livraison.clientId;
     const c = cid ? clientInfo.get(cid) : null;
     const nbVelos = st.livraison.nbVelos || 0;
-    const debut = fmtHM(st.arriveeMin);
-    const fin = fmtHM(st.arriveeMin + FENETRE_HEURES * 60);
+    const debut = fmtHM(roundDown30(st.arriveeMin));
+    const fin = fmtHM(roundUp30(st.arriveeMin + FENETRE_HEURES * 60));
     const subject = `Rappel livraison vélos cargo le ${dateObj ? dateObj.toLocaleDateString("fr-FR", { day: "numeric", month: "long" }) : ""} — fenêtre ${debut}-${fin}`;
     const body = [
       `Bonjour${c?.contact ? " " + c.contact : ""},`,
@@ -1899,8 +1907,8 @@ function RappelVeilleModal({
           {stops.map((st, i) => {
             const cid = st.livraison.clientId;
             const c = cid ? clientInfo.get(cid) : null;
-            const debut = fmtHM(st.arriveeMin);
-            const fin = fmtHM(st.arriveeMin + FENETRE_HEURES * 60);
+            const debut = fmtHM(roundDown30(st.arriveeMin));
+            const fin = fmtHM(roundUp30(st.arriveeMin + FENETRE_HEURES * 60));
             const apEmail = apporteurEmailDe(c?.apporteur || null);
             const checked = selected.has(st.livraison.id);
             const sansEmail = !c?.email;
