@@ -3250,9 +3250,20 @@ function markVeloLivreScan(body) {
   return _markVeloEtape(body.fnuci, body.tourneeId, body.userId || null, "livraisonScan");
 }
 
-// Annule le scan d'une étape sur un vélo (vide la colonne date + user).
+// Annule le scan d'une étape sur un vélo.
 // etape : "preparation" | "chargement" | "livraisonScan" | "montage"
 // Body : { fnuci OU veloId, etape }
+//
+// Cas spécial "preparation" : annule le scan de A à Z (vide datePreparation,
+// prepareParId, fnuci ET tourneeIdScan). Le slot vélo redevient libre pour
+// recevoir un autre FNUCI sur le même client. Pourquoi : le scan préparation
+// fait deux écritures (assignFnuciToClient puis markVeloPrepare). Annuler doit
+// défaire les deux, sinon on laisse le slot occupé par un FNUCI orphelin et
+// le compteur passe de 1/1 à 0/1 sans pouvoir re-scanner (tous les slots
+// pleins). clientId reste set : le slot reste réservé au client.
+//
+// Autres étapes : on ne touche qu'à la date + user. Le FNUCI est validé depuis
+// longtemps, on n'y touche pas.
 function unmarkVeloEtape(body) {
   body = body || {};
   var etape = body.etape;
@@ -3270,6 +3281,7 @@ function unmarkVeloEtape(body) {
   var iFnuci = headers.indexOf("fnuci");
   var iDate = headers.indexOf(dateCol);
   var iUser = headers.indexOf(userCol);
+  var iTid = headers.indexOf("tourneeIdScan");
   if (iDate < 0) return { error: "Colonne " + dateCol + " absente" };
 
   var matchById = body.veloId ? String(body.veloId) : null;
@@ -3284,14 +3296,21 @@ function unmarkVeloEtape(body) {
     else if (matchByFnuci && String(row[iFnuci] || "").trim() === matchByFnuci) hit = true;
     if (!hit) continue;
 
+    var fnuciAvant = String(row[iFnuci] || "").trim() || null;
     meta.sheet.getRange(i + 1, iDate + 1).setValue("");
     if (iUser >= 0) meta.sheet.getRange(i + 1, iUser + 1).setValue("");
+
+    if (etape === "preparation") {
+      if (iFnuci >= 0) meta.sheet.getRange(i + 1, iFnuci + 1).setValue("");
+      if (iTid >= 0) meta.sheet.getRange(i + 1, iTid + 1).setValue("");
+    }
+
     SpreadsheetApp.flush();
     return {
       ok: true,
       etape: etape,
       veloId: row[iId],
-      fnuci: String(row[iFnuci] || "").trim() || null,
+      fnuci: fnuciAvant, // FNUCI au moment de l'annulation (peut être effacé après en prep)
     };
   }
   return { error: "Vélo introuvable" };
