@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { gasUpload } from "@/lib/gas";
 
 // Capture photo iOS → upload GAS → Gemini Vision extrait les FNUCI → marquage
@@ -64,10 +64,15 @@ export default function PhotoGeminiCapture({
 }) {
   const cameraRef = useRef<HTMLInputElement | null>(null);
   const galleryRef = useRef<HTMLInputElement | null>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
   const [items, setItems] = useState<BatchItem[]>([]);
   const [adding, setAdding] = useState(false);
   const [identifying, setIdentifying] = useState(false);
   const [forceClientId, setForceClientId] = useState<string>("");
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraError, setCameraError] = useState<string | null>(null);
+  const [shooting, setShooting] = useState(false);
 
   const addFiles = useCallback(async (files: FileList | null) => {
     if (!files || files.length === 0) return;
@@ -117,6 +122,84 @@ export default function PhotoGeminiCapture({
 
   const clearAll = useCallback(() => {
     setItems([]);
+  }, []);
+
+  const openCamera = useCallback(async () => {
+    setCameraError(null);
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 },
+        },
+        audio: false,
+      });
+      streamRef.current = stream;
+      setCameraOpen(true);
+    } catch (e) {
+      setCameraError(e instanceof Error ? e.message : String(e));
+      setCameraOpen(true); // afficher l'overlay quand même pour montrer l'erreur
+    }
+  }, []);
+
+  const closeCamera = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((t) => t.stop());
+      streamRef.current = null;
+    }
+    setCameraOpen(false);
+    setShooting(false);
+  }, []);
+
+  // Branche le stream sur le <video> dès que l'overlay est monté.
+  useEffect(() => {
+    if (cameraOpen && videoRef.current && streamRef.current) {
+      videoRef.current.srcObject = streamRef.current;
+      videoRef.current.play().catch(() => {});
+    }
+    return () => {
+      // Si le composant est démonté pendant que la caméra tourne, on libère.
+      if (!cameraOpen && streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+    };
+  }, [cameraOpen]);
+
+  // Sécurité : à la destruction du composant, libérer la caméra.
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach((t) => t.stop());
+        streamRef.current = null;
+      }
+    };
+  }, []);
+
+  const captureFrame = useCallback(async () => {
+    const video = videoRef.current;
+    if (!video || video.videoWidth === 0) return;
+    setShooting(true);
+    try {
+      const compressed = compressVideoFrame(video, 800, 0.7);
+      const item: BatchItem = {
+        id: makeId(),
+        fileName: `shot-${Date.now()}.jpg`,
+        thumbDataUrl: `data:${compressed.mimeType};base64,${compressed.base64}`,
+        base64: compressed.base64,
+        mimeType: compressed.mimeType,
+        status: "pending",
+      };
+      setItems((prev) => [...prev, item]);
+      // Petit retour haptique si dispo (iOS Safari ne supporte pas vibrate, mais c'est cheap).
+      if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+        navigator.vibrate(20);
+      }
+    } finally {
+      // Court délai pour montrer le flash, puis re-armer.
+      setTimeout(() => setShooting(false), 120);
+    }
   }, []);
 
   const identifyAll = useCallback(async () => {
@@ -190,22 +273,36 @@ export default function PhotoGeminiCapture({
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2">
+      <div className="grid grid-cols-3 gap-2">
+        <button
+          type="button"
+          disabled={disabled || adding || identifying}
+          onClick={openCamera}
+          className="px-2 py-3 bg-rose-600 text-white rounded-lg font-medium hover:bg-rose-700 disabled:opacity-60 text-xs leading-tight"
+        >
+          📸 Caméra
+          <br />
+          continue
+        </button>
         <button
           type="button"
           disabled={disabled || adding || identifying}
           onClick={() => cameraRef.current?.click()}
-          className="px-3 py-3 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 disabled:opacity-60 text-sm"
+          className="px-2 py-3 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 disabled:opacity-60 text-xs leading-tight"
         >
           📷 Caméra
+          <br />
+          (1 photo)
         </button>
         <button
           type="button"
           disabled={disabled || adding || identifying}
           onClick={() => galleryRef.current?.click()}
-          className="px-3 py-3 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-60 text-sm"
+          className="px-2 py-3 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-60 text-xs leading-tight"
         >
-          🖼️ Galerie (plusieurs)
+          🖼️ Galerie
+          <br />
+          (multi)
         </button>
       </div>
 
@@ -279,9 +376,106 @@ export default function PhotoGeminiCapture({
       )}
 
       <p className="text-[11px] text-gray-500 text-center">
-        📷 Caméra : 1 photo à la fois. 🖼️ Galerie : sélectionne plusieurs photos d&apos;un coup.
-        Les photos s&apos;empilent puis tu cliques 🤖 Identifier pour lancer Gemini sur tout le lot en parallèle.
+        📸 Caméra continue : reste ouverte, mitraille les stickers d&apos;affilée. 📷 1 photo : caméra iOS native (1 shot). 🖼️ Galerie : sélectionne des photos déjà prises.
+        Tout s&apos;empile dans la grille puis tu cliques 🤖 Identifier.
       </p>
+
+      {cameraOpen && (
+        <ContinuousCameraOverlay
+          videoRef={videoRef}
+          error={cameraError}
+          shooting={shooting}
+          captures={items}
+          onShoot={captureFrame}
+          onClose={closeCamera}
+        />
+      )}
+    </div>
+  );
+}
+
+function ContinuousCameraOverlay({
+  videoRef,
+  error,
+  shooting,
+  captures,
+  onShoot,
+  onClose,
+}: {
+  videoRef: React.RefObject<HTMLVideoElement | null>;
+  error: string | null;
+  shooting: boolean;
+  captures: BatchItem[];
+  onShoot: () => void;
+  onClose: () => void;
+}) {
+  const recent = captures.slice(-5);
+  return (
+    <div className="fixed inset-0 z-50 bg-black flex flex-col">
+      <div className="flex items-center justify-between px-4 py-3 bg-black text-white">
+        <button
+          type="button"
+          onClick={onClose}
+          className="px-3 py-1.5 rounded bg-white/15 text-sm font-medium"
+        >
+          ✕ Terminer
+        </button>
+        <div className="text-sm font-medium">
+          {captures.length} capturée{captures.length > 1 ? "s" : ""}
+        </div>
+      </div>
+
+      <div className="relative flex-1 bg-black overflow-hidden">
+        {error ? (
+          <div className="absolute inset-0 flex flex-col items-center justify-center text-white p-4 text-center gap-3">
+            <div className="text-5xl">📷❌</div>
+            <div className="text-sm">Caméra inaccessible.</div>
+            <div className="text-xs opacity-70 break-words max-w-xs">{error}</div>
+            <div className="text-xs opacity-70 max-w-xs">
+              Sur iOS : Réglages → Safari → Caméra → Autoriser pour ce site.
+            </div>
+          </div>
+        ) : (
+          <video
+            ref={videoRef}
+            playsInline
+            muted
+            autoPlay
+            className="absolute inset-0 w-full h-full object-cover"
+          />
+        )}
+        {shooting && !error && (
+          <div className="absolute inset-0 bg-white opacity-60 pointer-events-none animate-pulse" />
+        )}
+      </div>
+
+      {recent.length > 0 && (
+        <div className="bg-black/80 px-2 py-2">
+          <div className="flex gap-1.5 overflow-x-auto">
+            {recent.map((c) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={c.id}
+                src={c.thumbDataUrl}
+                alt=""
+                className="w-14 h-14 object-cover rounded border border-white/20 flex-shrink-0"
+              />
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="bg-black flex items-center justify-center py-6">
+        <button
+          type="button"
+          onClick={onShoot}
+          disabled={!!error || shooting}
+          className="w-20 h-20 rounded-full bg-white border-4 border-white/40 active:scale-95 transition-transform disabled:opacity-50"
+          aria-label="Capturer"
+        >
+          <div className="w-full h-full rounded-full bg-white" />
+        </button>
+      </div>
     </div>
   );
 }
@@ -396,6 +590,31 @@ function ResultDetail({ item }: { item: BatchItem }) {
       )}
     </div>
   );
+}
+
+// Capture la frame courante d'un <video> live (getUserMedia) en JPEG compressé.
+// Synchrone (pas de FileReader/Image roundtrip) : utilisé par la Caméra continue.
+function compressVideoFrame(
+  video: HTMLVideoElement,
+  maxSize: number,
+  quality: number,
+): { base64: string; mimeType: string } {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  const longest = Math.max(vw, vh);
+  const scale = longest > maxSize ? maxSize / longest : 1;
+  const w = Math.round(vw * scale);
+  const h = Math.round(vh * scale);
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("canvas 2d unavailable");
+  ctx.drawImage(video, 0, 0, w, h);
+  const dataUrl = canvas.toDataURL("image/jpeg", quality);
+  const comma = dataUrl.indexOf(",");
+  const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+  return { base64, mimeType: "image/jpeg" };
 }
 
 function makeId(): string {
