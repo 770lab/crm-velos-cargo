@@ -4109,13 +4109,32 @@ function proposeTournee(payload) {
             proposition: parsed
           };
         } catch (parseErr) {
+          // Extrait la position de l'erreur depuis le message de SyntaxError
+          // (ex: "Expected ',' or '}' after property value in JSON at position 33122 (line 1018 column 19)")
+          // pour renvoyer ~300 chars autour : c'est le seul moyen de diagnostiquer
+          // une corruption au milieu d'une réponse de 70k chars.
+          var parseMsg = String(parseErr && parseErr.message || parseErr);
+          var posMatch = parseMsg.match(/position\s+(\d+)/);
+          var errPos = posMatch ? parseInt(posMatch[1], 10) : -1;
+          var errContext = null;
+          if (errPos >= 0) {
+            var ctxStart = Math.max(0, errPos - 200);
+            var ctxEnd = Math.min(cleaned.length, errPos + 200);
+            errContext = {
+              position: errPos,
+              before: cleaned.slice(ctxStart, errPos),
+              at: cleaned.slice(errPos, errPos + 1),
+              after: cleaned.slice(errPos + 1, ctxEnd)
+            };
+          }
           return {
             error: "Réponse Gemini non-JSON",
-            parseError: String(parseErr && parseErr.message || parseErr),
+            parseError: parseMsg,
             finishReason: finishReason,
             rawLength: raw.length,
             rawHead: cleaned.slice(0, 400),
-            rawTail: cleaned.slice(-400)
+            rawTail: cleaned.slice(-400),
+            errContext: errContext
           };
         }
       }

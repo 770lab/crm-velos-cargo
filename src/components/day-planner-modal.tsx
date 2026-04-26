@@ -46,6 +46,12 @@ type ProposeResponse = {
   rawLength?: number;
   rawHead?: string;
   rawTail?: string;
+  errContext?: {
+    position: number;
+    before: string;
+    at: string;
+    after: string;
+  } | null;
   body?: string;
 };
 
@@ -326,6 +332,18 @@ export default function DayPlannerModal({
                   <details className="mt-2">
                     <summary className="cursor-pointer text-xs text-red-700">Fin de la réponse</summary>
                     <pre className="mt-1 text-xs whitespace-pre-wrap text-red-700 bg-red-100 p-2 rounded max-h-40 overflow-y-auto">{proposition.rawTail}</pre>
+                  </details>
+                )}
+                {proposition.errContext && (
+                  <details className="mt-2" open>
+                    <summary className="cursor-pointer text-xs text-red-700 font-medium">
+                      Contexte autour de l&apos;erreur (position {proposition.errContext.position})
+                    </summary>
+                    <pre className="mt-1 text-xs whitespace-pre-wrap text-red-700 bg-red-100 p-2 rounded max-h-60 overflow-y-auto">
+                      <span className="text-red-600">{proposition.errContext.before}</span>
+                      <span className="bg-yellow-300 text-black font-bold px-0.5">{proposition.errContext.at || "·"}</span>
+                      <span className="text-red-600">{proposition.errContext.after}</span>
+                    </pre>
                   </details>
                 )}
                 {proposition.raw && (
