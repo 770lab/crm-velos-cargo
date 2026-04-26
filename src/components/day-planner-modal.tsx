@@ -160,11 +160,20 @@ export default function DayPlannerModal({
     if (!proposition?.proposition?.tournees?.length) return;
     setApplying(true);
     try {
-      const tourneesPayload = proposition.proposition.tournees.map((t) => ({
-        datePrevue: date,
-        mode: "",
-        stops: t.arrets.map((a, i) => ({ clientId: a.clientId, nbVelos: a.nbVelos, ordre: i + 1 })),
-      }));
+      // Le mode de la tournée = type du camion assigné par Gemini. Sans ça, le
+      // champ mode reste vide en feuille et l'écran Livraisons affiche "autre"
+      // (couleur grise) alors qu'on connaît le camion. `petit` est l'ancien nom
+      // côté flotte ; côté palette livraisons c'est "camionnette".
+      const camionTypeById = new Map(flotte.map((c) => [c.id, c.type]));
+      const tourneesPayload = proposition.proposition.tournees.map((t) => {
+        const rawType = camionTypeById.get(t.camionId) || "";
+        const mode = rawType === "petit" ? "camionnette" : rawType;
+        return {
+          datePrevue: date,
+          mode,
+          stops: t.arrets.map((a, i) => ({ clientId: a.clientId, nbVelos: a.nbVelos, ordre: i + 1 })),
+        };
+      });
       const created = (await gasPost("createTournees", { tournees: tourneesPayload })) as {
         tournees?: { tourneeId?: string }[];
       };
