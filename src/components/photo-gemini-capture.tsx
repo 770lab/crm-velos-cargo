@@ -52,6 +52,7 @@ export default function PhotoGeminiCapture({
   disabled,
   clients,
   lockedClientId,
+  onCameraToggle,
 }: {
   tourneeId: string;
   userId: string | null;
@@ -66,6 +67,10 @@ export default function PhotoGeminiCapture({
    * vignette "Prép. 0/7" d'un client précis). Le dropdown disparaît, on affiche
    * juste un bandeau "Préparation pour <nom>". Évite les erreurs de sélection. */
   lockedClientId?: string;
+  /** Notifie le parent quand la caméra continue s'ouvre/ferme. Permet de
+   * désactiver le scanner Strich (qui tient la caméra) le temps que Gemini
+   * Vision en prenne le contrôle — iOS Safari = 1 seule appli active. */
+  onCameraToggle?: (open: boolean) => void;
 }) {
   const cameraRef = useRef<HTMLInputElement | null>(null);
   const galleryRef = useRef<HTMLInputElement | null>(null);
@@ -141,6 +146,13 @@ export default function PhotoGeminiCapture({
 
   const openCamera = useCallback(async () => {
     setCameraError(null);
+    // Notifie le parent EN AMONT pour qu'il libère le scanner Strich avant
+    // qu'on appelle getUserMedia. Sinon Strich tient déjà la caméra et notre
+    // requête se solde par un flux noir (vu en prod sur iOS Safari).
+    if (onCameraToggle) onCameraToggle(true);
+    // Petit délai pour laisser le temps à Strich de relâcher la caméra
+    // (le useEffect cleanup côté qr-scanner appelle reader.destroy() async).
+    await new Promise((r) => setTimeout(r, 250));
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -156,7 +168,7 @@ export default function PhotoGeminiCapture({
       setCameraError(e instanceof Error ? e.message : String(e));
       setCameraOpen(true); // afficher l'overlay quand même pour montrer l'erreur
     }
-  }, []);
+  }, [onCameraToggle]);
 
   const closeCamera = useCallback(() => {
     if (streamRef.current) {
@@ -165,7 +177,8 @@ export default function PhotoGeminiCapture({
     }
     setCameraOpen(false);
     setShooting(false);
-  }, []);
+    if (onCameraToggle) onCameraToggle(false);
+  }, [onCameraToggle]);
 
   // Branche le stream sur le <video> dès que l'overlay est monté.
   useEffect(() => {

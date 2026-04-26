@@ -128,6 +128,9 @@ function Inner({ mode }: { mode: ScanMode }) {
 
   const [history, setHistory] = useState<ScanEvent[]>([]);
   const [scannerEnabled, setScannerEnabled] = useState<boolean>(true);
+  // Quand la Caméra continue Gemini est ouverte, on doit désactiver Strich
+  // pour libérer la caméra (iOS Safari = un seul flux à la fois).
+  const [geminiCameraOpen, setGeminiCameraOpen] = useState<boolean>(false);
   const [busy, setBusy] = useState<boolean>(false);
   // En mode préparation, si on scanne un FNUCI inconnu on propose d'assigner
   // à un client de la tournée (fusionne réception + préparation).
@@ -434,7 +437,7 @@ function Inner({ mode }: { mode: ScanMode }) {
                   {busy && <span className="text-xs text-blue-600 ml-auto animate-pulse">envoi…</span>}
                 </div>
               )}
-              <QrScanner enabled={scannerEnabled && !allDone && !pendingFnuci} onScan={handleScan} />
+              <QrScanner enabled={scannerEnabled && !allDone && !pendingFnuci && !geminiCameraOpen} onScan={handleScan} />
               <form
                 onSubmit={(e) => {
                   e.preventDefault();
@@ -469,6 +472,7 @@ function Inner({ mode }: { mode: ScanMode }) {
                   prepare: c.totals[cfg.totalsKey],
                 })) : undefined}
                 lockedClientId={mode === "preparation" && focusClientId ? focusClientId : undefined}
+                onCameraToggle={setGeminiCameraOpen}
               />
             </div>
 
