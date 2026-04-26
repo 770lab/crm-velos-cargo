@@ -303,19 +303,20 @@ function MembreModal({
           </div>
           <div>
             <label className="block text-xs text-gray-500 mb-1">Rôle</label>
-            <div className="flex gap-2">
+            <div className="grid grid-cols-3 gap-2">
               {(Object.keys(ROLE_LABEL) as EquipeRole[]).map((r) => (
                 <button
                   key={r}
                   type="button"
                   onClick={() => setRole(r)}
-                  className={`flex-1 px-3 py-2 text-sm rounded-lg border transition-colors ${
+                  className={`px-2 py-2 text-xs rounded-lg border transition-colors text-center leading-tight ${
                     role === r
                       ? "bg-green-600 text-white border-green-600"
                       : "border-gray-300 text-gray-700 hover:bg-gray-50"
                   }`}
                 >
-                  {ROLE_ICON[r]} {ROLE_LABEL[r]}
+                  <div className="text-base">{ROLE_ICON[r]}</div>
+                  <div>{ROLE_LABEL[r]}</div>
                 </button>
               ))}
             </div>
