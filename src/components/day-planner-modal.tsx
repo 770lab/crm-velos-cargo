@@ -148,12 +148,40 @@ export default function DayPlannerModal({
     if (!proposition?.proposition?.tournees?.length) return;
     setApplying(true);
     try {
-      const tournees = proposition.proposition.tournees.map((t) => ({
+      const tourneesPayload = proposition.proposition.tournees.map((t) => ({
         datePrevue: date,
         mode: "",
         stops: t.arrets.map((a, i) => ({ clientId: a.clientId, nbVelos: a.nbVelos, ordre: i + 1 })),
       }));
-      await gasPost("createTournees", { tournees });
+      const created = (await gasPost("createTournees", { tournees: tourneesPayload })) as {
+        tournees?: { tourneeId?: string }[];
+      };
+      const createdIds = (created.tournees || []).map((r) => r?.tourneeId).filter(Boolean) as string[];
+
+      // Auto-assignation équipe : on distribue les ressources cochées dans les dispos
+      // sur les tournées proposées par Gemini. 1 chauffeur + 1 chef + parts de monteurs
+      // par tournée (round-robin pour chauffeur/chef, split équilibré pour monteurs).
+      const chauffeurArr = Array.from(chauffeurIds);
+      const chefArr = Array.from(chefIds);
+      const monteurArr = Array.from(monteurIds);
+      const nT = createdIds.length;
+
+      const monteurBuckets: string[][] = Array.from({ length: nT }, () => []);
+      monteurArr.forEach((mid, i) => {
+        monteurBuckets[i % nT].push(mid);
+      });
+
+      await Promise.all(
+        createdIds.map((tid, i) =>
+          gasPost("assignTournee", {
+            tourneeId: tid,
+            chauffeurId: chauffeurArr.length ? chauffeurArr[i % chauffeurArr.length] : "",
+            chefEquipeIds: chefArr.length ? [chefArr[i % chefArr.length]] : [],
+            monteurIds: monteurBuckets[i],
+          }),
+        ),
+      );
+
       await refresh("livraisons");
       onApplied?.();
       onClose();
