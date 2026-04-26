@@ -58,6 +58,8 @@ function doGet(e) {
         return _respond(syncProgress(e.parameter || {}));
       case "relabel":
         return _respond(relabelUnprocessed());
+      case "retryFailed":
+        return _respond(retryFailedThreads(e.parameter || {}));
       default:
         return _respondError("Action GET inconnue : " + action);
     }
@@ -127,6 +129,79 @@ function syncProgress(payload) {
     oldestRemaining: oldestRemainingDate ? oldestRemainingDate.toISOString() : null,
     newestRemaining: newestRemainingDate ? newestRemainingDate.toISOString() : null
   };
+}
+
+// Cible les verifs récentes en `unassigned` (typiquement après une erreur Gemini 429),
+// retire le label crm-traite des threads correspondants et remet crm-a-traiter,
+// puis marque la row en "rejected" avec une note explicite — la prochaine sync
+// recréera une verif propre avec clientId résolu, sans doublon dans /verifications.
+// Param: ?hours=N (défaut 6, max 168).
+function retryFailedThreads(payload) {
+  var hours = (payload && payload.hours) ? Math.max(1, Math.min(168, Number(payload.hours))) : 6;
+  var cutoffMs = Date.now() - hours * 60 * 60 * 1000;
+
+  var sh = _ensureVerifSheet();
+  var data = sh.getDataRange().getValues();
+  if (data.length < 2) return { found: 0, relabeled: 0, marked: 0, errors: [] };
+
+  var headers = data[0];
+  var col = {
+    status: headers.indexOf("status"),
+    clientId: headers.indexOf("clientId"),
+    receivedAt: headers.indexOf("receivedAt"),
+    messageId: headers.indexOf("messageId"),
+    notes: headers.indexOf("notes")
+  };
+  if (col.messageId < 0 || col.status < 0) {
+    return { error: "VerificationsPending: colonnes messageId/status manquantes" };
+  }
+
+  var labelTo = _getOrCreateLabel(LABEL_TO_PROCESS);
+  var labelOk = _getOrCreateLabel(LABEL_PROCESSED);
+
+  var stats = { hours: hours, found: 0, relabeled: 0, marked: 0, errors: [] };
+  var seenThreads = {};
+
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var status = String(row[col.status] || "").toLowerCase();
+    if (status !== "unassigned" && status !== "") continue;
+    if (row[col.clientId] && String(row[col.clientId]).trim() !== "") continue;
+
+    var receivedAt = row[col.receivedAt];
+    var ts = (receivedAt instanceof Date) ? receivedAt.getTime() : (receivedAt ? Date.parse(receivedAt) : 0);
+    if (!ts || ts < cutoffMs) continue;
+
+    var messageId = row[col.messageId];
+    if (!messageId) continue;
+
+    stats.found++;
+
+    try {
+      var msg = GmailApp.getMessageById(String(messageId));
+      var thread = msg.getThread();
+      var threadId = thread.getId();
+
+      if (!seenThreads[threadId]) {
+        thread.removeLabel(labelOk);
+        thread.addLabel(labelTo);
+        seenThreads[threadId] = true;
+        stats.relabeled++;
+      }
+
+      sh.getRange(i + 1, col.status + 1).setValue("rejected");
+      if (col.notes >= 0) {
+        var oldNotes = String(row[col.notes] || "");
+        var tag = "Auto-rejected for retry after Gemini error";
+        sh.getRange(i + 1, col.notes + 1).setValue(oldNotes ? oldNotes + " | " + tag : tag);
+      }
+      stats.marked++;
+    } catch (err) {
+      stats.errors.push({ messageId: String(messageId), error: String(err) });
+    }
+  }
+
+  return stats;
 }
 
 function relabelUnprocessed() {
