@@ -73,7 +73,9 @@ export type GeminiClientOption = {
   clientId: string;
   entreprise: string;
   total: number;
-  prepare: number;
+  /** Nombre de vélos déjà marqués pour l'étape courante (préparation,
+   * chargement, ou livraison) — sert à afficher le compteur "X/Y déjà fait". */
+  done: number;
 };
 
 export default function PhotoGeminiCapture({
@@ -368,9 +370,9 @@ export default function PhotoGeminiCapture({
             </div>
             <div className="text-sm font-bold text-emerald-900">{lockedClient.entreprise}</div>
             <div className="text-[11px] text-emerald-800">
-              {lockedClient.prepare}/{lockedClient.total} déjà fait
-              {lockedClient.total - lockedClient.prepare > 0
-                ? ` · reste ${lockedClient.total - lockedClient.prepare}`
+              {lockedClient.done}/{lockedClient.total} déjà fait
+              {lockedClient.total - lockedClient.done > 0
+                ? ` · reste ${lockedClient.total - lockedClient.done}`
                 : " · complet"}
             </div>
           </div>
@@ -393,10 +395,10 @@ export default function PhotoGeminiCapture({
           >
             <option value="">— Aucun (mode standard, FNUCI doit déjà exister) —</option>
             {clients.map((c) => {
-              const free = c.total - c.prepare;
+              const free = c.total - c.done;
               return (
                 <option key={c.clientId} value={c.clientId} disabled={free <= 0}>
-                  {c.entreprise} ({c.prepare}/{c.total}{free <= 0 ? " — plein" : ` — ${free} libre${free > 1 ? "s" : ""}`})
+                  {c.entreprise} ({c.done}/{c.total}{free <= 0 ? " — plein" : ` — ${free} libre${free > 1 ? "s" : ""}`})
                 </option>
               );
             })}

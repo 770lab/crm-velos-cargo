@@ -422,13 +422,12 @@ function Inner({ mode }: { mode: ScanMode }) {
 
         {userId && prog && !pendingFnuci && (
           <>
-            {/* Le scan QR Strich + saisie manuelle est masqué en préparation :
-                la préparation passe désormais exclusivement par la caméra continue
-                Gemini (ou photo unique) du composant PhotoGeminiCapture juste en
-                dessous. Les autres étapes (chargement/livraison/montage) gardent
-                le scan QR Strich pour l'instant — ils basculeront sur le QR client
-                interne quand cette refonte sera faite. */}
-            {mode !== "preparation" && (
+            {/* Le scan QR Strich + saisie manuelle est masqué en préparation
+                ET en chargement : ces deux étapes passent désormais
+                exclusivement par la caméra continue Gemini (ou photo unique)
+                du composant PhotoGeminiCapture juste en dessous. La livraison
+                garde encore le scan QR Strich — elle basculera ensuite. */}
+            {mode !== "preparation" && mode !== "chargement" && (
               <div className="bg-white rounded-xl shadow p-4 space-y-3 mb-3">
                 <div className="text-sm text-gray-700">Scanne le QR FNUCI du vélo.</div>
                 {scanPreview && (
@@ -467,13 +466,16 @@ function Inner({ mode }: { mode: ScanMode }) {
                 etape={cfg.unmarkEtape}
                 onAfter={loadProgression}
                 disabled={allDone}
-                clients={mode === "preparation" && "clients" in prog ? prog.clients.map((c) => ({
+                clients={(mode === "preparation" || mode === "chargement") && "clients" in prog ? prog.clients.map((c) => ({
                   clientId: c.clientId,
                   entreprise: c.entreprise,
                   total: c.totals.total,
-                  prepare: c.totals[cfg.totalsKey],
+                  // `done` = compteur de l'étape courante (prepare en préparation,
+                  // charge en chargement, etc.) — sert au "X/Y déjà fait" dans
+                  // le bandeau de verrouillage et le sélecteur client.
+                  done: c.totals[cfg.totalsKey],
                 })) : undefined}
-                lockedClientId={mode === "preparation" && focusClientId ? focusClientId : undefined}
+                lockedClientId={(mode === "preparation" || mode === "chargement") && focusClientId ? focusClientId : undefined}
                 onCameraToggle={setGeminiCameraOpen}
               />
             </div>
