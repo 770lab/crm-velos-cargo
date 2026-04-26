@@ -1434,15 +1434,20 @@ function FeuilleDeRoute({
             </tr>
           </thead>
           <tbody>
-            {tournee.livraisons.map((l, i) => (
+            {tournee.livraisons.map((l, i) => {
+              const ci = l.clientId ? clientInfo.get(l.clientId) : null;
+              return (
               <tr key={l.id} className="border-b">
                 <td className="py-2 font-bold">{i + 1}</td>
-                <td className="py-2 font-medium">{l.client.entreprise}</td>
+                <td className="py-2">
+                  <div className="font-medium">{l.client.entreprise}</div>
+                  {ci?.contact && <div className="text-xs text-gray-600">{ci.contact}</div>}
+                </td>
                 <td className="py-2 text-xs text-gray-600">
                   {[l.client.adresse, l.client.codePostal, l.client.ville].filter(Boolean).join(", ")}
                 </td>
                 <td className="py-2 text-xs text-center text-orange-600 font-medium">
-                  {(l.clientId && clientInfo.get(l.clientId)?.apporteur) || "—"}
+                  {ci?.apporteur || "—"}
                 </td>
                 <td className="py-2 text-xs text-center">{l.client.telephone || "—"}</td>
                 <td className="py-2 text-center font-medium">{l._count.velos}</td>
@@ -1453,7 +1458,8 @@ function FeuilleDeRoute({
                   <div className="w-5 h-5 border-2 border-gray-400 rounded mx-auto" />
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {retourSegment.distKm > 0 && (
               <tr className="border-b bg-gray-50">
                 <td className="py-2 text-gray-400">↩</td>
@@ -1931,6 +1937,12 @@ function RappelVeilleModal({
                     <span className="text-xs text-blue-700 whitespace-nowrap">{debut}–{fin}</span>
                     <span className="text-xs text-gray-400">· {st.livraison.nbVelos || 0}v</span>
                   </div>
+                  {(c?.contact || c?.telephone) && (
+                    <div className="text-xs text-gray-700 mt-0.5">
+                      👤 {c?.contact || <span className="text-gray-400">contact non renseigné</span>}
+                      {c?.telephone && <> · 📞 <a href={`tel:${c.telephone}`} className="text-blue-700 hover:underline">{c.telephone}</a></>}
+                    </div>
+                  )}
                   <div className="text-xs text-gray-600 mt-0.5 truncate">
                     {c?.email ? (
                       <>→ {c.email}</>
