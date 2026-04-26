@@ -3662,6 +3662,16 @@ function unmarkVeloEtape(body) {
       if (iTid >= 0) meta.sheet.getRange(i + 1, iTid + 1).setValue("");
     }
 
+    // En mode montage, on vide aussi les 3 URLs de photos preuve. Sinon les
+    // vignettes 📦🏷️🔧 resteraient pleines après "↺ Annuler montage" et
+    // un nouveau test du même vélo afficherait 3/3 photos déjà faites.
+    if (etape === "montage") {
+      ["urlPhotoMontageEtiquette", "urlPhotoMontageQrVelo", "photoMontageUrl"].forEach(function(col) {
+        var c = headers.indexOf(col);
+        if (c >= 0) meta.sheet.getRange(i + 1, c + 1).setValue("");
+      });
+    }
+
     SpreadsheetApp.flush();
     return {
       ok: true,
@@ -3695,7 +3705,17 @@ function unsetVeloClient(body) {
   var iId = headers.indexOf("id");
   var iFnuci = headers.indexOf("fnuci");
   var iTid = headers.indexOf("tourneeIdScan");
-  var dateCols = ["datePreparation", "prepareParId", "dateChargement", "chargeParId", "dateLivraisonScan", "livreParId", "dateMontage", "monteParId", "photoMontageUrl"];
+  // Colonnes à vider quand on désaffilie un vélo : toutes les dates d'étape +
+  // tous les ids opérateur + les 3 URLs de photos preuve montage. Si on en
+  // oublie, le prochain test sur ce vélo verrait des résidus (ex: 2/3 photos
+  // déjà faites alors que c'est un nouveau cycle).
+  var dateCols = [
+    "datePreparation", "prepareParId",
+    "dateChargement", "chargeParId",
+    "dateLivraisonScan", "livreParId",
+    "dateMontage", "monteParId",
+    "photoMontageUrl", "urlPhotoMontageEtiquette", "urlPhotoMontageQrVelo",
+  ];
 
   var matchById = body.veloId ? String(body.veloId) : null;
   var matchByFnuci = body.fnuci ? String(body.fnuci).trim() : null;
