@@ -13,6 +13,7 @@
     "@prisma/adapter-libsql": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "date-fns": "^4.1.0",
+    "html5-qrcode": "^2.3.8",
     "leaflet": "^1.9.4",
     "next": "16.2.4",
     "prisma": "^7.8.0",

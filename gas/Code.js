@@ -143,6 +143,16 @@ function handleRequest(e) {
         var bodyVF = getBody();
         result = setVeloFnuci(bodyVF.veloId || e.parameter.veloId, bodyVF.fnuci || e.parameter.fnuci);
         break;
+      case "assignFnuciToClient":
+        var bodyAFC = getBody();
+        result = assignFnuciToClient(bodyAFC.fnuci || e.parameter.fnuci, bodyAFC.clientId || e.parameter.clientId);
+        break;
+      case "lookupFnuci":
+        result = lookupFnuci(e.parameter.fnuci);
+        break;
+      case "getClientPreparation":
+        result = getClientPreparation(e.parameter.clientId);
+        break;
       case "uploadVeloPhoto":
         var bodyUVP = getBody();
         result = uploadVeloPhoto(bodyUVP);
@@ -2511,6 +2521,166 @@ function setVeloFnuci(veloId, fnuci) {
   found.sheet.getRange(found.rowIndex, fnuciCol + 1).setValue(clean);
   SpreadsheetApp.flush();
   return { ok: true, veloId: veloId, fnuci: clean };
+}
+
+// Affecte un FNUCI scanné à un client en l'inscrivant sur le 1er vélo non-affecté
+// non-annulé du client. Vérifie d'abord que ce FNUCI n'est pas déjà utilisé ailleurs.
+//
+// Retours :
+//   { ok: true, veloId, fnuci, restantPourClient }                — affecté
+//   { error: "FNUCI déjà affecté", existingClient, ... }          — collision
+//   { error: "Tous les vélos de ce client ont déjà un FNUCI" }    — saturé
+function assignFnuciToClient(fnuci, clientId) {
+  if (!fnuci) return { error: "fnuci requis" };
+  if (!clientId) return { error: "clientId requis" };
+  var clean = String(fnuci).trim();
+  var meta = ensureVelosSchema();
+  if (!meta.sheet) return { error: "Feuille Velos introuvable" };
+  var sheet = meta.sheet;
+  var headers = meta.headers;
+  var iId = headers.indexOf("id");
+  var iClientId = headers.indexOf("clientId");
+  var iFnuci = headers.indexOf("fnuci");
+  var iAnnule = headers.indexOf("annule");
+  if (iId < 0 || iClientId < 0 || iFnuci < 0) return { error: "Colonnes Velos manquantes" };
+
+  var data = sheet.getDataRange().getValues();
+
+  // 1. Vérifier que ce FNUCI n'est pas déjà ailleurs
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var existingFnuci = String(row[iFnuci] || "").trim();
+    var isAnnule = iAnnule >= 0 && (row[iAnnule] === true || row[iAnnule] === "TRUE");
+    if (existingFnuci === clean && !isAnnule) {
+      var ownerCid = String(row[iClientId] || "");
+      if (ownerCid === String(clientId)) {
+        return { ok: true, alreadyAssigned: true, veloId: row[iId], fnuci: clean, message: "Ce FNUCI est déjà sur ce client (rien à faire)." };
+      }
+      // Récupère le nom du client propriétaire pour le message d'erreur
+      var ownerName = _getClientName(ownerCid);
+      return { error: "FNUCI déjà affecté", existingClientId: ownerCid, existingClientName: ownerName, veloId: row[iId] };
+    }
+  }
+
+  // 2. Trouver le 1er vélo de ce client sans FNUCI et non-annulé
+  for (var j = 1; j < data.length; j++) {
+    var r = data[j];
+    if (String(r[iClientId]) !== String(clientId)) continue;
+    if (iAnnule >= 0 && (r[iAnnule] === true || r[iAnnule] === "TRUE")) continue;
+    if (String(r[iFnuci] || "").trim()) continue; // déjà un FNUCI
+    sheet.getRange(j + 1, iFnuci + 1).setValue(clean);
+    SpreadsheetApp.flush();
+    // Recompte les restants
+    var restant = 0;
+    var dataAfter = sheet.getDataRange().getValues();
+    for (var k = 1; k < dataAfter.length; k++) {
+      var rr = dataAfter[k];
+      if (String(rr[iClientId]) !== String(clientId)) continue;
+      if (iAnnule >= 0 && (rr[iAnnule] === true || rr[iAnnule] === "TRUE")) continue;
+      if (String(rr[iFnuci] || "").trim()) continue;
+      restant++;
+    }
+    return { ok: true, veloId: r[iId], fnuci: clean, restantPourClient: restant };
+  }
+
+  return { error: "Tous les vélos de ce client ont déjà un FNUCI (ou sont annulés). Vérifie le nb commandé sur la fiche client." };
+}
+
+// Recherche un FNUCI dans la sheet Velos et renvoie le client associé.
+// Utilisé en préparation commande pour valider un scan.
+function lookupFnuci(fnuci) {
+  if (!fnuci) return { found: false, error: "fnuci requis" };
+  var clean = String(fnuci).trim();
+  var meta = ensureVelosSchema();
+  if (!meta.sheet) return { found: false, error: "Feuille Velos introuvable" };
+  var headers = meta.headers;
+  var iId = headers.indexOf("id");
+  var iClientId = headers.indexOf("clientId");
+  var iFnuci = headers.indexOf("fnuci");
+  var iAnnule = headers.indexOf("annule");
+  var data = meta.sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var f = String(row[iFnuci] || "").trim();
+    if (f !== clean) continue;
+    var isAnnule = iAnnule >= 0 && (row[iAnnule] === true || row[iAnnule] === "TRUE");
+    if (isAnnule) continue;
+    var cid = String(row[iClientId] || "");
+    return {
+      found: true,
+      veloId: row[iId],
+      clientId: cid,
+      clientName: _getClientName(cid),
+      fnuci: clean,
+    };
+  }
+  return { found: false, fnuci: clean };
+}
+
+// Pour la page de préparation commande : renvoie l'état d'un client
+// (nom, nb vélos commandés, FNUCI déjà affectés).
+function getClientPreparation(clientId) {
+  if (!clientId) return { error: "clientId requis" };
+  var clientSheet = SS.getSheetByName("Clients");
+  if (!clientSheet) return { error: "Feuille Clients introuvable" };
+  var cData = clientSheet.getDataRange().getValues();
+  var cHeaders = cData[0];
+  var iCId = cHeaders.indexOf("id");
+  var iCEntreprise = cHeaders.indexOf("entreprise");
+  var iCAdresse = cHeaders.indexOf("adresse");
+  var iCVille = cHeaders.indexOf("ville");
+  var clientRow = null;
+  for (var i = 1; i < cData.length; i++) {
+    if (String(cData[i][iCId]) === String(clientId)) { clientRow = cData[i]; break; }
+  }
+  if (!clientRow) return { error: "Client introuvable" };
+
+  var meta = ensureVelosSchema();
+  if (!meta.sheet) return { error: "Feuille Velos introuvable" };
+  var headers = meta.headers;
+  var iId = headers.indexOf("id");
+  var iClientId = headers.indexOf("clientId");
+  var iFnuci = headers.indexOf("fnuci");
+  var iAnnule = headers.indexOf("annule");
+  var data = meta.sheet.getDataRange().getValues();
+
+  var velos = [];
+  for (var j = 1; j < data.length; j++) {
+    var r = data[j];
+    if (String(r[iClientId]) !== String(clientId)) continue;
+    if (iAnnule >= 0 && (r[iAnnule] === true || r[iAnnule] === "TRUE")) continue;
+    velos.push({
+      veloId: r[iId],
+      fnuci: String(r[iFnuci] || "").trim() || null,
+    });
+  }
+
+  var avecFnuci = velos.filter(function(v) { return !!v.fnuci; });
+  return {
+    ok: true,
+    clientId: clientId,
+    entreprise: clientRow[iCEntreprise] || "",
+    adresse: clientRow[iCAdresse] || "",
+    ville: clientRow[iCVille] || "",
+    nbVelosTotal: velos.length,
+    nbVelosAvecFnuci: avecFnuci.length,
+    nbVelosSansFnuci: velos.length - avecFnuci.length,
+    fnuciAttendus: avecFnuci.map(function(v) { return v.fnuci; }),
+  };
+}
+
+function _getClientName(clientId) {
+  if (!clientId) return null;
+  var sheet = SS.getSheetByName("Clients");
+  if (!sheet) return null;
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0];
+  var iId = headers.indexOf("id");
+  var iEntreprise = headers.indexOf("entreprise");
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][iId]) === String(clientId)) return data[i][iEntreprise] || null;
+  }
+  return null;
 }
 
 function _getClientFolder(clientId) {
