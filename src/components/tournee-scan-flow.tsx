@@ -363,12 +363,6 @@ function Inner({ mode }: { mode: ScanMode }) {
               <div className="bg-orange-50 border border-orange-200 rounded p-2 mb-2 text-xs">
                 <div className="font-semibold text-orange-900">🎯 Focus client : {focusClient.entreprise}</div>
                 <div className="text-orange-700">{focusClient.codePostal} {focusClient.ville}</div>
-                <a
-                  href={`/crm-velos-cargo/${mode === "preparation" ? "preparation" : mode === "chargement" ? "chargement" : "livraison"}?tourneeId=${encodeURIComponent(tourneeId)}`}
-                  className="text-[10px] text-blue-600 underline mt-1 inline-block"
-                >
-                  Voir la tournée entière →
-                </a>
               </div>
             )}
             <div className="flex items-baseline justify-between mb-2">
@@ -428,35 +422,43 @@ function Inner({ mode }: { mode: ScanMode }) {
 
         {userId && prog && !pendingFnuci && (
           <>
-            <div className="bg-white rounded-xl shadow p-4 space-y-3 mb-3">
-              <div className="text-sm text-gray-700">Scanne le QR FNUCI du vélo.</div>
-              {scanPreview && (
-                <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 flex items-center gap-2 text-sm">
-                  <span className="text-blue-700">📷 Code scanné :</span>
-                  <code className="font-mono font-bold text-blue-900">{scanPreview}</code>
-                  {busy && <span className="text-xs text-blue-600 ml-auto animate-pulse">envoi…</span>}
-                </div>
-              )}
-              <QrScanner enabled={scannerEnabled && !allDone && !pendingFnuci && !geminiCameraOpen} onScan={handleScan} />
-              <form
-                onSubmit={(e) => {
-                  e.preventDefault();
-                  const v = (e.currentTarget.elements.namedItem("manualFnuci") as HTMLInputElement)?.value?.trim();
-                  if (v) {
-                    handleScan(v);
-                    (e.currentTarget.elements.namedItem("manualFnuci") as HTMLInputElement).value = "";
-                  }
-                }}
-                className="flex gap-2"
-              >
-                <input
-                  name="manualFnuci"
-                  className="flex-1 border rounded-lg px-3 py-2 text-sm"
-                  placeholder="Saisie manuelle FNUCI"
-                />
-                <button type="submit" className="px-3 py-2 bg-gray-700 text-white rounded-lg text-sm">OK</button>
-              </form>
-            </div>
+            {/* Le scan QR Strich + saisie manuelle est masqué en préparation :
+                la préparation passe désormais exclusivement par la caméra continue
+                Gemini (ou photo unique) du composant PhotoGeminiCapture juste en
+                dessous. Les autres étapes (chargement/livraison/montage) gardent
+                le scan QR Strich pour l'instant — ils basculeront sur le QR client
+                interne quand cette refonte sera faite. */}
+            {mode !== "preparation" && (
+              <div className="bg-white rounded-xl shadow p-4 space-y-3 mb-3">
+                <div className="text-sm text-gray-700">Scanne le QR FNUCI du vélo.</div>
+                {scanPreview && (
+                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 flex items-center gap-2 text-sm">
+                    <span className="text-blue-700">📷 Code scanné :</span>
+                    <code className="font-mono font-bold text-blue-900">{scanPreview}</code>
+                    {busy && <span className="text-xs text-blue-600 ml-auto animate-pulse">envoi…</span>}
+                  </div>
+                )}
+                <QrScanner enabled={scannerEnabled && !allDone && !pendingFnuci && !geminiCameraOpen} onScan={handleScan} />
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const v = (e.currentTarget.elements.namedItem("manualFnuci") as HTMLInputElement)?.value?.trim();
+                    if (v) {
+                      handleScan(v);
+                      (e.currentTarget.elements.namedItem("manualFnuci") as HTMLInputElement).value = "";
+                    }
+                  }}
+                  className="flex gap-2"
+                >
+                  <input
+                    name="manualFnuci"
+                    className="flex-1 border rounded-lg px-3 py-2 text-sm"
+                    placeholder="Saisie manuelle FNUCI"
+                  />
+                  <button type="submit" className="px-3 py-2 bg-gray-700 text-white rounded-lg text-sm">OK</button>
+                </form>
+              </div>
+            )}
 
             <div className="bg-white rounded-xl shadow p-4 mb-3">
               <PhotoGeminiCapture
@@ -616,14 +618,6 @@ function Inner({ mode }: { mode: ScanMode }) {
             {allDone && !tourneeAllDone && cfg.nextLink && tourneeTotals && (
               <div className="bg-yellow-50 border border-yellow-200 text-yellow-900 text-sm rounded-lg p-3 text-center">
                 ✅ Ce client est terminé. Encore {tourneeTotals.total - tourneeTotals[cfg.totalsKey]} vélo{tourneeTotals.total - tourneeTotals[cfg.totalsKey] > 1 ? "s" : ""} à {cfg.title.toLowerCase()} sur la tournée avant de passer à l&apos;étape suivante.
-                <div className="mt-2">
-                  <a
-                    href={`/crm-velos-cargo/${mode}?tourneeId=${encodeURIComponent(tourneeId)}`}
-                    className="text-xs text-blue-600 underline"
-                  >
-                    Voir la tournée entière →
-                  </a>
-                </div>
               </div>
             )}
           </>
