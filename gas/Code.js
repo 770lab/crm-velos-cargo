@@ -3029,16 +3029,27 @@ function _estParis(client) {
   return /^750\d{2}$/.test(cp) && Number(cp) >= 75001 && Number(cp) <= 75020;
 }
 
-// Retourne les clients pas encore affectés à une tournée pour la date
+// Retourne les clients pas encore affectés à une tournée pour la date,
+// ET décompte tous les vélos déjà engagés sur d'autres dates (planifiés
+// non annulés/livrés) du nbVelosRestants. Évite que Gemini propose un
+// client qui est déjà couvert par une tournée existante sur une autre date.
 function _clientsLivrablesPourDate(date) {
   var allClients = getClients({}); // existant
   var clientsParId = {};
   for (var i = 0; i < allClients.length; i++) clientsParId[allClients[i].id] = allClients[i];
 
   var livrSheet = SS.getSheetByName("Livraisons");
-  if (!livrSheet) return { affectes: {}, dispo: [] };
+  if (!livrSheet) {
+    var dispoSansLivr = [];
+    for (var k in clientsParId) if (_clientLivrable(clientsParId[k])) dispoSansLivr.push(clientsParId[k]);
+    return { affectes: {}, dispo: dispoSansLivr };
+  }
   var lvData = livrSheet.getDataRange().getValues();
-  if (lvData.length < 2) return { affectes: {}, dispo: Object.keys(clientsParId).map(function(id) { return clientsParId[id]; }).filter(_clientLivrable) };
+  if (lvData.length < 2) {
+    var dispoVide = [];
+    for (var k2 in clientsParId) if (_clientLivrable(clientsParId[k2])) dispoVide.push(clientsParId[k2]);
+    return { affectes: {}, dispo: dispoVide };
+  }
 
   var lvHeaders = lvData[0];
   var iLvClientId = lvHeaders.indexOf("clientId");
@@ -3047,29 +3058,46 @@ function _clientsLivrablesPourDate(date) {
   var iLvNbVelos = lvHeaders.indexOf("nbVelos");
   var iLvTourneeId = lvHeaders.indexOf("tourneeId");
 
-  var affectesParTournee = {}; // tourneeId → [{clientId, nbVelos, ...}]
+  var affectesParTournee = {}; // tourneeId → [{clientId, nbVelos, ...}] pour LA date
   var clientIdsAffectesPourCetteDate = {};
+  var velosEngagesAilleurs = {}; // clientId → somme nbVelos sur d'autres dates (planifié, pas livré)
 
   for (var li = 1; li < lvData.length; li++) {
     var lvRow = lvData[li];
     var statut = String(lvRow[iLvStatus] || "").toLowerCase();
+    // On ignore les annulées et les déjà livrées (livrées sont déjà comptées dans nbVelosLivres)
     if (statut === "annulee" || statut === "annulée" || statut === "livrée" || statut === "livree") continue;
     var lvDate = lvRow[iLvDate];
     var lvDateStr = lvDate instanceof Date ? Utilities.formatDate(lvDate, Session.getScriptTimeZone(), "yyyy-MM-dd") : String(lvDate);
-    if (lvDateStr !== date) continue;
-
     var cid = String(lvRow[iLvClientId]);
     var tid = String(lvRow[iLvTourneeId] || "");
     var nb = Number(lvRow[iLvNbVelos]) || 0;
-    if (!affectesParTournee[tid]) affectesParTournee[tid] = [];
-    affectesParTournee[tid].push({ clientId: cid, nbVelos: nb, client: clientsParId[cid] || null });
-    clientIdsAffectesPourCetteDate[cid] = true;
+
+    if (lvDateStr === date) {
+      if (!affectesParTournee[tid]) affectesParTournee[tid] = [];
+      affectesParTournee[tid].push({ clientId: cid, nbVelos: nb, client: clientsParId[cid] || null });
+      clientIdsAffectesPourCetteDate[cid] = true;
+    } else {
+      // Engagement sur une autre date (futur ou passé non livré) → décompte
+      velosEngagesAilleurs[cid] = (velosEngagesAilleurs[cid] || 0) + nb;
+    }
   }
 
   var dispo = [];
   for (var cid2 in clientsParId) {
     if (clientIdsAffectesPourCetteDate[cid2]) continue;
-    if (_clientLivrable(clientsParId[cid2])) dispo.push(clientsParId[cid2]);
+    var c = clientsParId[cid2];
+    if (!_clientLivrable(c)) continue;
+    var nbCmd = Number(c.nbVelosCommandes || 0);
+    var nbLivre = Number(c.nbVelosLivres || 0);
+    var nbEngageAilleurs = velosEngagesAilleurs[cid2] || 0;
+    var restantReel = nbCmd - nbLivre - nbEngageAilleurs;
+    if (restantReel <= 0) continue; // tout est déjà couvert ailleurs
+    // Clone superficiel pour annoter le restant ajusté
+    var enriched = {};
+    for (var prop in c) enriched[prop] = c[prop];
+    enriched._nbVelosRestantsApresEngagements = restantReel;
+    dispo.push(enriched);
   }
   return { affectes: affectesParTournee, dispo: dispo };
 }
@@ -3136,14 +3164,18 @@ function proposeTournee(payload) {
     ctx.affectes[tid].forEach(function(a) { totalAffecte += a.nbVelos; });
   });
 
-  // Enrichit les clients avec distance dépôt
+  // Enrichit les clients avec distance dépôt + nbVelosRestants après décompte
+  // des engagements existants sur d'autres dates (calculé dans _clientsLivrablesPourDate)
   var clientsEnrichis = ctx.dispo.map(function(c) {
+    var restant = c._nbVelosRestantsApresEngagements != null
+      ? c._nbVelosRestantsApresEngagements
+      : Math.max(0, Number(c.nbVelosCommandes || 0) - Number(c.nbVelosLivres || 0));
     return {
       id: c.id,
       entreprise: c.entreprise,
       ville: c.ville,
       codePostal: c.codePostal,
-      nbVelosRestants: Math.max(0, Number(c.nbVelosCommandes || 0) - Number(c.nbVelosLivres || 0)),
+      nbVelosRestants: restant,
       estParis: _estParis(c),
       distanceKmDepot: Math.round(_distanceKm(DEPOT_LAT, DEPOT_LNG, c.latitude, c.longitude) * 10) / 10,
       apporteur: c.apporteur || null
