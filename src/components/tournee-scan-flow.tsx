@@ -131,6 +131,9 @@ function Inner({ mode }: { mode: ScanMode }) {
   // En mode préparation, si on scanne un FNUCI inconnu on propose d'assigner
   // à un client de la tournée (fusionne réception + préparation).
   const [pendingFnuci, setPendingFnuci] = useState<string | null>(null);
+  // Code FNUCI extrait du dernier QR scanné, affiché brièvement le temps de
+  // l'aller-retour API pour confirmer que l'extraction du code BicyCode a marché.
+  const [scanPreview, setScanPreview] = useState<string | null>(null);
 
   const loadProgression = useCallback(async () => {
     if (!tourneeId) return;
@@ -155,6 +158,7 @@ function Inner({ mode }: { mode: ScanMode }) {
     const match = trimmed.match(/BC[A-Z0-9]{8}/i);
     const fnuci = match ? match[0].toUpperCase() : trimmed;
     if (!fnuci || busy) return;
+    setScanPreview(fnuci);
     setBusy(true);
     setScannerEnabled(false);
     try {
@@ -197,7 +201,10 @@ function Inner({ mode }: { mode: ScanMode }) {
       setHistory((h) => [evt, ...h].slice(0, 10));
     } finally {
       setBusy(false);
-      setTimeout(() => setScannerEnabled(true), 800);
+      setTimeout(() => {
+        setScannerEnabled(true);
+        setScanPreview(null);
+      }, 800);
     }
   }, [busy, cfg.endpoint, tourneeId, userId, loadProgression, mode]);
 
@@ -419,6 +426,13 @@ function Inner({ mode }: { mode: ScanMode }) {
           <>
             <div className="bg-white rounded-xl shadow p-4 space-y-3 mb-3">
               <div className="text-sm text-gray-700">Scanne le QR FNUCI du vélo.</div>
+              {scanPreview && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 flex items-center gap-2 text-sm">
+                  <span className="text-blue-700">📷 Code scanné :</span>
+                  <code className="font-mono font-bold text-blue-900">{scanPreview}</code>
+                  {busy && <span className="text-xs text-blue-600 ml-auto animate-pulse">envoi…</span>}
+                </div>
+              )}
               <QrScanner enabled={scannerEnabled && !allDone && !pendingFnuci} onScan={handleScan} />
               <form
                 onSubmit={(e) => {
