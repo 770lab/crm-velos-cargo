@@ -7,6 +7,7 @@ import { useCurrentUser } from "@/lib/current-user";
 
 const QrScanner = dynamic(() => import("@/components/qr-scanner"), { ssr: false });
 const PhotoGeminiCapture = dynamic(() => import("@/components/photo-gemini-capture"), { ssr: false });
+const BlSignedUploader = dynamic(() => import("@/components/bl-signed-uploader"), { ssr: false });
 
 export type ScanMode = "preparation" | "chargement" | "livraison";
 
@@ -579,6 +580,19 @@ function Inner({ mode }: { mode: ScanMode }) {
                 </div>
               );
             })()}
+
+            {/* Livraison terminée pour ce client → photo du BL signé.
+                Le bloc s'affiche dès que tous les vélos du client ont été
+                marqués livrés ; il reste accessible ensuite pour reprendre
+                la photo si la 1re est ratée. */}
+            {mode === "livraison" && allDone && focusClientId && (
+              <div className="mb-3">
+                <BlSignedUploader
+                  tourneeId={tourneeId}
+                  clientId={focusClientId}
+                />
+              </div>
+            )}
 
             {tourneeAllDone && cfg.nextLink && (
               <a

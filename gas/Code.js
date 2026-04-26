@@ -169,6 +169,9 @@ function handleRequest(e) {
       case "uploadMontagePhoto":
         result = uploadMontagePhoto(getBody());
         break;
+      case "uploadBlSignedPhoto":
+        result = uploadBlSignedPhoto(getBody());
+        break;
       case "markVeloPrepare":
         result = markVeloPrepare(getBody());
         break;
@@ -633,7 +636,7 @@ function ensureLivraisonsSchema() {
 
   var lastCol = sheet.getLastColumn();
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  var needed = ["nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs","chefEquipeIds","preparateurIds","numeroBL"];
+  var needed = ["nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs","chefEquipeIds","preparateurIds","numeroBL","urlBlSigne"];
   var added = false;
   for (var k = 0; k < needed.length; k++) {
     if (headers.indexOf(needed[k]) === -1) {
@@ -3003,6 +3006,70 @@ function uploadMontagePhoto(body) {
     };
   }
   return { error: "FNUCI inconnu — passe d'abord par la préparation", fnuci: clean };
+}
+
+// Upload de la photo du Bon de Livraison signé/tamponné par le client à la
+// livraison. Une seule photo par client et par tournée — stockée dans le Drive
+// du client (sous "Bons de livraison signés / <yyyy-MM-dd>") et l'URL est
+// écrite dans la colonne urlBlSigne du sheet Livraisons (1 ligne = 1 client
+// d'une tournée).
+//
+// Body : { tourneeId, clientId, photoData (base64), mimeType?, livreurId? }
+function uploadBlSignedPhoto(body) {
+  body = body || {};
+  if (!body.tourneeId) return { error: "tourneeId requis" };
+  if (!body.clientId) return { error: "clientId requis" };
+  if (!body.photoData) return { error: "photoData requis (base64)" };
+  var mimeType = body.mimeType || "image/jpeg";
+
+  var ctx = ensureLivraisonsSchema();
+  var sheet = ctx.sheet;
+  var headers = ctx.headers;
+  var iId = headers.indexOf("id");
+  var iClientId = headers.indexOf("clientId");
+  var iTourneeId = headers.indexOf("tourneeId");
+  var iUrlBl = headers.indexOf("urlBlSigne");
+  if (iUrlBl < 0) return { error: "Colonne urlBlSigne absente (relance ensureLivraisonsSchema)" };
+
+  var data = sheet.getDataRange().getValues();
+  var foundRow = -1;
+  for (var i = 1; i < data.length; i++) {
+    if (
+      String(data[i][iClientId]) === String(body.clientId) &&
+      String(data[i][iTourneeId]) === String(body.tourneeId)
+    ) {
+      foundRow = i;
+      break;
+    }
+  }
+  if (foundRow < 0) {
+    return { error: "Aucune livraison trouvée pour ce client/tournée" };
+  }
+
+  // Upload Drive : <dossier client>/Bons de livraison signés/<yyyy-MM-dd>/<HH-MM-SS>.jpg
+  var clientFolder = _getClientFolder(body.clientId);
+  var blRoot = getOrCreateFolder(clientFolder, "Bons de livraison signés");
+  var today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+  var dayFolder = getOrCreateFolder(blRoot, today);
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "HHmmss");
+  var ext = mimeType === "image/png" ? "png" : "jpg";
+  var fullName = "BL_signe_" + stamp + "." + ext;
+  var decoded = Utilities.base64Decode(body.photoData);
+  var blob = Utilities.newBlob(decoded, mimeType, fullName);
+  var file = dayFolder.createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  var photoUrl = file.getUrl();
+
+  sheet.getRange(foundRow + 1, iUrlBl + 1).setValue(photoUrl);
+  SpreadsheetApp.flush();
+
+  return {
+    ok: true,
+    livraisonId: data[foundRow][iId],
+    clientId: body.clientId,
+    tourneeId: body.tourneeId,
+    photoUrl: photoUrl,
+  };
 }
 
 function _getClientName(clientId) {
