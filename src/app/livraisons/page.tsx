@@ -39,8 +39,29 @@ interface Tournee {
   statutGlobal: "planifiee" | "en_cours" | "livree" | "annulee" | "mixte";
 }
 
+// Une livraison appartient au user si celui-ci y est affecté selon son rôle.
+// Admin voit tout, apporteur ne voit aucune livraison (commercial pur).
+function livraisonMatchesUser(l: LivraisonRow, userId: string, role: EquipeRole): boolean {
+  if (role === "admin") return true;
+  if (role === "apporteur") return false;
+  switch (role) {
+    case "chauffeur":
+      return l.chauffeurId === userId;
+    case "preparateur":
+      return (l.preparateurIds || []).includes(userId);
+    case "monteur":
+      return (l.monteurIds || []).includes(userId);
+    case "chef":
+      if (l.chefEquipeId === userId) return true;
+      return (l.chefEquipeIds || []).includes(userId);
+    default:
+      return false;
+  }
+}
+
 export default function LivraisonsPage() {
   const { livraisons, carte, refresh } = useData();
+  const currentUser = useCurrentUser();
   const [view, setView] = useState<View>("semaine");
   const [refDate, setRefDate] = useState<Date>(() => new Date());
   const [openTournee, setOpenTournee] = useState<Tournee | null>(null);
@@ -53,11 +74,23 @@ export default function LivraisonsPage() {
     refresh("carte");
   }, [refresh]);
 
-  const tournees = useMemo(() => groupByTournee(livraisons), [livraisons]);
+  // Filtrage des livraisons par utilisateur : chacun ne voit que ses dossiers.
+  // Pendant l'hydratation (currentUser undefined), on n'affiche rien pour éviter
+  // un flash où d'autres dossiers seraient brièvement visibles.
+  const userLivraisons = useMemo(() => {
+    if (!currentUser) return [] as LivraisonRow[];
+    return livraisons.filter((l) => livraisonMatchesUser(l, currentUser.id, currentUser.role));
+  }, [livraisons, currentUser]);
+
+  const tournees = useMemo(() => groupByTournee(userLivraisons), [userLivraisons]);
 
   const loadByDate = useMemo(() => {
     const map = new Map<string, { velos: number; tournees: Set<string>; modes: Set<string> }>();
-    for (const l of livraisons) {
+    // On boucle sur userLivraisons (pas livraisons) pour que la charge affichée
+    // au calendrier reflète uniquement les jours où le user a réellement des
+    // dossiers — un préparateur ne doit pas voir une grosse pastille jaune sur
+    // un jour où il n'a rien à préparer.
+    for (const l of userLivraisons) {
       if (l.statut === "annulee" || !l.datePrevue) continue;
       const iso = isoDate(l.datePrevue);
       if (!map.has(iso)) map.set(iso, { velos: 0, tournees: new Set(), modes: new Set() });
@@ -69,7 +102,7 @@ export default function LivraisonsPage() {
     return new Map<string, DayLoad>(
       Array.from(map.entries()).map(([k, v]) => [k, { velos: v.velos, tournees: v.tournees.size, modes: Array.from(v.modes) }])
     );
-  }, [livraisons]);
+  }, [userLivraisons]);
 
   const clientById = useMemo(() => {
     const map = new Map<string, typeof carte[number]>();
@@ -129,7 +162,7 @@ export default function LivraisonsPage() {
     return map;
   }, [filteredTournees]);
 
-  const livraisonsSansDate = livraisons.filter((l) => !l.datePrevue);
+  const livraisonsSansDate = userLivraisons.filter((l) => !l.datePrevue);
 
   return (
     <div>
@@ -137,23 +170,29 @@ export default function LivraisonsPage() {
         <div>
           <h1 className="text-2xl font-bold text-gray-900">Livraisons</h1>
           <p className="text-gray-500 mt-1">
-            {filteredTournees.length} tournée{filteredTournees.length > 1 ? "s" : ""} · {livraisons.length} livraison{livraisons.length > 1 ? "s" : ""}
+            {filteredTournees.length} tournée{filteredTournees.length > 1 ? "s" : ""} · {userLivraisons.length} livraison{userLivraisons.length > 1 ? "s" : ""}
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => setShowPlanner(true)}
-            className="px-3 py-1.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm font-medium whitespace-nowrap"
-            title="Annonce les ressources du jour et laisse Gemini proposer la ventilation optimale"
-          >
-            🪄 Planifier le jour
-          </button>
-          <button
-            onClick={() => setShowAddClient(true)}
-            className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium whitespace-nowrap"
-          >
-            + Nouveau client
-          </button>
+          {/* Boutons admin uniquement : ni un préparateur, ni un chauffeur,
+              ni un monteur n'ont à planifier la journée ou créer un client. */}
+          {currentUser?.role === "admin" && (
+            <>
+              <button
+                onClick={() => setShowPlanner(true)}
+                className="px-3 py-1.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm font-medium whitespace-nowrap"
+                title="Annonce les ressources du jour et laisse Gemini proposer la ventilation optimale"
+              >
+                🪄 Planifier le jour
+              </button>
+              <button
+                onClick={() => setShowAddClient(true)}
+                className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium whitespace-nowrap"
+              >
+                + Nouveau client
+              </button>
+            </>
+          )}
           <input
             type="text"
             value={search}
