@@ -3973,8 +3973,9 @@ function proposeTournee(payload) {
 
 // Garde-fou serveur : règles métier strictes appliquées à la sortie Gemini.
 // Règle 1 : un client = une livraison entière (pas de split).
-// Règle 2 : capacité du camion jamais dépassée.
-// Règle 3 : chaque camion activé a sa propre tournée (1 tournée par camion).
+// Règle 2 : capacité du camion jamais dépassée par tournée.
+// Règle 3 : chaque camion activé a ≥ 1 tournée (multi-tournées autorisées si la
+//           journée le permet, séquencées via ordreCamion).
 // Règle 4 : pas d'arrêt avec nbVelos = 0.
 // Mute parsed.tournees / parsed.clientsNonAffectes / parsed.warnings en place.
 function _sanitizeProposeSplit(parsed, clientsEnrichis, camions, clientsTropGros) {
@@ -4080,10 +4081,11 @@ function _buildProposeTourneePrompt(date, camions, clients, affectesExistants, m
     return "- " + c.nom + " (id=" + c.id + ", type=" + c.type + ", " + capStr + ", " + (c.peutEntrerParis ? "PEUT entrer Paris" : "NE PEUT PAS entrer Paris (>3.5T)") + noteRetrait + ")";
   }).join("\n");
 
-  var equipeStr = "ÉQUIPE DISPONIBLE CE JOUR :\n" +
-    "- Chauffeurs : " + (capa.chauffeurs.map(function(m) { return m.nom; }).join(", ") || "aucun") + "\n" +
-    "- Chefs d'équipe : " + (capa.chefs.map(function(m) { return m.nom; }).join(", ") || "aucun") + "\n" +
-    "- Monteurs : " + (capa.monteurs.map(function(m) { return m.nom; }).join(", ") || "aucun");
+  function fmtMembre(m) { return m.nom + " (id=" + m.id + ")"; }
+  var equipeStr = "ÉQUIPE DISPONIBLE CE JOUR (utilise les ids exacts dans les tournées) :\n" +
+    "- Chauffeurs (" + capa.chauffeurs.length + ") : " + (capa.chauffeurs.map(fmtMembre).join(", ") || "aucun") + "\n" +
+    "- Chefs d'équipe (" + capa.chefs.length + ") : " + (capa.chefs.map(fmtMembre).join(", ") || "aucun") + "\n" +
+    "- Monteurs (" + capa.monteurs.length + ") : " + (capa.monteurs.map(fmtMembre).join(", ") || "aucun");
 
   var clientsStr = clients.map(function(c) {
     return "- " + c.entreprise + " (id=" + c.id + ", " + c.codePostal + " " + c.ville + ", " + c.nbVelosRestants + " vélos restants, " + c.distanceKmDepot + "km dépôt" + (c.estParis ? ", PARIS intra-muros" : "") + ")";
@@ -4122,6 +4124,13 @@ function _buildProposeTourneePrompt(date, camions, clients, affectesExistants, m
     "CLIENTS À LIVRER (triés par distance dépôt croissante) :",
     clientsStr,
     "",
+    "PARAMÈTRES TEMPS (estimation pour budgéter la journée) :",
+    "- Journée de travail : 8h (480 min).",
+    "- Vitesse moyenne en ville : 30 km/h (donc 2 min par km de trajet).",
+    "- Montage : 12 min/vélo, parallélisable entre les monteurs (durée_montage = nbVelos * 12 / nbMonteurs).",
+    "- Rechargement au dépôt entre 2 tournées du même camion : 30 min (chargement + retour dépôt).",
+    "- Estimation durée d'une tournée : (km_aller_retour * 2 min/km) + (totalVelos * 12 min / nbMonteurs).",
+    "",
     "CONTRAINTES STRICTES :",
     "1. Un camion 'NE PEUT PAS entrer Paris' (>3.5T) ne peut PAS livrer un client marqué 'PARIS intra-muros'. Affecte ces clients uniquement aux camions qui PEUVENT entrer Paris.",
     "2. La somme des vélos d'une tournée ≤ capacité du camion (capaciteVelos). NE DÉPASSE JAMAIS la capacité. Vérifie le total avant de répondre.",
@@ -4130,8 +4139,14 @@ function _buildProposeTourneePrompt(date, camions, clients, affectesExistants, m
     "5. Pour chaque tournée, ordonne les clients du PLUS PROCHE au PLUS LOIN du dépôt.",
     "6. Maximise le nombre TOTAL de vélos livrés ce jour, mais SANS sacrifier la cohérence géographique : ne mélange pas un client de Bordeaux avec un client de Lille.",
     "7. INTERDICTION DE SPLITTER UN CLIENT. Chaque client doit recevoir TOUS ses vélos (nbVelosRestants) en UNE SEULE livraison dans UNE SEULE tournée. Si la commande d'un client ne tient pas dans le camion auquel tu l'affectes, choisis un autre camion plus gros, OU laisse ce client dans clientsNonAffectes avec raison='commande trop grosse pour la flotte du jour'. Le nbVelos d'un arrêt doit TOUJOURS = nbVelosRestants du client.",
-    "8. UN CAMION = UNE TOURNÉE. Chaque camion listé ci-dessus DOIT avoir EXACTEMENT 1 entrée dans tournees[] (pas plus, pas moins). Si tu n'utilises pas un camion, mets-le quand même avec arrets=[] et motifGlobal expliquant pourquoi. Ne fusionne JAMAIS les arrêts de deux camions dans une seule tournée — chaque camion roule séparément avec son propre chauffeur, son propre chef d'équipe et ses propres monteurs.",
+    "8. CHAQUE CAMION ACTIVÉ DOIT AVOIR ≥ 1 TOURNÉE. Si un camion ne sert à rien (aucun client compatible), mets-le quand même dans tournees[] avec arrets=[] et motifGlobal expliquant pourquoi. Ne fusionne JAMAIS les arrêts de deux camions différents dans une seule tournée — chaque camion roule séparément avec son propre chauffeur.",
     "9. INTERDICTION D'ARRÊT FANTÔME. Chaque arrêt doit avoir nbVelos > 0. Pas de stop avec 0 vélo.",
+    "10. MULTI-TOURNÉES PAR CAMION : si après une 1ère tournée d'un camion il reste du temps avant la fin de journée (8h - durée_T1 - 30 min rechargement ≥ durée_T2 estimée) ET qu'il reste des clients compatibles non affectés, propose une 2ème tournée pour ce camion (et ainsi de suite pour T3...). Plusieurs entrées dans tournees[] peuvent partager le même camionId — elles sont alors séquencées dans la journée. Numérote-les via le champ ordreCamion (1, 2, 3...) pour clarifier l'ordre de passage.",
+    "11. ASSIGNATION ÉQUIPE PAR TOURNÉE : pour chaque tournée tu DOIS remplir chauffeurId (1 chauffeur), chefEquipeIds (1 chef minimum), et monteurIds (≥ 1 monteur). Utilise les ids exacts du bloc ÉQUIPE DISPONIBLE. Règles d'allocation :",
+    "    a) Tournées séquentielles d'un MÊME camion (ordreCamion 1, 2, 3) : peuvent partager la même équipe (ils reviennent au dépôt entre).",
+    "    b) Tournées parallèles de camions DIFFÉRENTS : équipes DISTINCTES (un chauffeur ne peut pas conduire deux camions en même temps, idem chef).",
+    "    c) Distribue les monteurs sur les tournées parallèles selon le volume de vélos (plus de monteurs sur les grosses tournées). Exemple : 5 monteurs + 2 tournées parallèles 60v / 30v → 4 monteurs sur la grosse + 1 sur la petite (ou plus équilibré si l'effectif le permet).",
+    "    d) Si tu manques de chauffeurs/chefs pour le nombre de tournées parallèles que tu voudrais, REDUIS le nombre de tournées parallèles (mets les clients en clientsNonAffectes avec raison='équipe insuffisante').",
     "",
     "FORMAT DE RÉPONSE (JSON STRICT, rien d'autre) :",
     "{",
@@ -4139,17 +4154,22 @@ function _buildProposeTourneePrompt(date, camions, clients, affectesExistants, m
     "    {",
     "      \"camionId\": \"...\",",
     "      \"camionNom\": \"...\",",
+    "      \"ordreCamion\": 1,",
     "      \"totalVelos\": N,",
+    "      \"dureeMinutesEstimee\": N,",
+    "      \"chauffeurId\": \"...\",",
+    "      \"chefEquipeIds\": [\"...\"],",
+    "      \"monteurIds\": [\"...\", \"...\"],",
     "      \"arrets\": [",
     "        { \"clientId\": \"...\", \"entreprise\": \"...\", \"nbVelos\": N, \"distanceKmDepot\": N, \"motif\": \"raison courte\" }",
     "      ],",
-    "      \"motifGlobal\": \"pourquoi cette ventilation pour ce camion\"",
+    "      \"motifGlobal\": \"pourquoi cette ventilation pour ce camion + estimation temps\"",
     "    }",
     "  ],",
     "  \"clientsNonAffectes\": [",
-    "    { \"clientId\": \"...\", \"entreprise\": \"...\", \"nbVelos\": N, \"raison\": \"trop loin / pas de camion adapté / capacité saturée\" }",
+    "    { \"clientId\": \"...\", \"entreprise\": \"...\", \"nbVelos\": N, \"raison\": \"trop loin / pas de camion adapté / capacité saturée / équipe insuffisante\" }",
     "  ],",
-    "  \"resume\": \"phrase courte expliquant la stratégie globale\"",
+    "  \"resume\": \"phrase courte expliquant la stratégie globale et le total de tournées\"",
     "}"
   ].join("\n");
 }

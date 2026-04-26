@@ -16,7 +16,12 @@ type Proposition = {
   tournees: Array<{
     camionId: string;
     camionNom: string;
+    ordreCamion?: number;
     totalVelos: number;
+    dureeMinutesEstimee?: number;
+    chauffeurId?: string;
+    chefEquipeIds?: string[];
+    monteurIds?: string[];
     arrets: Array<{ clientId: string; entreprise: string; nbVelos: number; distanceKmDepot?: number; motif?: string }>;
     motifGlobal?: string;
   }>;
@@ -159,29 +164,35 @@ export default function DayPlannerModal({
       };
       const createdIds = (created.tournees || []).map((r) => r?.tourneeId).filter(Boolean) as string[];
 
-      // Auto-assignation équipe : on distribue les ressources cochées dans les dispos
-      // sur les tournées proposées par Gemini. 1 chauffeur + 1 chef + parts de monteurs
-      // par tournée (round-robin pour chauffeur/chef, split équilibré pour monteurs).
+      // Assignation équipe : on utilise en priorité ce que Gemini a proposé par tournée
+      // (chauffeurId, chefEquipeIds, monteurIds). Fallback round-robin sur les ressources
+      // cochées si Gemini n'a pas rempli ces champs.
       const chauffeurArr = Array.from(chauffeurIds);
       const chefArr = Array.from(chefIds);
       const monteurArr = Array.from(monteurIds);
       const nT = createdIds.length;
+      const fallbackMonteurBuckets: string[][] = Array.from({ length: nT }, () => []);
+      monteurArr.forEach((mid, i) => { fallbackMonteurBuckets[i % nT].push(mid); });
 
-      const monteurBuckets: string[][] = Array.from({ length: nT }, () => []);
-      monteurArr.forEach((mid, i) => {
-        monteurBuckets[i % nT].push(mid);
-      });
-
+      const tourneesGemini = proposition.proposition.tournees;
       await Promise.all(
-        createdIds.map((tid, i) =>
-          gasPost("assignTournee", {
+        createdIds.map((tid, i) => {
+          const t = tourneesGemini[i] || {};
+          const chauffeurId = t.chauffeurId || (chauffeurArr.length ? chauffeurArr[i % chauffeurArr.length] : "");
+          const chefEquipeIds = (t.chefEquipeIds && t.chefEquipeIds.length)
+            ? t.chefEquipeIds
+            : (chefArr.length ? [chefArr[i % chefArr.length]] : []);
+          const monteurIdsT = (t.monteurIds && t.monteurIds.length)
+            ? t.monteurIds
+            : fallbackMonteurBuckets[i];
+          return gasPost("assignTournee", {
             tourneeId: tid,
-            chauffeurId: chauffeurArr.length ? chauffeurArr[i % chauffeurArr.length] : "",
-            chefEquipeIds: chefArr.length ? [chefArr[i % chefArr.length]] : [],
-            monteurIds: monteurBuckets[i],
-            nbMonteurs: monteurBuckets[i].length,
-          }),
-        ),
+            chauffeurId,
+            chefEquipeIds,
+            monteurIds: monteurIdsT,
+            nbMonteurs: monteurIdsT.length,
+          });
+        }),
       );
 
       await refresh("livraisons");
@@ -325,7 +336,7 @@ export default function DayPlannerModal({
                 )}
               </div>
             ) : (
-              <PropositionView proposition={proposition} onApply={applyProposition} applying={applying} />
+              <PropositionView proposition={proposition} equipe={equipe} onApply={applyProposition} applying={applying} />
             )}
           </div>
         )}
@@ -380,10 +391,12 @@ function ResourceColumn({
 
 function PropositionView({
   proposition,
+  equipe,
   onApply,
   applying,
 }: {
   proposition: ProposeResponse;
+  equipe: EquipeMember[];
   onApply: () => void;
   applying: boolean;
 }) {
@@ -435,28 +448,46 @@ function PropositionView({
         </div>
       )}
 
-      {tournees.map((t, i) => (
-        <div key={i} className="border rounded-lg p-3">
-          <div className="flex items-center justify-between mb-2">
-            <div className="font-medium text-sm">
-              🚚 {t.camionNom} <span className="text-gray-500">— {t.totalVelos} vélos · {t.arrets.length} arrêt{t.arrets.length > 1 ? "s" : ""}</span>
+      {tournees.map((t, i) => {
+        const nameById = new Map<string, string>([...equipe.map((m) => [m.id, m.nom] as const)]);
+        const chauffeurNom = t.chauffeurId ? nameById.get(t.chauffeurId) || t.chauffeurId : null;
+        const chefNoms = (t.chefEquipeIds || []).map((id) => nameById.get(id) || id);
+        const monteurNoms = (t.monteurIds || []).map((id) => nameById.get(id) || id);
+        const dureeStr = t.dureeMinutesEstimee
+          ? `${Math.floor(t.dureeMinutesEstimee / 60)}h${String(t.dureeMinutesEstimee % 60).padStart(2, "0")}`
+          : null;
+        return (
+          <div key={i} className="border rounded-lg p-3">
+            <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
+              <div className="font-medium text-sm">
+                🚚 {t.camionNom}
+                {t.ordreCamion ? <span className="ml-1 text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">T{t.ordreCamion}</span> : null}
+                <span className="text-gray-500"> — {t.totalVelos} vélos · {t.arrets.length} arrêt{t.arrets.length > 1 ? "s" : ""}{dureeStr ? ` · ~${dureeStr}` : ""}</span>
+              </div>
             </div>
+            {(chauffeurNom || chefNoms.length > 0 || monteurNoms.length > 0) && (
+              <div className="text-[11px] text-gray-600 mb-2 flex flex-wrap gap-x-3 gap-y-1">
+                {chauffeurNom && <span>🚚 <span className="font-medium">{chauffeurNom}</span></span>}
+                {chefNoms.length > 0 && <span>👷 {chefNoms.join(", ")}</span>}
+                {monteurNoms.length > 0 && <span>🔧 {monteurNoms.join(", ")} ({monteurNoms.length})</span>}
+              </div>
+            )}
+            {t.motifGlobal && <div className="text-xs text-gray-600 italic mb-2">{t.motifGlobal}</div>}
+            <ol className="space-y-1">
+              {t.arrets.map((a, j) => (
+                <li key={j} className="text-xs flex items-center gap-2 px-2 py-1 bg-gray-50 rounded">
+                  <span className="font-mono w-5 text-gray-400">{j + 1}.</span>
+                  <span className="flex-1 truncate">{a.entreprise}</span>
+                  <span className="text-blue-700 font-medium whitespace-nowrap">{a.nbVelos}v</span>
+                  {a.distanceKmDepot != null && (
+                    <span className="text-gray-400 whitespace-nowrap">{a.distanceKmDepot}km</span>
+                  )}
+                </li>
+              ))}
+            </ol>
           </div>
-          {t.motifGlobal && <div className="text-xs text-gray-600 italic mb-2">{t.motifGlobal}</div>}
-          <ol className="space-y-1">
-            {t.arrets.map((a, j) => (
-              <li key={j} className="text-xs flex items-center gap-2 px-2 py-1 bg-gray-50 rounded">
-                <span className="font-mono w-5 text-gray-400">{j + 1}.</span>
-                <span className="flex-1 truncate">{a.entreprise}</span>
-                <span className="text-blue-700 font-medium whitespace-nowrap">{a.nbVelos}v</span>
-                {a.distanceKmDepot != null && (
-                  <span className="text-gray-400 whitespace-nowrap">{a.distanceKmDepot}km</span>
-                )}
-              </li>
-            ))}
-          </ol>
-        </div>
-      ))}
+        );
+      })}
 
       {nonAffectes.length > 0 && (
         <div className="border border-amber-200 bg-amber-50 rounded-lg p-3">
