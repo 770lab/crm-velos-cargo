@@ -754,6 +754,7 @@ function TourneeModal({
   const [clientSearch, setClientSearch] = useState("");
   const [progression, setProgression] = useState<{
     totals: { total: number; prepare: number; charge: number; livre: number; monte: number };
+    clients?: { clientId: string; totals: { total: number; prepare: number; charge: number; livre: number; monte: number } }[];
   } | null>(null);
 
   useEffect(() => {
@@ -1300,6 +1301,59 @@ function TourneeModal({
                       Apporteur : {clientInfo.get(l.clientId)!.apporteur}
                     </div>
                   )}
+                  {tournee.tourneeId && (() => {
+                    const cp = progression?.clients?.find((c) => c.clientId === l.clientId)?.totals;
+                    const tot = cp?.total ?? l._count.velos;
+                    const tid = encodeURIComponent(tournee.tourneeId);
+                    const stages: { key: "prepare" | "charge" | "livre" | "monte"; label: string; emoji: string; href: string | null }[] = [
+                      { key: "prepare", label: "Prép.", emoji: "📦", href: `/crm-velos-cargo/preparation?tourneeId=${tid}` },
+                      { key: "charge", label: "Charg.", emoji: "🚚", href: `/crm-velos-cargo/chargement?tourneeId=${tid}` },
+                      { key: "livre", label: "Livr.", emoji: "📍", href: `/crm-velos-cargo/livraison?tourneeId=${tid}` },
+                      { key: "monte", label: "Mont.", emoji: "🔧", href: `/crm-velos-cargo/montage` },
+                    ];
+                    return (
+                      <div className="flex flex-wrap gap-1 mt-1.5">
+                        {stages.map((s) => {
+                          const v = cp ? cp[s.key] : 0;
+                          const done = tot > 0 && v >= tot;
+                          const inProgress = v > 0 && v < tot;
+                          let cls = "bg-gray-100 text-gray-600 border-gray-200";
+                          if (done) cls = "bg-green-100 text-green-800 border-green-300";
+                          else if (inProgress) cls = "bg-blue-100 text-blue-800 border-blue-300";
+                          // Rouge si étape précédente terminée mais celle-ci à 0 et tournée marquée livrée
+                          const prevKey: typeof s.key | null =
+                            s.key === "charge" ? "prepare" :
+                            s.key === "livre" ? "charge" :
+                            s.key === "monte" ? "livre" : null;
+                          const prevDone = prevKey && cp ? cp[prevKey] >= tot : false;
+                          const isLivreeStatut = l.statut === "livree";
+                          if (isLivreeStatut && !done && (s.key === "livre" || (prevDone && v < tot))) {
+                            cls = "bg-red-100 text-red-800 border-red-300";
+                          }
+                          const content = (
+                            <span className="inline-flex items-center gap-1">
+                              <span>{s.emoji}</span>
+                              <span className="font-medium">{s.label}</span>
+                              <span className="font-mono">{v}/{tot}</span>
+                              {done && <span>✓</span>}
+                            </span>
+                          );
+                          return s.href ? (
+                            <a
+                              key={s.key}
+                              href={s.href}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              onClick={(e) => e.stopPropagation()}
+                              className={`text-[10px] px-2 py-0.5 rounded-full border ${cls} hover:opacity-80 cursor-pointer`}
+                            >{content}</a>
+                          ) : (
+                            <span key={s.key} className={`text-[10px] px-2 py-0.5 rounded-full border ${cls}`}>{content}</span>
+                          );
+                        })}
+                      </div>
+                    );
+                  })()}
                 </div>
                 <div className="text-right shrink-0">
                   <span className="text-sm font-medium bg-gray-100 px-2 py-0.5 rounded">
