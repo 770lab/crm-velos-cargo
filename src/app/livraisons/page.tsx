@@ -2,10 +2,30 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { gasGet, gasPost } from "@/lib/gas";
-import { useData, type LivraisonRow, type EquipeMember, type ClientPoint } from "@/lib/data-context";
+import { useData, type LivraisonRow, type EquipeMember, type ClientPoint, type EquipeRole } from "@/lib/data-context";
+import { useCurrentUser } from "@/lib/current-user";
 import DateLoadPicker, { type DayLoad } from "@/components/date-load-picker";
 import AddClientModal from "@/components/add-client-modal";
 import DayPlannerModal from "@/components/day-planner-modal";
+
+// Étapes accessibles par rôle.
+//   - Préparateur (ex: AXDIS) : prépare au dépôt + aide au chargement du camion.
+//   - Chauffeur (ex: Armel)   : charge le camion, livre, et peut donner un coup
+//                                de main au montage pour arrondir son salaire.
+//   - Chef d'équipe           : encadre charge/livre/montage côté terrain.
+//   - Monteur                 : monte chez le client.
+//   - Apporteur               : commercial, ne touche pas au flux logistique.
+//   - Admin                   : accès total (Yoann notamment).
+// Les boutons d'étape interdits restent visibles mais non cliquables (grisés).
+type StageKey = "prepare" | "charge" | "livre" | "monte";
+const STAGE_ACCESS: Record<EquipeRole, ReadonlySet<StageKey>> = {
+  admin: new Set<StageKey>(["prepare", "charge", "livre", "monte"]),
+  preparateur: new Set<StageKey>(["prepare", "charge"]),
+  chef: new Set<StageKey>(["charge", "livre", "monte"]),
+  chauffeur: new Set<StageKey>(["charge", "livre", "monte"]),
+  monteur: new Set<StageKey>(["monte"]),
+  apporteur: new Set<StageKey>([]),
+};
 
 type View = "semaine" | "mois" | "liste";
 
@@ -734,6 +754,12 @@ function TourneeModal({
   onChanged: () => void;
 }) {
   const { carte: allClients, equipe } = useData();
+  // Étapes autorisées pour le user connecté. Si pas de user (cas SSR ou non
+  // logué), on laisse tout cliquable — l'auth-gate gère déjà la redirection.
+  const currentUser = useCurrentUser();
+  const allowedStages: ReadonlySet<StageKey> = currentUser
+    ? STAGE_ACCESS[currentUser.role]
+    : new Set<StageKey>(["prepare", "charge", "livre", "monte"]);
   const [showRappel, setShowRappel] = useState(false);
   const clientInfo = useMemo(() => {
     const map = new Map<string, typeof allClients[number]>();
@@ -1398,6 +1424,14 @@ function TourneeModal({
                             cls = "bg-red-100 text-red-800 border-red-300";
                           }
                           const eff = effectifs[s.key];
+                          // Une étape est cliquable si :
+                          //   1. on a un href (l'étape correspond à une vraie page)
+                          //   2. ET le rôle de l'utilisateur connecté l'autorise.
+                          // Sinon, on rend un <span> grisé non cliquable. C'est ce
+                          // qui empêche AXDIS (préparateur) de marquer une livraison
+                          // ou Armel (chauffeur) de toucher à la préparation.
+                          const isAllowedForRole = allowedStages.has(s.key);
+                          const isClickable = !!s.href && isAllowedForRole;
                           const content = (
                             <span className="inline-flex items-center gap-1">
                               <span>{s.emoji}</span>
@@ -1405,19 +1439,24 @@ function TourneeModal({
                               <span className="font-mono">{v}/{tot}</span>
                               {eff > 0 && <span className="opacity-70">({eff}p)</span>}
                               {done && <span>✓</span>}
+                              {!isAllowedForRole && <span title="Action réservée à un autre rôle">🔒</span>}
                             </span>
                           );
-                          return s.href ? (
+                          return isClickable ? (
                             <a
                               key={s.key}
-                              href={s.href}
+                              href={s.href!}
                               target="_blank"
                               rel="noopener noreferrer"
                               onClick={(e) => e.stopPropagation()}
                               className={`text-[10px] px-2 py-0.5 rounded-full border ${cls} hover:opacity-80 cursor-pointer`}
                             >{content}</a>
                           ) : (
-                            <span key={s.key} className={`text-[10px] px-2 py-0.5 rounded-full border ${cls}`}>{content}</span>
+                            <span
+                              key={s.key}
+                              className={`text-[10px] px-2 py-0.5 rounded-full border ${cls} ${!isAllowedForRole ? "opacity-50 cursor-not-allowed" : ""}`}
+                              title={!isAllowedForRole ? "Action réservée à un autre rôle" : undefined}
+                            >{content}</span>
                           );
                         })}
                       </div>
