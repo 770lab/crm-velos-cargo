@@ -73,7 +73,6 @@ export default function PhotoGeminiCapture({
   onCameraToggle?: (open: boolean) => void;
 }) {
   const cameraRef = useRef<HTMLInputElement | null>(null);
-  const galleryRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [items, setItems] = useState<BatchItem[]>([]);
@@ -133,7 +132,6 @@ export default function PhotoGeminiCapture({
 
     setAdding(false);
     if (cameraRef.current) cameraRef.current.value = "";
-    if (galleryRef.current) galleryRef.current.value = "";
   }, []);
 
   const removeItem = useCallback((id: string) => {
@@ -375,36 +373,22 @@ export default function PhotoGeminiCapture({
         </div>
       ) : null}
 
-      <div className="grid grid-cols-3 gap-2">
+      <div className="grid grid-cols-2 gap-2">
         <button
           type="button"
           disabled={disabled || adding || identifying}
           onClick={openCamera}
-          className="px-2 py-3 bg-rose-600 text-white rounded-lg font-medium hover:bg-rose-700 disabled:opacity-60 text-xs leading-tight"
+          className="px-3 py-3 bg-rose-600 text-white rounded-lg font-semibold hover:bg-rose-700 disabled:opacity-60 text-sm"
         >
-          📸 Caméra
-          <br />
-          continue
+          📸 Caméra continue
         </button>
         <button
           type="button"
           disabled={disabled || adding || identifying}
           onClick={() => cameraRef.current?.click()}
-          className="px-2 py-3 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 disabled:opacity-60 text-xs leading-tight"
+          className="px-3 py-3 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 disabled:opacity-60 text-sm"
         >
-          📷 Caméra
-          <br />
-          (1 photo)
-        </button>
-        <button
-          type="button"
-          disabled={disabled || adding || identifying}
-          onClick={() => galleryRef.current?.click()}
-          className="px-2 py-3 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-60 text-xs leading-tight"
-        >
-          🖼️ Galerie
-          <br />
-          (multi)
+          📷 Photo unique
         </button>
       </div>
 
@@ -413,14 +397,6 @@ export default function PhotoGeminiCapture({
         type="file"
         accept="image/*"
         capture="environment"
-        className="hidden"
-        onChange={(e) => addFiles(e.target.files)}
-      />
-      <input
-        ref={galleryRef}
-        type="file"
-        accept="image/*"
-        multiple
         className="hidden"
         onChange={(e) => addFiles(e.target.files)}
       />
@@ -479,8 +455,8 @@ export default function PhotoGeminiCapture({
       )}
 
       <p className="text-[11px] text-gray-500 text-center">
-        📸 Caméra continue : reste ouverte, mitraille les stickers d&apos;affilée. 📷 1 photo : caméra iOS native (1 shot). 🖼️ Galerie : sélectionne des photos déjà prises.
-        Tout s&apos;empile dans la grille puis tu cliques 🤖 Identifier.
+        📸 Caméra continue : reste ouverte, mitraille les stickers d&apos;affilée puis Terminer →
+        identification automatique. 📷 Photo unique : caméra iOS native (1 shot).
       </p>
 
       {cameraOpen && (

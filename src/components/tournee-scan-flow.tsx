@@ -572,23 +572,34 @@ function Inner({ mode }: { mode: ScanMode }) {
               );
             })()}
 
-            {mode === "preparation" && (() => {
+            {mode === "preparation" && allDone && (() => {
               const cid = focusClientId ? `&clientId=${encodeURIComponent(focusClientId)}` : "";
+              const nbVelos = total;
+              const cibleNom = focusClient?.entreprise || "la tournée";
               return (
-                <div className="bg-white rounded-xl shadow p-3 mb-3 grid grid-cols-2 gap-2">
+                <div className="bg-emerald-50 border-2 border-emerald-500 rounded-xl p-4 mb-3 space-y-3">
+                  <div className="text-center space-y-1">
+                    <div className="text-3xl">🎉</div>
+                    <div className="text-emerald-900 font-bold text-base">
+                      {nbVelos}/{nbVelos} préparés pour {cibleNom}
+                    </div>
+                    <div className="text-emerald-700 text-xs">
+                      Imprime maintenant les étiquettes à coller sur le carton et le bon de livraison.
+                    </div>
+                  </div>
                   <a
                     href={`/crm-velos-cargo/etiquettes?tourneeId=${encodeURIComponent(tourneeId)}${cid}`}
                     target="_blank" rel="noopener noreferrer"
-                    className="text-center bg-gray-100 rounded-lg py-3 text-sm font-medium hover:bg-gray-200"
+                    className="block text-center bg-emerald-600 text-white rounded-lg py-3 text-sm font-semibold hover:bg-emerald-700"
                   >
-                    🏷️ Étiquettes
+                    🏷️ Imprimer les {nbVelos} étiquette{nbVelos > 1 ? "s" : ""} (10×15)
                   </a>
                   <a
                     href={`/crm-velos-cargo/bl?tourneeId=${encodeURIComponent(tourneeId)}${cid}`}
                     target="_blank" rel="noopener noreferrer"
-                    className="text-center bg-gray-100 rounded-lg py-3 text-sm font-medium hover:bg-gray-200"
+                    className="block text-center bg-white border border-emerald-400 text-emerald-800 rounded-lg py-3 text-sm font-semibold hover:bg-emerald-100"
                   >
-                    📄 Bon de livraison
+                    📄 Imprimer le bon de livraison (A4)
                   </a>
                 </div>
               );
