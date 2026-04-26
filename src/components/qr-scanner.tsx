@@ -2,10 +2,25 @@
 import { useEffect, useRef, useState } from "react";
 import { Html5Qrcode } from "html5-qrcode";
 
-// Scanner QR plein écran utilisé sur mobile au dépôt.
-// onScan reçoit le contenu décodé du QR. La caméra est fermée automatiquement
-// après chaque scan : c'est au parent de remettre le scanner en route via la
-// prop `enabled` quand il est prêt à accepter le scan suivant (évite double-scan).
+// Scanner QR utilisé au dépôt. Stratégie en 2 étages :
+// 1. BarcodeDetector natif (Safari iOS 17+, Chrome/Edge récent) — rapide,
+//    fiable, traite directement les frames vidéo HD.
+// 2. Fallback html5-qrcode (Safari iOS 16, anciens Android) — la lib
+//    n'arrive pas toujours à décoder un QR de petite taille sur iOS.
+//
+// onScan reçoit le contenu décodé. Une fois un scan détecté, le scanner se
+// met en pause et attend que le parent réactive via `enabled`.
+
+type BarcodeDetectorCtor = new (opts?: { formats?: string[] }) => {
+  detect: (source: CanvasImageSource) => Promise<{ rawValue: string }[]>;
+};
+
+function getBarcodeDetector(): BarcodeDetectorCtor | null {
+  if (typeof window === "undefined") return null;
+  const w = window as unknown as { BarcodeDetector?: BarcodeDetectorCtor };
+  return w.BarcodeDetector || null;
+}
+
 export default function QrScanner({
   enabled,
   onScan,
@@ -15,36 +30,81 @@ export default function QrScanner({
   onScan: (decoded: string) => void;
   onError?: (msg: string) => void;
 }) {
-  const containerId = "qr-scanner-region";
-  const ref = useRef<Html5Qrcode | null>(null);
   const [running, setRunning] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
+  const [mode, setMode] = useState<"native" | "fallback" | "none">("none");
+
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const fallbackContainerId = "qr-scanner-fallback";
+  const fallbackRef = useRef<Html5Qrcode | null>(null);
 
   useEffect(() => {
-    let cancelled = false;
+    if (!enabled) {
+      setRunning(false);
+      return;
+    }
 
-    const start = async () => {
-      if (!enabled) return;
+    let cancelled = false;
+    let stream: MediaStream | null = null;
+    let rafId: number | null = null;
+
+    const startNative = async (Ctor: BarcodeDetectorCtor) => {
       try {
-        const scanner = new Html5Qrcode(containerId);
-        ref.current = scanner;
+        const detector = new Ctor({ formats: ["qr_code"] });
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: false,
+        });
+        if (cancelled || !videoRef.current) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        videoRef.current.srcObject = stream;
+        videoRef.current.setAttribute("playsinline", "true");
+        await videoRef.current.play();
+        setMode("native");
+        setRunning(true);
+
+        const tick = async () => {
+          if (cancelled || !videoRef.current) return;
+          try {
+            const codes = await detector.detect(videoRef.current);
+            if (codes.length > 0) {
+              const value = codes[0].rawValue;
+              if (value) {
+                onScan(value.trim());
+                return; // stop le tick, le parent décidera de réactiver
+              }
+            }
+          } catch {
+            // erreurs ponctuelles (frame pas prête) ignorées, on continue
+          }
+          rafId = requestAnimationFrame(tick);
+        };
+        rafId = requestAnimationFrame(tick);
+      } catch (e) {
+        const msg = String(e);
+        setErrMsg(msg);
+        onError?.(msg);
+      }
+    };
+
+    const startFallback = async () => {
+      try {
+        const scanner = new Html5Qrcode(fallbackContainerId);
+        fallbackRef.current = scanner;
         await scanner.start(
-          // 1er arg : cameraIdOrConfig. html5-qrcode impose une SEULE clé ici.
-          // Pour la résolution on passe par videoConstraints dans la config (2e arg).
           { facingMode: "environment" },
           {
             fps: 10,
-            // Zone de détection dynamique : 85% de la plus petite dimension du
-            // viewport. Plus large que 280px fixe, donc l'opérateur peut cadrer
-            // sans avoir à coller le QR au centre exact.
             qrbox: (vw, vh) => {
               const size = Math.floor(Math.min(vw, vh) * 0.85);
               return { width: size, height: size };
             },
-            // Contraintes vidéo : on demande explicitement de la haute résolution.
-            // Sans ça, le navigateur fournit souvent du 640×480, où un QR BicyCode
-            // (~1cm sur le vélo) tient en ~40-60px à 30cm = moins de 2px par
-            // module → indécodable. En 1920×1080 le QR fait ~120-180px, large marge.
             videoConstraints: {
               facingMode: { ideal: "environment" },
               width: { ideal: 1920 },
@@ -57,21 +117,32 @@ export default function QrScanner({
           },
           () => {},
         );
-        if (!cancelled) setRunning(true);
+        if (!cancelled) {
+          setMode("fallback");
+          setRunning(true);
+        }
       } catch (e) {
         const msg = String(e);
         setErrMsg(msg);
         onError?.(msg);
       }
     };
-    start();
+
+    const Ctor = getBarcodeDetector();
+    if (Ctor) {
+      startNative(Ctor);
+    } else {
+      startFallback();
+    }
 
     return () => {
       cancelled = true;
-      const s = ref.current;
-      if (s) {
-        s.stop().then(() => s.clear()).catch(() => {});
-        ref.current = null;
+      if (rafId) cancelAnimationFrame(rafId);
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      const fb = fallbackRef.current;
+      if (fb) {
+        fb.stop().then(() => fb.clear()).catch(() => {});
+        fallbackRef.current = null;
       }
       setRunning(false);
     };
@@ -79,7 +150,20 @@ export default function QrScanner({
 
   return (
     <div className="relative w-full">
-      <div id={containerId} className="w-full bg-black rounded-lg overflow-hidden" style={{ minHeight: 280 }} />
+      {/* Conteneur pour BarcodeDetector natif : un simple <video> */}
+      <video
+        ref={videoRef}
+        className={`w-full bg-black rounded-lg ${mode === "native" ? "" : "hidden"}`}
+        style={{ minHeight: 280, objectFit: "cover" }}
+        playsInline
+        muted
+      />
+      {/* Conteneur pour html5-qrcode (fallback) */}
+      <div
+        id={fallbackContainerId}
+        className={`w-full bg-black rounded-lg overflow-hidden ${mode === "fallback" ? "" : "hidden"}`}
+        style={{ minHeight: 280 }}
+      />
       {!running && !errMsg && enabled && (
         <div className="absolute inset-0 flex items-center justify-center text-white text-sm">
           Initialisation caméra…
@@ -89,6 +173,7 @@ export default function QrScanner({
         <div className="absolute top-2 right-2 bg-black/60 text-white text-[11px] px-2 py-1 rounded-full flex items-center gap-1">
           <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
           recherche QR…
+          {mode === "fallback" && <span className="opacity-60 ml-1">(legacy)</span>}
         </div>
       )}
       {errMsg && (
