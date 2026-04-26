@@ -91,8 +91,8 @@ export default function QrScanner({
             // Évite les multiples détections du même code à la suite.
             duplicateInterval: 2500,
           },
-          frameSource: {
-            resolution: "full-hd",
+          frameSource: { resolution: "full-hd" },
+          locator: {
             // ROI quasi full-frame : les BicyCode ne tiennent pas toujours dans le
             // viewfinder par défaut (sticker souvent grand, mal cadré par l'opérateur).
             regionOfInterest: { left: 0.02, top: 0.05, right: 0.02, bottom: 0.05 },
