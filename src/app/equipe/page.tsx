@@ -89,19 +89,45 @@ export default function EquipePage() {
               {byRole[role].length === 0 ? (
                 <div className="text-xs text-gray-400 italic text-center py-4">Aucun membre</div>
               ) : (
-                byRole[role].map((m) => (
-                  <button
-                    key={m.id}
-                    onClick={() => setEditing(m)}
-                    className="w-full text-left border rounded-lg px-3 py-2 hover:bg-gray-50 transition-colors"
-                  >
-                    <div className="font-medium text-sm">{m.nom}</div>
-                    <div className="text-xs text-gray-500 flex gap-2 mt-0.5">
-                      {m.telephone && <span>📞 {m.telephone}</span>}
-                      {m.email && <span className="truncate">{m.email}</span>}
-                    </div>
-                  </button>
-                ))
+                byRole[role].map((m) => {
+                  // Apporteurs : pas vocation à se connecter au CRM (juste mis en
+                  // CC d'emails) → on ne signale pas l'absence de code pour eux.
+                  // Pour les autres rôles, surligner en orange permet de voir d'un
+                  // coup d'œil qui n'a pas encore de code et reste en "login libre".
+                  const needsCode = role !== "apporteur";
+                  const missingCode = needsCode && m.hasCode !== true;
+                  return (
+                    <button
+                      key={m.id}
+                      onClick={() => setEditing(m)}
+                      className={`w-full text-left border rounded-lg px-3 py-2 transition-colors ${
+                        missingCode
+                          ? "bg-orange-50 border-orange-300 hover:bg-orange-100"
+                          : "hover:bg-gray-50"
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="font-medium text-sm">{m.nom}</div>
+                        {missingCode ? (
+                          <span
+                            className="shrink-0 text-[10px] font-semibold text-orange-700 bg-orange-100 border border-orange-200 rounded px-1.5 py-0.5"
+                            title="Aucun code d'accès défini — login libre"
+                          >
+                            🔓 Sans code
+                          </span>
+                        ) : m.hasCode === true ? (
+                          <span className="shrink-0 text-[10px] text-green-700" title="Code d'accès défini">
+                            🔒
+                          </span>
+                        ) : null}
+                      </div>
+                      <div className="text-xs text-gray-500 flex gap-2 mt-0.5">
+                        {m.telephone && <span>📞 {m.telephone}</span>}
+                        {m.email && <span className="truncate">{m.email}</span>}
+                      </div>
+                    </button>
+                  );
+                })
               )}
             </div>
           </div>
