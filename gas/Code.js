@@ -270,9 +270,28 @@ function getClients(params) {
   var velosHeaders = velosData[0];
   var velosRows = velosData.slice(1);
 
+  // Charge aussi le sheet Livraisons (pour les stats blSignes / totalLivraisons).
+  // ensureLivraisonsSchema garantit que urlBlSigne existe ; sans cet appel, la
+  // colonne pourrait être absente sur les anciennes installations.
+  var livCtx = ensureLivraisonsSchema();
+  var livSheet = livCtx.sheet;
+  var livHeaders = livCtx.headers;
+  var iLivClientId = livHeaders.indexOf("clientId");
+  var iLivStatut = livHeaders.indexOf("statut");
+  var iLivUrlBl = livHeaders.indexOf("urlBlSigne");
+  var livData = livSheet ? livSheet.getDataRange().getValues() : [[]];
+  var livRows = livData.length > 1 ? livData.slice(1) : [];
+
   var search = (params && params.search) ? params.search.toLowerCase() : "";
   var filter = (params && params.filter) ? params.filter : "all";
   var planifiesByClient = computePlanifiesByClient();
+
+  // Helper : "remplie" = string non vide ou Date valide. Utilisé pour les
+  // colonnes date* et url*.
+  var nonEmpty = function(v) {
+    if (v instanceof Date) return true;
+    return !!String(v || "").trim();
+  };
 
   var clients = rows.map(function(row) {
     var c = {};
@@ -298,9 +317,44 @@ function getClients(params) {
       return true;
     });
 
+    var iDateLivraisonScan = velosHeaders.indexOf("dateLivraisonScan");
+    var iDateMontage = velosHeaders.indexOf("dateMontage");
+    var iPhotoQrPrise = velosHeaders.indexOf("photoQrPrise");
+
+    // Livraisons effectives de ce client (toutes statuts hors "annulee").
+    // On compte aussi les "planifiee" et "en_cours" pour mesurer la complétion
+    // des BL : un BL signé n'a de sens que pour une livraison qui a eu lieu,
+    // donc on ne compte que celles avec statut === "livree" comme dénominateur.
+    var clientLivs = livRows.filter(function(l) {
+      return iLivClientId >= 0 && String(l[iLivClientId]) === String(c.id);
+    });
+    var livraisonsLivrees = clientLivs.filter(function(l) {
+      return iLivStatut >= 0 && String(l[iLivStatut] || "").toLowerCase() === "livree";
+    });
+    var blSignes = livraisonsLivrees.filter(function(l) {
+      return iLivUrlBl >= 0 && nonEmpty(l[iLivUrlBl]);
+    }).length;
+
     c.stats = {
       totalVelos: clientVelos.length,
-      livres: clientVelos.filter(function(v) { return v[velosHeaders.indexOf("photoQrPrise")] === true || v[velosHeaders.indexOf("photoQrPrise")] === "TRUE"; }).length,
+      // livres = vélos scannés livrés via la page livraison (dateLivraisonScan).
+      // Fallback sur l'ancien flag photoQrPrise pour les anciennes lignes qui
+      // n'ont pas suivi le nouveau flux (rétrocompat).
+      livres: clientVelos.filter(function(v) {
+        if (iDateLivraisonScan >= 0 && nonEmpty(v[iDateLivraisonScan])) return true;
+        if (iPhotoQrPrise >= 0 && (v[iPhotoQrPrise] === true || v[iPhotoQrPrise] === "TRUE")) return true;
+        return false;
+      }).length,
+      // montes = vélos avec dateMontage remplie. Le marquage est automatique
+      // côté serveur quand les 3 photos preuve montage sont uploadées.
+      montes: clientVelos.filter(function(v) {
+        return iDateMontage >= 0 && nonEmpty(v[iDateMontage]);
+      }).length,
+      // BL signés vs livraisons effectivement livrées de ce client.
+      // (Sert à colorer le dot "BL signé" dans la liste clients : vert si
+      // toutes les livraisons livrées ont leur photo BL.)
+      blSignes: blSignes,
+      totalLivraisonsLivrees: livraisonsLivrees.length,
       certificats: clientVelos.filter(function(v) { return v[velosHeaders.indexOf("certificatRecu")] === true || v[velosHeaders.indexOf("certificatRecu")] === "TRUE"; }).length,
       facturables: clientVelos.filter(function(v) { return v[velosHeaders.indexOf("facturable")] === true || v[velosHeaders.indexOf("facturable")] === "TRUE"; }).length,
       factures: clientVelos.filter(function(v) { return v[velosHeaders.indexOf("facture")] === true || v[velosHeaders.indexOf("facture")] === "TRUE"; }).length,

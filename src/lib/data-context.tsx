@@ -47,6 +47,12 @@ interface ClientRow {
   stats: {
     totalVelos: number;
     livres: number;
+    /** Vélos avec dateMontage remplie (les 3 photos preuve montage uploadées). */
+    montes?: number;
+    /** Livraisons effectivement livrées de ce client qui ont leur photo BL signé. */
+    blSignes?: number;
+    /** Total des livraisons en statut "livree" pour ce client (dénominateur du BL). */
+    totalLivraisonsLivrees?: number;
     certificats: number;
     facturables: number;
     factures: number;

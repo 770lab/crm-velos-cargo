@@ -253,6 +253,8 @@ export default function ClientsPage() {
               <th className="text-center px-4 py-3 font-medium text-gray-600">Kbis</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Liasse</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Livrés</th>
+              <th className="text-center px-4 py-3 font-medium text-gray-600" title="Bon de livraison signé/tamponné par le client">BL signé</th>
+              <th className="text-center px-4 py-3 font-medium text-gray-600" title="Vélos avec les 3 photos preuve montage uploadées">Monté</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Bicycle</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Facturables</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Mail</th>
@@ -307,6 +309,12 @@ export default function ClientsPage() {
                 </td>
                 <td className="text-center px-4 py-3">
                   <LivresDot livres={c.stats.livres} total={c.stats.totalVelos} planifies={c.stats.planifies ?? 0} />
+                </td>
+                <td className="text-center px-4 py-3">
+                  <BlSigneDot signes={c.stats.blSignes ?? 0} totalLivrees={c.stats.totalLivraisonsLivrees ?? 0} />
+                </td>
+                <td className="text-center px-4 py-3">
+                  <MonteDot montes={c.stats.montes ?? 0} livres={c.stats.livres} total={c.stats.totalVelos} />
                 </td>
                 <td className="text-center px-4 py-3">
                   <DocCell ok={c.inscriptionBicycle} lien={c.bicycleLien ?? null} clientId={c.id} docType="inscriptionBicycle" onChange={() => refresh("clients")} />
@@ -1075,6 +1083,41 @@ function LivresDot({ livres, total, planifies }: { livres: number; total: number
   else if (planifie) cls = "bg-orange-400 ring-2 ring-orange-200";
 
   const tooltip = `${livres}/${total} livrés${planifies > 0 ? ` · +${planifies} planifié${planifies > 1 ? "s" : ""}` : ""}`;
+  return <span className={`inline-block w-3 h-3 rounded-full ${cls}`} title={tooltip} />;
+}
+
+// Dot "BL signé" — vert si toutes les livraisons effectivement livrées de ce
+// client ont leur photo BL uploadée. Gris si le client n'a pas encore de
+// livraison terminée (le BL signé n'a de sens qu'après livraison effective).
+function BlSigneDot({ signes, totalLivrees }: { signes: number; totalLivrees: number }) {
+  if (totalLivrees === 0) {
+    return <span className="inline-block w-3 h-3 rounded-full bg-gray-300" title="Aucune livraison terminée — BL pas encore d'actualité" />;
+  }
+  const tous = signes === totalLivrees;
+  const partiel = signes > 0 && !tous;
+  let cls = "bg-red-400";
+  if (tous) cls = "bg-green-500";
+  else if (partiel) cls = "bg-amber-500";
+  const tooltip = `${signes}/${totalLivrees} BL signé${totalLivrees > 1 ? "s" : ""} archivé${totalLivrees > 1 ? "s" : ""} sur Drive`;
+  return <span className={`inline-block w-3 h-3 rounded-full ${cls}`} title={tooltip} />;
+}
+
+// Dot "Monté" — vert si tous les vélos du client ont leurs 3 photos preuve
+// montage uploadées (dateMontage rempli auto par le serveur). Gris tant qu'on
+// n'a pas commencé à livrer (pas de sens de monter avant d'avoir livré).
+function MonteDot({ montes, livres, total }: { montes: number; livres: number; total: number }) {
+  if (total === 0) {
+    return <span className="inline-block w-3 h-3 rounded-full bg-gray-300" title="Aucun vélo commandé" />;
+  }
+  if (livres === 0) {
+    return <span className="inline-block w-3 h-3 rounded-full bg-gray-300" title="Pas encore livré — montage pas encore d'actualité" />;
+  }
+  const tousMontes = montes === total;
+  const partiel = montes > 0 && !tousMontes;
+  let cls = "bg-red-400";
+  if (tousMontes) cls = "bg-green-500";
+  else if (partiel) cls = "bg-amber-500";
+  const tooltip = `${montes}/${total} monté${total > 1 ? "s" : ""} (3 photos preuves chacun)`;
   return <span className={`inline-block w-3 h-3 rounded-full ${cls}`} title={tooltip} />;
 }
 
