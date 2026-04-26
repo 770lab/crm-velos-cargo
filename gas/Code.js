@@ -3029,10 +3029,10 @@ function _estParis(client) {
   return /^750\d{2}$/.test(cp) && Number(cp) >= 75001 && Number(cp) <= 75020;
 }
 
-// Retourne les clients pas encore affectés à une tournée pour la date,
-// ET décompte tous les vélos déjà engagés sur d'autres dates (planifiés
-// non annulés/livrés) du nbVelosRestants. Évite que Gemini propose un
-// client qui est déjà couvert par une tournée existante sur une autre date.
+// Retourne les clients pas encore affectés à une tournée pour la date.
+// Règle métier : 1 client = 1 livraison intégrale (pas de split entre
+// dates). Donc tout client ayant DÉJÀ une livraison pending (toute date,
+// statut non annulé/livré) est totalement exclu — il est déjà couvert.
 function _clientsLivrablesPourDate(date) {
   var allClients = getClients({}); // existant
   var clientsParId = {};
@@ -3059,13 +3059,12 @@ function _clientsLivrablesPourDate(date) {
   var iLvTourneeId = lvHeaders.indexOf("tourneeId");
 
   var affectesParTournee = {}; // tourneeId → [{clientId, nbVelos, ...}] pour LA date
-  var clientIdsAffectesPourCetteDate = {};
-  var velosEngagesAilleurs = {}; // clientId → somme nbVelos sur d'autres dates (planifié, pas livré)
+  var clientIdsAvecLivraisonPending = {}; // clientId → true si une livraison non annulée/non livrée existe N'IMPORTE OÙ
+  var dateDePending = {}; // clientId → date de la pending (la première trouvée), pour info
 
   for (var li = 1; li < lvData.length; li++) {
     var lvRow = lvData[li];
     var statut = String(lvRow[iLvStatus] || "").toLowerCase();
-    // On ignore les annulées et les déjà livrées (livrées sont déjà comptées dans nbVelosLivres)
     if (statut === "annulee" || statut === "annulée" || statut === "livrée" || statut === "livree") continue;
     var lvDate = lvRow[iLvDate];
     var lvDateStr = lvDate instanceof Date ? Utilities.formatDate(lvDate, Session.getScriptTimeZone(), "yyyy-MM-dd") : String(lvDate);
@@ -3073,31 +3072,21 @@ function _clientsLivrablesPourDate(date) {
     var tid = String(lvRow[iLvTourneeId] || "");
     var nb = Number(lvRow[iLvNbVelos]) || 0;
 
+    clientIdsAvecLivraisonPending[cid] = true;
+    if (!dateDePending[cid]) dateDePending[cid] = lvDateStr;
+
     if (lvDateStr === date) {
       if (!affectesParTournee[tid]) affectesParTournee[tid] = [];
       affectesParTournee[tid].push({ clientId: cid, nbVelos: nb, client: clientsParId[cid] || null });
-      clientIdsAffectesPourCetteDate[cid] = true;
-    } else {
-      // Engagement sur une autre date (futur ou passé non livré) → décompte
-      velosEngagesAilleurs[cid] = (velosEngagesAilleurs[cid] || 0) + nb;
     }
   }
 
   var dispo = [];
   for (var cid2 in clientsParId) {
-    if (clientIdsAffectesPourCetteDate[cid2]) continue;
+    if (clientIdsAvecLivraisonPending[cid2]) continue; // déjà couvert par une livraison existante
     var c = clientsParId[cid2];
     if (!_clientLivrable(c)) continue;
-    var nbCmd = Number(c.nbVelosCommandes || 0);
-    var nbLivre = Number(c.nbVelosLivres || 0);
-    var nbEngageAilleurs = velosEngagesAilleurs[cid2] || 0;
-    var restantReel = nbCmd - nbLivre - nbEngageAilleurs;
-    if (restantReel <= 0) continue; // tout est déjà couvert ailleurs
-    // Clone superficiel pour annoter le restant ajusté
-    var enriched = {};
-    for (var prop in c) enriched[prop] = c[prop];
-    enriched._nbVelosRestantsApresEngagements = restantReel;
-    dispo.push(enriched);
+    dispo.push(c);
   }
   return { affectes: affectesParTournee, dispo: dispo };
 }
@@ -3164,12 +3153,9 @@ function proposeTournee(payload) {
     ctx.affectes[tid].forEach(function(a) { totalAffecte += a.nbVelos; });
   });
 
-  // Enrichit les clients avec distance dépôt + nbVelosRestants après décompte
-  // des engagements existants sur d'autres dates (calculé dans _clientsLivrablesPourDate)
+  // Enrichit les clients avec distance dépôt
   var clientsEnrichis = ctx.dispo.map(function(c) {
-    var restant = c._nbVelosRestantsApresEngagements != null
-      ? c._nbVelosRestantsApresEngagements
-      : Math.max(0, Number(c.nbVelosCommandes || 0) - Number(c.nbVelosLivres || 0));
+    var restant = Math.max(0, Number(c.nbVelosCommandes || 0) - Number(c.nbVelosLivres || 0));
     return {
       id: c.id,
       entreprise: c.entreprise,
@@ -3184,6 +3170,31 @@ function proposeTournee(payload) {
 
   if (clientsEnrichis.length === 0) {
     return { ok: true, date: date, message: "Aucun client à livrer pour ce jour (déjà tout affecté ou rien à faire).", proposition: { tournees: [] } };
+  }
+
+  // Règle : 1 client = 1 livraison intégrale. Donc tout client dont la commande
+  // dépasse la capa max d'un seul camion motorisé dispo est livrable uniquement
+  // en retrait client. Si pas de retrait dispo → impossible aujourd'hui.
+  var camionsMotorises = camionsAvecRestant.filter(function(c) { return c.type !== "retrait"; });
+  var capaMaxMotorisee = camionsMotorises.reduce(function(m, c) { return Math.max(m, c.capaciteVelos || 0); }, 0);
+  var aRetrait = camionsAvecRestant.some(function(c) { return c.type === "retrait"; });
+
+  var clientsTropGros = [];
+  if (!aRetrait) {
+    // Filtre les clients > capa max motorisée et les surface
+    clientsEnrichis = clientsEnrichis.filter(function(c) {
+      if (c.nbVelosRestants > capaMaxMotorisee) {
+        clientsTropGros.push({
+          clientId: c.id,
+          entreprise: c.entreprise,
+          ville: c.ville,
+          nbVelosRestants: c.nbVelosRestants,
+          raison: "Commande de " + c.nbVelosRestants + "v > capacité max camion dispo (" + capaMaxMotorisee + "v) et pas de retrait client. Active un plus gros camion ou le retrait."
+        });
+        return false;
+      }
+      return true;
+    });
   }
 
   // Tri par distance dépôt croissante (input sorted pour Gemini)
@@ -3241,6 +3252,7 @@ function proposeTournee(payload) {
               dejaAffecte: totalAffecte
             },
             clientsCandidats: clientsEnrichis.length,
+            clientsTropGros: clientsTropGros,
             proposition: parsed
           };
         } catch (parseErr) {
@@ -3321,7 +3333,7 @@ function _buildProposeTourneePrompt(date, camions, clients, affectesExistants, m
     "4. Boucle Paris en priorité (vide les arrondissements 75001-75020 d'abord avec les petits camions, libère les chauffeurs vite).",
     "5. Pour chaque tournée, ordonne les clients du PLUS PROCHE au PLUS LOIN du dépôt.",
     "6. Maximise le nombre TOTAL de vélos livrés ce jour, mais SANS sacrifier la cohérence géographique : ne mélange pas un client de Bordeaux avec un client de Lille.",
-    "7. Si un client a + de vélos restants que la capacité, c'est OK de ne livrer qu'une partie (le reste = livraison ultérieure).",
+    "7. INTERDICTION DE SPLITTER UN CLIENT. Chaque client doit recevoir TOUS ses vélos (nbVelosRestants) en UNE SEULE livraison dans UNE SEULE tournée. Si la commande d'un client ne tient pas dans le camion auquel tu l'affectes, choisis un autre camion plus gros, OU laisse ce client dans clientsNonAffectes avec raison='commande trop grosse pour la flotte du jour'. Le nbVelos d'un arrêt doit TOUJOURS = nbVelosRestants du client.",
     "",
     "FORMAT DE RÉPONSE (JSON STRICT, rien d'autre) :",
     "{",

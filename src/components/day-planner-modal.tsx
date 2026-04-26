@@ -30,7 +30,9 @@ type ProposeResponse = {
   mode?: string;
   capacite?: { camions: Camion[]; chauffeurs: number; chefs: number; monteurs: number; capaciteTotaleVelos: number; dejaAffecte: number };
   clientsCandidats?: number;
+  clientsTropGros?: { clientId: string; entreprise: string; ville?: string; nbVelosRestants: number; raison: string }[];
   proposition?: Proposition;
+  message?: string;
   error?: string;
   raw?: string;
   parseError?: string;
@@ -357,12 +359,13 @@ function PropositionView({
 }) {
   const tournees = proposition.proposition?.tournees || [];
   const nonAffectes = proposition.proposition?.clientsNonAffectes || [];
+  const tropGros = proposition.clientsTropGros || [];
   const totalProposes = tournees.reduce((s, t) => s + (t.totalVelos || 0), 0);
 
   return (
     <div className="space-y-3">
       <div className="bg-purple-50 border border-purple-200 rounded-lg p-3">
-        <div className="text-sm text-purple-900 font-medium mb-1">{proposition.proposition?.resume || "Proposition Gemini"}</div>
+        <div className="text-sm text-purple-900 font-medium mb-1">{proposition.proposition?.resume || proposition.message || "Proposition Gemini"}</div>
         <div className="text-xs text-purple-700">
           {tournees.length} tournée{tournees.length > 1 ? "s" : ""} · {totalProposes} vélos proposés
           {proposition.capacite && (
@@ -370,6 +373,21 @@ function PropositionView({
           )}
         </div>
       </div>
+
+      {tropGros.length > 0 && (
+        <div className="border border-orange-300 bg-orange-50 rounded-lg p-3">
+          <div className="text-sm font-medium text-orange-900 mb-2">
+            ⚠️ {tropGros.length} client{tropGros.length > 1 ? "s" : ""} trop gros pour la flotte du jour
+          </div>
+          <ul className="space-y-1">
+            {tropGros.map((c, i) => (
+              <li key={i} className="text-xs text-orange-800">
+                · <span className="font-medium">{c.entreprise}</span> ({c.nbVelosRestants}v) — {c.raison}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {tournees.map((t, i) => (
         <div key={i} className="border rounded-lg p-3">
