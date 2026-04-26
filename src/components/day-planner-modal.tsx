@@ -407,6 +407,19 @@ function ResourceColumn({
   );
 }
 
+// Palette couleur identique à celle de l'écran Livraisons (modePalette dans
+// livraisons/page.tsx) : convention historique du CRM, le user reconnaît les
+// camions à l'œil par leur couleur dans les écrans manuels.
+// Note : le type Camion stocke "petit" alors que les modes livraison utilisent
+// "camionnette" — on mappe les deux vers la même teinte teal.
+function camionPalette(type: string | undefined) {
+  if (type === "gros") return { border: "border-indigo-300", chip: "bg-indigo-100 text-indigo-900", dot: "bg-indigo-500" };
+  if (type === "moyen") return { border: "border-orange-300", chip: "bg-orange-100 text-orange-900", dot: "bg-orange-500" };
+  if (type === "petit" || type === "camionnette") return { border: "border-teal-300", chip: "bg-teal-100 text-teal-900", dot: "bg-teal-500" };
+  if (type === "retrait") return { border: "border-purple-300", chip: "bg-purple-100 text-purple-900", dot: "bg-purple-500" };
+  return { border: "border-gray-300", chip: "bg-gray-100 text-gray-800", dot: "bg-gray-400" };
+}
+
 function PropositionView({
   proposition,
   equipe,
@@ -418,10 +431,43 @@ function PropositionView({
   onApply: () => void;
   applying: boolean;
 }) {
+  const { flotte } = useData();
   const tournees = proposition.proposition?.tournees || [];
   const nonAffectes = proposition.proposition?.clientsNonAffectes || [];
   const tropGros = proposition.clientsTropGros || [];
   const totalProposes = tournees.reduce((s, t) => s + (t.totalVelos || 0), 0);
+
+  // Lookup camionId → type pour appliquer la couleur (gros/moyen/petit/retrait).
+  const camionTypeById = useMemo(() => {
+    const m = new Map<string, string>();
+    flotte.forEach((c) => m.set(c.id, c.type));
+    return m;
+  }, [flotte]);
+
+  // Récap équipe DÉDOUBLONNÉ. Gemini peut affecter le même monteur à plusieurs
+  // tournées séquentielles d'un camion (règle 11.a du prompt) : sommer
+  // monteurIds.length sur toutes les tournées gonfle artificiellement le total.
+  // Ici on compte les personnes uniques.
+  const uniqueChauffeurs = useMemo(() => {
+    const s = new Set<string>();
+    tournees.forEach((t) => { if (t.chauffeurId) s.add(t.chauffeurId); });
+    return s.size;
+  }, [tournees]);
+  const uniqueChefs = useMemo(() => {
+    const s = new Set<string>();
+    tournees.forEach((t) => (t.chefEquipeIds || []).forEach((id) => s.add(id)));
+    return s.size;
+  }, [tournees]);
+  const uniqueMonteurs = useMemo(() => {
+    const s = new Set<string>();
+    tournees.forEach((t) => (t.monteurIds || []).forEach((id) => s.add(id)));
+    return s.size;
+  }, [tournees]);
+
+  // Tournées qui dépassent la journée de 8h (480 min). Le prompt GAS demande à
+  // Gemini de splitter, mais il triche parfois — on flague visuellement pour
+  // que le user voie tout de suite et puisse relancer la proposition.
+  const tourneesTropLongues = tournees.filter((t) => (t.dureeMinutesEstimee || 0) > 480).length;
 
   return (
     <div className="space-y-3">
@@ -433,7 +479,16 @@ function PropositionView({
             <> · capacité totale {proposition.capacite.capaciteTotaleVelos}v · {proposition.clientsCandidats} clients candidats</>
           )}
         </div>
+        <div className="text-xs text-purple-700 mt-1">
+          Équipe mobilisée (personnes uniques) : 🚚 {uniqueChauffeurs} chauffeur{uniqueChauffeurs > 1 ? "s" : ""} · 👷 {uniqueChefs} chef{uniqueChefs > 1 ? "s" : ""} · 🔧 {uniqueMonteurs} monteur{uniqueMonteurs > 1 ? "s" : ""}
+        </div>
       </div>
+
+      {tourneesTropLongues > 0 && (
+        <div className="border border-red-300 bg-red-50 rounded-lg p-3 text-sm text-red-900">
+          ⏰ {tourneesTropLongues} tournée{tourneesTropLongues > 1 ? "s" : ""} dépasse{tourneesTropLongues > 1 ? "nt" : ""} 8h (480 min). Gemini aurait dû splitter — relance la proposition ou ajoute des camions/monteurs.
+        </div>
+      )}
 
       {tropGros.length > 0 && (
         <div className="border border-orange-300 bg-orange-50 rounded-lg p-3">
@@ -474,13 +529,23 @@ function PropositionView({
         const dureeStr = t.dureeMinutesEstimee
           ? `${Math.floor(t.dureeMinutesEstimee / 60)}h${String(t.dureeMinutesEstimee % 60).padStart(2, "0")}`
           : null;
+        const dureeOver = (t.dureeMinutesEstimee || 0) > 480;
+        const palette = camionPalette(camionTypeById.get(t.camionId));
         return (
-          <div key={i} className="border rounded-lg p-3">
+          <div key={i} className={`border-2 rounded-lg p-3 ${palette.border}`}>
             <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
-              <div className="font-medium text-sm">
-                🚚 {t.camionNom}
-                {t.ordreCamion ? <span className="ml-1 text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">T{t.ordreCamion}</span> : null}
-                <span className="text-gray-500"> — {t.totalVelos} vélos · {t.arrets.length} arrêt{t.arrets.length > 1 ? "s" : ""}{dureeStr ? ` · ~${dureeStr}` : ""}</span>
+              <div className="font-medium text-sm flex items-center gap-2 flex-wrap">
+                <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs ${palette.chip}`}>
+                  <span className={`w-2 h-2 rounded-full ${palette.dot}`} />
+                  🚚 {t.camionNom}
+                </span>
+                {t.ordreCamion ? <span className="text-xs px-1.5 py-0.5 bg-blue-100 text-blue-700 rounded">T{t.ordreCamion}</span> : null}
+                <span className="text-gray-500"> — {t.totalVelos} vélos · {t.arrets.length} arrêt{t.arrets.length > 1 ? "s" : ""}</span>
+                {dureeStr && (
+                  <span className={dureeOver ? "text-red-700 font-semibold" : "text-gray-500"}>
+                    · ~{dureeStr}{dureeOver ? " ⚠️" : ""}
+                  </span>
+                )}
               </div>
             </div>
             {(chauffeurNom || chefNoms.length > 0 || monteurNoms.length > 0) && (

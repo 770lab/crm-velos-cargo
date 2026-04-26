@@ -4332,6 +4332,8 @@ function _buildProposeTourneePrompt(date, camions, clients, affectesExistants, m
     "    b) Tournées parallèles de camions DIFFÉRENTS : équipes DISTINCTES (un chauffeur ne peut pas conduire deux camions en même temps, idem chef).",
     "    c) Distribue les monteurs sur les tournées parallèles selon le volume de vélos (plus de monteurs sur les grosses tournées). Exemple : 5 monteurs + 2 tournées parallèles 60v / 30v → 4 monteurs sur la grosse + 1 sur la petite (ou plus équilibré si l'effectif le permet).",
     "    d) Si tu manques de chauffeurs/chefs pour le nombre de tournées parallèles que tu voudrais, REDUIS le nombre de tournées parallèles (mets les clients en clientsNonAffectes avec raison='équipe insuffisante').",
+    "12. PLAFOND DUR PAR TOURNÉE INDIVIDUELLE : dureeMinutesEstimee ≤ 480 min (8h). Si tu calcules > 480 pour une tournée donnée, tu DOIS la découper en T1 + T2 (même camionId, ordreCamion 1 puis 2) en répartissant les arrêts entre elles. Vérifie chaque dureeMinutesEstimee AVANT de répondre. Les tournées de 9h, 10h, 11h sont INTERDITES, pas de cas spécial.",
+    "13. RÈGLES MONTEURS — pas de double comptage : un monteur peut figurer dans plusieurs tournées séquentielles d'un MÊME camion (règle 11.a) — c'est attendu. Mais sur les tournées PARALLÈLES (camions différents qui roulent simultanément), un monteur donné NE PEUT apparaître QUE dans UNE seule de ces tournées parallèles. Sur la journée entière, le nombre de monteurs uniques (déduplication par id) doit être ≤ au nombre de monteurs disponibles annoncé dans ÉQUIPE DISPONIBLE.",
     "",
     "FORMAT DE RÉPONSE (JSON STRICT, rien d'autre) :",
     "{",
