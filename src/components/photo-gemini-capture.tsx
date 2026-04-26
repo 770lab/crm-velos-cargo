@@ -9,9 +9,10 @@ import { gasUpload } from "@/lib/gas";
 // redondance, et le serveur valide chaque code par regex avant de toucher au
 // sheet → zéro hallucination dans la base.
 //
-// Phase 1 : 1 photo = 1 sticker. Phase 2 : 1 photo = N stickers (le prompt
-// Gemini retourne déjà une liste, donc Phase 2 est gratuite). Phase 3 :
-// multi-upload (input multiple), géré via une boucle de fichiers.
+// Pattern UX inspiré du Multi-pièces de luze-vintage-manager : on AJOUTE les
+// photos à un batch (vignette + status pending), l'utilisateur peut retirer
+// les flous, puis clique "🤖 Identifier" pour lancer l'analyse Gemini en
+// parallèle. Chaque carte se met à jour live.
 
 export type GeminiEtape = "preparation" | "chargement" | "livraisonScan";
 
@@ -25,10 +26,16 @@ type ExtractResp =
     }
   | { error: string; rawText?: string; body?: string };
 
-type PhotoStatus =
-  | { kind: "idle" }
-  | { kind: "uploading"; index: number; total: number; fileName: string }
-  | { kind: "done"; resp: ExtractResp; fileName: string };
+type BatchItem = {
+  id: string;
+  fileName: string;
+  thumbDataUrl: string;
+  base64: string;
+  mimeType: string;
+  status: "pending" | "processing" | "done" | "error";
+  resp?: ExtractResp;
+  errorMsg?: string;
+};
 
 export type GeminiClientOption = {
   clientId: string;
@@ -57,67 +64,106 @@ export default function PhotoGeminiCapture({
 }) {
   const cameraRef = useRef<HTMLInputElement | null>(null);
   const galleryRef = useRef<HTMLInputElement | null>(null);
-  const [history, setHistory] = useState<PhotoStatus[]>([]);
-  const [busy, setBusy] = useState(false);
+  const [items, setItems] = useState<BatchItem[]>([]);
+  const [adding, setAdding] = useState(false);
+  const [identifying, setIdentifying] = useState(false);
   const [forceClientId, setForceClientId] = useState<string>("");
 
-  const handleFiles = useCallback(
-    async (files: FileList | null) => {
-      if (!files || files.length === 0) return;
-      if (!tourneeId) return;
-      setBusy(true);
-      const fileArr = Array.from(files);
-      const total = fileArr.length;
+  const addFiles = useCallback(async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    setAdding(true);
+    const fileArr = Array.from(files);
 
-      // Préparer toutes les entrées en "uploading" d'un coup pour que l'opérateur
-      // voie tout de suite combien de photos vont être traitées.
-      const initial: PhotoStatus[] = fileArr.map((f, i) => ({
-        kind: "uploading",
-        index: i + 1,
-        total,
-        fileName: f.name || `photo-${i + 1}`,
-      }));
-      setHistory((h) => [...initial, ...h]);
+    // Compression en parallèle pendant que l'utilisateur regarde déjà la grille
+    // (les vignettes apparaissent dès qu'une compression est terminée). 800px
+    // / JPEG 0.7 = ~50-80 KB par image, taille suffisante pour Gemini Vision et
+    // ~3× plus rapide à uploader que 1280/0.8.
+    await Promise.all(
+      fileArr.map(async (file) => {
+        try {
+          const compressed = await compressImage(file, 800, 0.7);
+          const item: BatchItem = {
+            id: makeId(),
+            fileName: file.name || "photo.jpg",
+            thumbDataUrl: `data:${compressed.mimeType};base64,${compressed.base64}`,
+            base64: compressed.base64,
+            mimeType: compressed.mimeType,
+            status: "pending",
+          };
+          setItems((prev) => [...prev, item]);
+        } catch (e) {
+          const item: BatchItem = {
+            id: makeId(),
+            fileName: file.name || "photo.jpg",
+            thumbDataUrl: "",
+            base64: "",
+            mimeType: "image/jpeg",
+            status: "error",
+            errorMsg: e instanceof Error ? e.message : String(e),
+          };
+          setItems((prev) => [...prev, item]);
+        }
+      }),
+    );
 
-      // On lance les uploads en PARALLÈLE — Gemini Vision encaisse, le bottleneck
-      // est sur GAS UrlFetchApp donc paralléliser raccourcit drastiquement le
-      // temps total pour 10-60 photos. setHistory met à jour chaque ligne dès
-      // qu'une réponse arrive (pas de blocage en cascade).
-      const results = await Promise.all(
-        fileArr.map(async (file, i) => {
-          const fileName = file.name || `photo-${i + 1}`;
-          try {
-            const compressed = await compressImage(file, 1280, 0.8);
-            const resp = (await gasUpload("extractFnuciFromImage", {
-              imageBase64: compressed.base64,
-              mimeType: compressed.mimeType,
-              tourneeId,
-              userId,
-              etape,
-              forceClientId: forceClientId || undefined,
-            })) as ExtractResp;
-            const done: PhotoStatus = { kind: "done", resp, fileName };
-            setHistory((h) => updateAt(h, total - i - 1 + (h.length - total), done));
-            return done;
-          } catch (e) {
-            const done: PhotoStatus = {
-              kind: "done",
-              resp: { error: e instanceof Error ? e.message : String(e) },
-              fileName,
-            };
-            setHistory((h) => updateAt(h, total - i - 1 + (h.length - total), done));
-            return done;
-          }
-        }),
-      );
-      void results;
-      setBusy(false);
-      if (onAfter) onAfter();
-      if (cameraRef.current) cameraRef.current.value = "";
-      if (galleryRef.current) galleryRef.current.value = "";
-    },
-    [tourneeId, userId, etape, onAfter, forceClientId],
-  );
+    setAdding(false);
+    if (cameraRef.current) cameraRef.current.value = "";
+    if (galleryRef.current) galleryRef.current.value = "";
+  }, []);
+
+  const removeItem = useCallback((id: string) => {
+    setItems((prev) => prev.filter((it) => it.id !== id));
+  }, []);
+
+  const clearAll = useCallback(() => {
+    setItems([]);
+  }, []);
+
+  const identifyAll = useCallback(async () => {
+    if (!tourneeId) return;
+    const pendingIds = items.filter((i) => i.status === "pending").map((i) => i.id);
+    if (pendingIds.length === 0) return;
+    setIdentifying(true);
+    setItems((prev) =>
+      prev.map((i) => (pendingIds.includes(i.id) ? { ...i, status: "processing" } : i)),
+    );
+
+    await Promise.all(
+      pendingIds.map(async (id) => {
+        const item = items.find((it) => it.id === id);
+        if (!item) return;
+        try {
+          const resp = (await gasUpload("extractFnuciFromImage", {
+            imageBase64: item.base64,
+            mimeType: item.mimeType,
+            tourneeId,
+            userId,
+            etape,
+            forceClientId: forceClientId || undefined,
+          })) as ExtractResp;
+          setItems((prev) =>
+            prev.map((it) => (it.id === id ? { ...it, status: "done", resp } : it)),
+          );
+        } catch (e) {
+          setItems((prev) =>
+            prev.map((it) =>
+              it.id === id
+                ? { ...it, status: "error", errorMsg: e instanceof Error ? e.message : String(e) }
+                : it,
+            ),
+          );
+        }
+      }),
+    );
+
+    setIdentifying(false);
+    if (onAfter) onAfter();
+  }, [items, tourneeId, userId, etape, forceClientId, onAfter]);
+
+  const pendingCount = items.filter((i) => i.status === "pending").length;
+  const processingCount = items.filter((i) => i.status === "processing").length;
+  const doneCount = items.filter((i) => i.status === "done").length;
+  const errorCount = items.filter((i) => i.status === "error").length;
 
   return (
     <div className="space-y-2">
@@ -143,10 +189,11 @@ export default function PhotoGeminiCapture({
           </select>
         </div>
       )}
+
       <div className="grid grid-cols-2 gap-2">
         <button
           type="button"
-          disabled={disabled || busy}
+          disabled={disabled || adding || identifying}
           onClick={() => cameraRef.current?.click()}
           className="px-3 py-3 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 disabled:opacity-60 text-sm"
         >
@@ -154,25 +201,21 @@ export default function PhotoGeminiCapture({
         </button>
         <button
           type="button"
-          disabled={disabled || busy}
+          disabled={disabled || adding || identifying}
           onClick={() => galleryRef.current?.click()}
           className="px-3 py-3 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 disabled:opacity-60 text-sm"
         >
           🖼️ Galerie (plusieurs)
         </button>
       </div>
-      {busy && (
-        <div className="text-center text-xs text-amber-700 font-medium animate-pulse">
-          📤 Gemini analyse en parallèle…
-        </div>
-      )}
+
       <input
         ref={cameraRef}
         type="file"
         accept="image/*"
         capture="environment"
         className="hidden"
-        onChange={(e) => handleFiles(e.target.files)}
+        onChange={(e) => addFiles(e.target.files)}
       />
       <input
         ref={galleryRef}
@@ -180,117 +223,191 @@ export default function PhotoGeminiCapture({
         accept="image/*"
         multiple
         className="hidden"
-        onChange={(e) => handleFiles(e.target.files)}
+        onChange={(e) => addFiles(e.target.files)}
       />
-      <p className="text-[11px] text-gray-500 text-center">
-        📷 Caméra : 1 photo à la fois. 🖼️ Galerie : sélectionne plusieurs photos d'un coup (déjà prises avec l'app Photo iOS). Gemini lit chaque code et marque chaque vélo.
-      </p>
 
-      {history.length > 0 && (
-        <div className="mt-2 space-y-2 max-h-96 overflow-y-auto">
-          {history.map((h, i) => (
-            <PhotoResultCard key={i} status={h} />
-          ))}
+      {adding && (
+        <div className="text-center text-xs text-gray-600 italic">
+          📥 Préparation des images…
         </div>
       )}
-    </div>
-  );
-}
 
-function updateAt<T>(arr: T[], index: number, value: T): T[] {
-  if (index < 0 || index >= arr.length) return arr;
-  const copy = arr.slice();
-  copy[index] = value;
-  return copy;
-}
-
-function PhotoResultCard({ status }: { status: PhotoStatus }) {
-  if (status.kind === "idle") return null;
-  if (status.kind === "uploading") {
-    return (
-      <div className="text-xs bg-blue-50 border border-blue-200 rounded px-2 py-1.5 text-blue-800">
-        📤 {status.fileName} ({status.index}/{status.total}) — Gemini analyse…
-      </div>
-    );
-  }
-  const resp = status.resp;
-  if ("error" in resp) {
-    return (
-      <div className="text-xs bg-red-50 border border-red-200 rounded px-2 py-1.5 text-red-800">
-        ❌ {status.fileName} — {resp.error}
-        {resp.rawText && (
-          <div className="mt-1 font-mono text-[10px] break-all opacity-70">
-            raw: {resp.rawText.slice(0, 200)}
+      {items.length > 0 && (
+        <>
+          <div className="flex items-center justify-between gap-2 bg-gray-50 border border-gray-200 rounded-lg p-2 text-xs">
+            <div className="text-gray-700">
+              <span className="font-semibold">{items.length}</span> photo{items.length > 1 ? "s" : ""}
+              {pendingCount > 0 && <span className="text-blue-700"> · {pendingCount} en attente</span>}
+              {processingCount > 0 && <span className="text-amber-700"> · {processingCount} en cours</span>}
+              {doneCount > 0 && <span className="text-green-700"> · {doneCount} OK</span>}
+              {errorCount > 0 && <span className="text-red-700"> · {errorCount} erreur{errorCount > 1 ? "s" : ""}</span>}
+            </div>
+            <button
+              type="button"
+              onClick={clearAll}
+              disabled={identifying}
+              className="text-gray-500 hover:text-gray-800 underline disabled:opacity-50"
+            >
+              effacer
+            </button>
           </div>
-        )}
+
+          <button
+            type="button"
+            disabled={disabled || identifying || pendingCount === 0}
+            onClick={identifyAll}
+            className="w-full px-4 py-3 bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 disabled:opacity-50 text-sm"
+          >
+            {identifying
+              ? `🤖 Identification ${doneCount + errorCount}/${items.length}…`
+              : pendingCount > 0
+                ? `🤖 Identifier les ${pendingCount} photo${pendingCount > 1 ? "s" : ""}`
+                : "✅ Toutes les photos identifiées"}
+          </button>
+
+          <div className="grid grid-cols-2 gap-2 mt-1">
+            {items.map((it) => (
+              <BatchItemCard
+                key={it.id}
+                item={it}
+                onRemove={() => removeItem(it.id)}
+                canRemove={!identifying && it.status !== "processing"}
+              />
+            ))}
+          </div>
+        </>
+      )}
+
+      <p className="text-[11px] text-gray-500 text-center">
+        📷 Caméra : 1 photo à la fois. 🖼️ Galerie : sélectionne plusieurs photos d&apos;un coup.
+        Les photos s&apos;empilent puis tu cliques 🤖 Identifier pour lancer Gemini sur tout le lot en parallèle.
+      </p>
+    </div>
+  );
+}
+
+function BatchItemCard({
+  item,
+  onRemove,
+  canRemove,
+}: {
+  item: BatchItem;
+  onRemove: () => void;
+  canRemove: boolean;
+}) {
+  const borderClass =
+    item.status === "done"
+      ? "border-green-300 bg-green-50"
+      : item.status === "error"
+        ? "border-red-300 bg-red-50"
+        : item.status === "processing"
+          ? "border-amber-300 bg-amber-50"
+          : "border-gray-300 bg-white";
+
+  return (
+    <div className={`relative border rounded-lg overflow-hidden text-[11px] ${borderClass}`}>
+      {item.thumbDataUrl ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={item.thumbDataUrl} alt={item.fileName} className="w-full h-24 object-cover" />
+      ) : (
+        <div className="w-full h-24 bg-gray-100 flex items-center justify-center text-gray-400">
+          (pas de vignette)
+        </div>
+      )}
+      {canRemove && (
+        <button
+          type="button"
+          onClick={onRemove}
+          className="absolute top-1 right-1 bg-black/60 text-white rounded-full w-5 h-5 flex items-center justify-center text-[10px] hover:bg-black/80"
+          title="Retirer"
+        >
+          ×
+        </button>
+      )}
+      <div className="px-2 py-1.5 space-y-0.5">
+        <StatusBadge item={item} />
+        <ResultDetail item={item} />
+      </div>
+    </div>
+  );
+}
+
+function StatusBadge({ item }: { item: BatchItem }) {
+  if (item.status === "pending") {
+    return <div className="text-blue-700">⏳ En attente</div>;
+  }
+  if (item.status === "processing") {
+    return <div className="text-amber-700 animate-pulse">🤖 Gemini analyse…</div>;
+  }
+  if (item.status === "error") {
+    return <div className="text-red-700">❌ {item.errorMsg || "Erreur"}</div>;
+  }
+  // done
+  const resp = item.resp;
+  if (!resp || ("error" in resp && resp.error)) {
+    return <div className="text-red-700">❌ {(resp && "error" in resp && resp.error) || "Réponse vide"}</div>;
+  }
+  if ("ok" in resp) {
+    const okCount = resp.results.filter((r) => {
+      const x = r.result as { ok?: boolean } | null;
+      return x && x.ok === true;
+    }).length;
+    return (
+      <div className="text-green-700 font-medium">
+        ✓ {okCount}/{resp.results.length} marqué{okCount > 1 ? "s" : ""}
       </div>
     );
   }
+  return null;
+}
+
+function ResultDetail({ item }: { item: BatchItem }) {
+  if (item.status !== "done" || !item.resp || "error" in item.resp) return null;
+  const resp = item.resp;
+  if (!("ok" in resp)) return null;
+  if (resp.results.length === 0) {
+    return <div className="text-gray-500 italic">Aucun FNUCI valide.</div>;
+  }
   return (
-    <div className="text-xs bg-gray-50 border border-gray-200 rounded px-2 py-2 space-y-1">
-      <div className="font-medium text-gray-800">
-        📷 {status.fileName} — {resp.extracted.length} code{resp.extracted.length > 1 ? "s" : ""} extrait
-        {resp.extracted.length > 1 ? "s" : ""}
-      </div>
-      {resp.results.length === 0 && (
-        <div className="text-gray-500 italic">Aucun FNUCI valide trouvé.</div>
-      )}
-      {resp.results.map((r, i) => (
-        <FnuciResultLine key={i} fnuci={r.fnuci} result={r.result} />
-      ))}
+    <div className="space-y-0.5">
+      {resp.results.map((r, i) => {
+        const result = r.result as
+          | { ok?: true; alreadyDone?: boolean; clientName?: string | null }
+          | { error: string; code?: string }
+          | null;
+        if (result && "ok" in result && result.ok) {
+          return (
+            <div key={i} className="font-mono text-[10px] text-green-800 truncate">
+              {r.fnuci}
+              {result.clientName ? ` · ${result.clientName}` : ""}
+            </div>
+          );
+        }
+        return (
+          <div key={i} className="font-mono text-[10px] text-red-700 truncate">
+            {r.fnuci} — {(result && "error" in result && (result.code || result.error)) || "?"}
+          </div>
+        );
+      })}
       {resp.invalid.length > 0 && (
-        <div className="text-orange-700 text-[11px]">
-          ⚠️ Codes ignorés (format invalide) : {resp.invalid.join(", ")}
+        <div className="text-orange-700 text-[10px] italic">
+          ⚠️ {resp.invalid.length} code{resp.invalid.length > 1 ? "s" : ""} ignoré{resp.invalid.length > 1 ? "s" : ""}
         </div>
       )}
     </div>
   );
 }
 
-function FnuciResultLine({ fnuci, result }: { fnuci: string; result: unknown }) {
-  const r = result as
-    | {
-        ok?: true;
-        alreadyDone?: boolean;
-        clientName?: string | null;
-        date?: string;
-      }
-    | { error: string; code?: string };
-
-  if (r && "ok" in r && r.ok) {
-    const tag = r.alreadyDone ? "↺ déjà fait" : "✓ marqué";
-    const color = r.alreadyDone ? "text-amber-700" : "text-green-700";
-    return (
-      <div className={`flex items-center justify-between gap-2 ${color}`}>
-        <span className="font-mono">{fnuci}</span>
-        <span className="text-[11px]">
-          {tag}
-          {r.clientName ? ` · ${r.clientName}` : ""}
-        </span>
-      </div>
-    );
+function makeId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
   }
-  if (r && "error" in r) {
-    return (
-      <div className="flex items-center justify-between gap-2 text-red-700">
-        <span className="font-mono">{fnuci}</span>
-        <span className="text-[11px]">
-          ❌ {r.code || r.error}
-        </span>
-      </div>
-    );
-  }
-  return (
-    <div className="flex items-center justify-between gap-2 text-gray-600">
-      <span className="font-mono">{fnuci}</span>
-      <span className="text-[11px]">?</span>
-    </div>
-  );
+  return `id-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
 // Resize l'image à maxSize px (côté le plus long) et ré-encode en JPEG quality.
-// iPhone produit du HEIC ~3 MB ou JPEG ~2 MB → après compression à 1280 / 0.8 on
-// tombe vers 100-200 KB. Gain x10-x15 sur l'upload GAS, qui était le bottleneck.
+// 800 / 0.7 → ~50-80 KB / image, suffisant pour Gemini Vision (le QR fait
+// 200px à l'écran, 800 donne déjà du grain). Plus rapide à uploader que 1280/0.8.
 async function compressImage(
   file: File,
   maxSize: number,
