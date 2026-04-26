@@ -72,19 +72,31 @@ function livraisonMatchesUser(l: LivraisonRow, userId: string, role: EquipeRole)
 export default function LivraisonsPage() {
   const { livraisons, carte, refresh } = useData();
   const currentUser = useCurrentUser();
-  // Vue initiale : récupérée du localStorage si déjà choisie, sinon "jour" sur
-  // mobile (< 768px, la grille 7 colonnes est illisible) et "semaine" sur desktop.
+  // Vue initiale :
+  //  - localStorage gagne toujours (le user a explicitement choisi)
+  //  - sinon "jour" pour les roles terrain (chauffeur / monteur / preparateur /
+  //    chef) car ils ouvrent leur app pour bosser sur la journee, pas pour
+  //    contempler 7 jours dont 6 ne les concernent pas
+  //  - sinon "jour" sur mobile (< 768px, la grille 7 colonnes est illisible)
+  //  - sinon "semaine" sur desktop admin
   // SSR-safe : on commence par "semaine" et on ajuste au mount via useEffect.
   const [view, setView] = useState<View>("semaine");
+  const [viewInited, setViewInited] = useState(false);
   useEffect(() => {
     if (typeof window === "undefined") return;
+    if (viewInited) return;
     const saved = window.localStorage.getItem("livraisons.view") as View | null;
     if (saved && ["jour", "3jours", "semaine", "mois", "liste"].includes(saved)) {
       setView(saved);
+      setViewInited(true);
       return;
     }
-    if (window.innerWidth < 768) setView("jour");
-  }, []);
+    // Attend currentUser pour decider en fonction du role.
+    if (!currentUser) return;
+    const isTerrain = currentUser.role !== "admin" && currentUser.role !== "apporteur";
+    if (isTerrain || window.innerWidth < 768) setView("jour");
+    setViewInited(true);
+  }, [currentUser, viewInited]);
   const setViewPersist = (v: View) => {
     setView(v);
     if (typeof window !== "undefined") window.localStorage.setItem("livraisons.view", v);
@@ -190,16 +202,82 @@ export default function LivraisonsPage() {
 
   const livraisonsSansDate = userLivraisons.filter((l) => !l.datePrevue);
 
+  // Tournees dans la fenetre de la vue active. Sert au compteur d'objectifs :
+  // un monteur en vue Jour veut savoir combien de velos il a a monter aujourd'hui,
+  // pas sur tout le mois.
+  const windowedTournees = useMemo(() => {
+    if (view === "liste") return filteredTournees;
+    const start = new Date(refDate);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date(start);
+    if (view === "jour") {
+      end.setDate(end.getDate() + 1);
+    } else if (view === "3jours") {
+      end.setDate(end.getDate() + 3);
+    } else if (view === "semaine") {
+      const sw = startOfWeek(refDate);
+      sw.setHours(0, 0, 0, 0);
+      start.setTime(sw.getTime());
+      end.setTime(sw.getTime());
+      end.setDate(end.getDate() + 7);
+    } else {
+      // mois
+      start.setDate(1);
+      end.setTime(start.getTime());
+      end.setMonth(end.getMonth() + 1);
+    }
+    return filteredTournees.filter((t) => {
+      if (!t.datePrevue) return false;
+      const d = new Date(t.datePrevue);
+      return d >= start && d < end;
+    });
+  }, [filteredTournees, view, refDate]);
+
+  // Nb de velos a monter / livrer dans la fenetre, pour le compteur d'objectifs.
+  const windowedVelos = useMemo(
+    () => windowedTournees.reduce((sum, t) => sum + t.totalVelos, 0),
+    [windowedTournees],
+  );
+  const windowedLivraisons = useMemo(
+    () => windowedTournees.reduce((sum, t) => sum + t.livraisons.length, 0),
+    [windowedTournees],
+  );
+
+  // Titre + sous-titre adaptes au role.
+  // - monteur  : "Montage" + "X velos a monter"
+  // - chauffeur: "Livraisons" + "Y livraisons a faire"
+  // - autres   : "Livraisons" + "X tournees · Y livraisons" (vue admin)
+  const role = currentUser?.role;
+  const isMonteur = role === "monteur";
+  const isChauffeur = role === "chauffeur";
+  const pageTitle = isMonteur ? "Montage" : "Livraisons";
+  // Suffixe de fenetre lisible ("aujourd'hui", "cette semaine", etc.) — vide en
+  // mode liste car la liste affiche tout.
+  const windowSuffix =
+    view === "jour" ? "aujourd'hui"
+      : view === "3jours" ? "sur 3 jours"
+      : view === "semaine" ? "cette semaine"
+      : view === "mois" ? "ce mois"
+      : "";
+  let pageSubtitle: string;
+  if (isMonteur) {
+    pageSubtitle = `${windowedVelos} vélo${windowedVelos > 1 ? "s" : ""} à monter${windowSuffix ? " " + windowSuffix : ""}`;
+  } else if (isChauffeur) {
+    pageSubtitle = `${windowedLivraisons} livraison${windowedLivraisons > 1 ? "s" : ""} · ${windowedTournees.length} tournée${windowedTournees.length > 1 ? "s" : ""}${windowSuffix ? " " + windowSuffix : ""}`;
+  } else {
+    pageSubtitle = view === "liste"
+      ? `${filteredTournees.length} tournée${filteredTournees.length > 1 ? "s" : ""} · ${userLivraisons.length} livraison${userLivraisons.length > 1 ? "s" : ""}`
+      : `${windowedTournees.length} tournée${windowedTournees.length > 1 ? "s" : ""} · ${windowedLivraisons} livraison${windowedLivraisons > 1 ? "s" : ""}${windowSuffix ? " " + windowSuffix : ""}`;
+  }
+
   return (
     <div>
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Livraisons</h1>
-          <p className="text-gray-500 mt-1">
-            {filteredTournees.length} tournée{filteredTournees.length > 1 ? "s" : ""} · {userLivraisons.length} livraison{userLivraisons.length > 1 ? "s" : ""}
-          </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-bold text-gray-900">{pageTitle}</h1>
+          <p className="text-gray-500 mt-1 text-sm">{pageSubtitle}</p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {/* Boutons admin uniquement : ni un préparateur, ni un chauffeur,
               ni un monteur n'ont à planifier la journée ou créer un client. */}
           {currentUser?.role === "admin" && (
