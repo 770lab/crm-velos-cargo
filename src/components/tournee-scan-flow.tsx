@@ -422,42 +422,13 @@ function Inner({ mode }: { mode: ScanMode }) {
 
         {userId && prog && !pendingFnuci && (
           <>
-            {/* Le scan QR Strich + saisie manuelle est masqué en préparation
-                ET en chargement : ces deux étapes passent désormais
-                exclusivement par la caméra continue Gemini (ou photo unique)
-                du composant PhotoGeminiCapture juste en dessous. La livraison
-                garde encore le scan QR Strich — elle basculera ensuite. */}
-            {mode !== "preparation" && mode !== "chargement" && (
-              <div className="bg-white rounded-xl shadow p-4 space-y-3 mb-3">
-                <div className="text-sm text-gray-700">Scanne le QR FNUCI du vélo.</div>
-                {scanPreview && (
-                  <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 flex items-center gap-2 text-sm">
-                    <span className="text-blue-700">📷 Code scanné :</span>
-                    <code className="font-mono font-bold text-blue-900">{scanPreview}</code>
-                    {busy && <span className="text-xs text-blue-600 ml-auto animate-pulse">envoi…</span>}
-                  </div>
-                )}
-                <QrScanner enabled={scannerEnabled && !allDone && !pendingFnuci && !geminiCameraOpen} onScan={handleScan} />
-                <form
-                  onSubmit={(e) => {
-                    e.preventDefault();
-                    const v = (e.currentTarget.elements.namedItem("manualFnuci") as HTMLInputElement)?.value?.trim();
-                    if (v) {
-                      handleScan(v);
-                      (e.currentTarget.elements.namedItem("manualFnuci") as HTMLInputElement).value = "";
-                    }
-                  }}
-                  className="flex gap-2"
-                >
-                  <input
-                    name="manualFnuci"
-                    className="flex-1 border rounded-lg px-3 py-2 text-sm"
-                    placeholder="Saisie manuelle FNUCI"
-                  />
-                  <button type="submit" className="px-3 py-2 bg-gray-700 text-white rounded-lg text-sm">OK</button>
-                </form>
-              </div>
-            )}
+            {/* Le scan QR Strich + saisie manuelle FNUCI a été retiré pour les
+                3 étapes préparation / chargement / livraison : toutes passent
+                désormais exclusivement par la caméra continue Gemini (ou photo
+                unique) du composant PhotoGeminiCapture juste en dessous.
+                Le bloc Strich n'est plus rendu — `handleScan` reste défini car
+                il est encore utilisé par le panneau "FNUCI inconnu — à quel
+                client ?" plus haut. */}
 
             <div className="bg-white rounded-xl shadow p-4 mb-3">
               <PhotoGeminiCapture
@@ -466,16 +437,16 @@ function Inner({ mode }: { mode: ScanMode }) {
                 etape={cfg.unmarkEtape}
                 onAfter={loadProgression}
                 disabled={allDone}
-                clients={(mode === "preparation" || mode === "chargement") && "clients" in prog ? prog.clients.map((c) => ({
+                clients={"clients" in prog ? prog.clients.map((c) => ({
                   clientId: c.clientId,
                   entreprise: c.entreprise,
                   total: c.totals.total,
                   // `done` = compteur de l'étape courante (prepare en préparation,
-                  // charge en chargement, etc.) — sert au "X/Y déjà fait" dans
-                  // le bandeau de verrouillage et le sélecteur client.
+                  // charge en chargement, livre en livraison) — sert au "X/Y
+                  // déjà fait" dans le bandeau de verrouillage et le sélecteur.
                   done: c.totals[cfg.totalsKey],
                 })) : undefined}
-                lockedClientId={(mode === "preparation" || mode === "chargement") && focusClientId ? focusClientId : undefined}
+                lockedClientId={focusClientId || undefined}
                 onCameraToggle={setGeminiCameraOpen}
               />
             </div>
