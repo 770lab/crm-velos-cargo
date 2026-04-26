@@ -184,6 +184,9 @@ function handleRequest(e) {
       case "getTourneeProgression":
         result = getTourneeProgression(e.parameter.tourneeId);
         break;
+      case "getBlForTournee":
+        result = getBlForTournee(e.parameter.tourneeId);
+        break;
       case "uploadVeloPhoto":
         var bodyUVP = getBody();
         result = uploadVeloPhoto(bodyUVP);
@@ -2892,32 +2895,90 @@ function _getClientName(clientId) {
   return null;
 }
 
-// Compteur global de BL, séquentiel à partir de 1.
-// Atomique grâce à LockService (jamais 2 BL avec le même numéro).
-function _nextBlNumber() {
+// Compteur de BL séquentiel par année, format "BL-YYYY-NNNNN" (5 chiffres).
+// Compteur séparé par année (BL_COUNTER_2026, BL_COUNTER_2027, ...) — remise à
+// zéro chaque 1er janvier. Atomique via LockService.
+function _nextBlRefForYear(year) {
   var lock = LockService.getScriptLock();
   lock.waitLock(10000);
   try {
+    var key = "BL_COUNTER_" + year;
     var props = PropertiesService.getScriptProperties();
-    var current = parseInt(props.getProperty("BL_COUNTER") || "0", 10);
+    var current = parseInt(props.getProperty(key) || "0", 10);
     var next = current + 1;
-    props.setProperty("BL_COUNTER", String(next));
-    return next;
+    props.setProperty(key, String(next));
+    return "BL-" + year + "-" + String(next).padStart(5, "0");
   } finally {
     lock.releaseLock();
   }
 }
 
-// Si la ligne Livraison n'a pas encore de numeroBL, on lui en attribue un.
-// Retourne le numéro (existant ou nouveau).
-function _ensureBlNumber(sheet, rowIdx1Based, headers) {
+// Si on rencontre un ancien numéro entier (issu de la version précédente du
+// compteur), on remonte le compteur de l'année cible pour éviter les collisions.
+function _bumpBlCounter(year, n) {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var key = "BL_COUNTER_" + year;
+    var props = PropertiesService.getScriptProperties();
+    var current = parseInt(props.getProperty(key) || "0", 10);
+    if (n > current) props.setProperty(key, String(n));
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+function _yearForLivraison(datePrevue) {
+  if (datePrevue) {
+    var d = (datePrevue instanceof Date) ? datePrevue : new Date(datePrevue);
+    if (!isNaN(d.getTime())) return d.getFullYear();
+  }
+  return new Date().getFullYear();
+}
+
+// Lit le numeroBL existant (sans en attribuer un nouveau). Retourne la string
+// au format "BL-YYYY-NNNNN" si attribuée, sinon null.
+function _readBlNumber(sheet, rowIdx1Based, headers) {
   var iBl = headers.indexOf("numeroBL");
   if (iBl < 0) return null;
   var current = sheet.getRange(rowIdx1Based, iBl + 1).getValue();
-  if (current && Number(current) > 0) return Number(current);
-  var n = _nextBlNumber();
-  sheet.getRange(rowIdx1Based, iBl + 1).setValue(n);
-  return n;
+  if (typeof current === "string" && current.indexOf("BL-") === 0) return current.trim();
+  // Ancien format numérique : on retourne tel quel pour info, sera migré au
+  // premier appel d'ensureBlNumber (= au premier affichage du BL).
+  var n = Number(current);
+  if (!isNaN(n) && n > 0 && Math.floor(n) === n) return "BL-legacy-" + n;
+  return null;
+}
+
+// Si la ligne Livraison n'a pas encore de numeroBL, on lui en attribue un.
+// Format : "BL-{annee_de_datePrevue}-{NNNNN}". Une fois attribué, le numéro
+// ne change plus. Migre les anciens numéros entiers vers le nouveau format.
+function _ensureBlNumber(sheet, rowIdx1Based, headers, datePrevue) {
+  var iBl = headers.indexOf("numeroBL");
+  if (iBl < 0) return null;
+  var current = sheet.getRange(rowIdx1Based, iBl + 1).getValue();
+
+  // Déjà au format final "BL-..."
+  if (typeof current === "string" && current.indexOf("BL-") === 0) {
+    return current.trim();
+  }
+
+  var year = _yearForLivraison(datePrevue);
+
+  // Ancien format numérique : on le reformate sans changer le N° de séquence,
+  // et on remonte le compteur de l'année pour la cohérence.
+  var n = Number(current);
+  if (!isNaN(n) && n > 0 && Math.floor(n) === n) {
+    var ref = "BL-" + year + "-" + String(n).padStart(5, "0");
+    sheet.getRange(rowIdx1Based, iBl + 1).setValue(ref);
+    _bumpBlCounter(year, n);
+    return ref;
+  }
+
+  // Nouvelle attribution.
+  var newRef = _nextBlRefForYear(year);
+  sheet.getRange(rowIdx1Based, iBl + 1).setValue(newRef);
+  return newRef;
 }
 
 // Vue agrégée de la progression d'une tournée (utilisée par les pages scan + modale).
@@ -2973,11 +3034,11 @@ function getTourneeProgression(tourneeId) {
   }
   if (orderedClientIds.length === 0) return { error: "Tournée introuvable: " + tourneeId };
 
-  // Attribue un numéro BL séquentiel à chaque livraison qui n'en a pas encore.
-  // Numéro persistant en colonne numeroBL : une fois attribué, il ne change plus.
+  // Lit le numéroBL existant SANS en attribuer (read-only).
+  // L'attribution n'a lieu qu'au premier affichage du BL via getBlForTournee.
   var numeroBlByClient = {};
   orderedClientIds.forEach(function(cid) {
-    numeroBlByClient[cid] = _ensureBlNumber(ctx.sheet, rowIdxByClient[cid], lHeaders);
+    numeroBlByClient[cid] = _readBlNumber(ctx.sheet, rowIdxByClient[cid], lHeaders);
   });
 
   function clientById(id) {
@@ -3050,6 +3111,38 @@ function getTourneeProgression(tourneeId) {
     totals: totals,
     clients: clients,
   };
+}
+
+// Comme getTourneeProgression, mais attribue un numéroBL à toute livraison qui
+// n'en a pas encore. À appeler UNIQUEMENT à l'affichage/impression du BL :
+// c'est ce premier affichage qui consomme un numéro de séquence.
+function getBlForTournee(tourneeId) {
+  var prog = getTourneeProgression(tourneeId);
+  if (!prog || prog.error) return prog;
+
+  var ctx = ensureLivraisonsSchema();
+  var lData = ctx.sheet.getDataRange().getValues();
+  var lHeaders = lData[0];
+  var iLTid = lHeaders.indexOf("tourneeId");
+  var iLCid = lHeaders.indexOf("clientId");
+
+  // Récupère la rowIdx pour chaque clientId de cette tournée
+  var rowIdxByClient = {};
+  for (var i = 1; i < lData.length; i++) {
+    if (String(lData[i][iLTid]) !== String(tourneeId)) continue;
+    var cid = String(lData[i][iLCid] || "").trim();
+    if (cid && !rowIdxByClient[cid]) rowIdxByClient[cid] = i + 1;
+  }
+
+  // Attribue un numéro à chaque client qui n'en a pas (avec lock anti-doublons)
+  var datePrevueRaw = prog.datePrevue ? new Date(prog.datePrevue) : null;
+  prog.clients.forEach(function(c) {
+    var rIdx = rowIdxByClient[c.clientId];
+    if (rIdx) {
+      c.numeroBL = _ensureBlNumber(ctx.sheet, rIdx, lHeaders, datePrevueRaw);
+    }
+  });
+  return prog;
 }
 
 // Liste les clientId d'une tournée (toutes les Livraisons partageant le tourneeId).

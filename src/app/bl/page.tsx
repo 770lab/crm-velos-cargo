@@ -12,7 +12,7 @@ type Client = {
   codePostal: string;
   telephone: string | null;
   contact: string | null;
-  numeroBL: number | null;
+  numeroBL: string | null;
   velos: Velo[];
 };
 type Progression =
@@ -40,7 +40,10 @@ function BlPage() {
 
   useEffect(() => {
     if (!tourneeId) return;
-    gasGet("getTourneeProgression", { tourneeId }).then(setData);
+    // Appelle getBlForTournee : c'est ICI que les numéros BL séquentiels
+    // (BL-2026-00001, BL-2026-00002, ...) sont attribués pour la première fois
+    // si la livraison n'en a pas encore — au premier affichage de la page BL.
+    gasGet("getBlForTournee", { tourneeId }).then(setData);
   }, [tourneeId]);
 
   if (!tourneeId) return <div className="p-6 text-red-600">Paramètre tourneeId manquant.</div>;
@@ -51,12 +54,11 @@ function BlPage() {
   const dateLivraison = data.datePrevue ? new Date(data.datePrevue) : new Date();
   const dateStr = dateLivraison.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
 
-  // Le numéro BL est attribué côté serveur dès l'appel getTourneeProgression
-  // (séquentiel global, persistant). Fallback hash si pas encore attribué.
+  // Le numéro BL est attribué côté serveur via getBlForTournee (séquentiel par
+  // année, format "BL-2026-00001"). Persistant en colonne numeroBL : une fois
+  // attribué, ne change plus. Fallback hash si l'attribution a échoué.
   const blRef = (c: Client) =>
-    c.numeroBL != null
-      ? `BL-${c.numeroBL}`
-      : `BL-${tourneeId.slice(0, 8).toUpperCase()}-${c.clientId.slice(-4).toUpperCase()}`;
+    c.numeroBL ?? `BL-${tourneeId.slice(0, 8).toUpperCase()}-${c.clientId.slice(-4).toUpperCase()}`;
 
   return (
     <>
