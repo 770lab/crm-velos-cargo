@@ -4101,7 +4101,27 @@ function proposeTournee(payload) {
           .replace(/\n?\s*```\s*$/i, "")
           .trim();
         try {
-          var parsed = JSON.parse(cleaned);
+          var parsed;
+          try {
+            parsed = JSON.parse(cleaned);
+          } catch (firstParseErr) {
+            // Cas vu en prod : Gemini génère DEUX objets JSON consécutifs
+            // ("...} {...}") dans la même réponse. JSON.parse échoue avec
+            // "Unexpected non-whitespace character after JSON at position X".
+            // On extrait alors uniquement le premier objet valide en
+            // comptant les { } au niveau racine (en respectant les strings).
+            var firstMsg = String(firstParseErr && firstParseErr.message || firstParseErr);
+            if (/non-whitespace character after JSON/i.test(firstMsg)) {
+              var firstObj = _extractFirstJsonObject(cleaned);
+              if (firstObj) {
+                parsed = JSON.parse(firstObj);
+              } else {
+                throw firstParseErr;
+              }
+            } else {
+              throw firstParseErr;
+            }
+          }
           // Garde-fou anti-split : Gemini ignore parfois la règle 7. On dégage tout
           // arrêt dont nbVelos != nbVelosRestants du client et on bascule le client
           // dans clientsNonAffectes (ou clientsTropGros si la flotte ne peut pas absorber).
@@ -4392,6 +4412,7 @@ function _buildProposeTourneePrompt(date, camions, clients, affectesExistants, m
     "14. PLAFOND DUR CUMULÉ PAR CAMION SUR LA JOURNÉE : pour chaque camionId, somme(dureeMinutesEstimee de toutes ses tournées) + 30 × (nb_tournées_ce_camion - 1) ≤ 480 min. Exemple : si tu mets T1=180min et T2=180min sur le même camion, cumul = 180+180+30 = 390 min ≤ 480, OK. Mais T1+T2+T3 à 180min chacune = 540+60 = 600 min > 480 → INTERDIT, tu dois soit raccourcir une tournée, soit RETIRER une tournée et mettre ses arrêts en clientsNonAffectes avec raison='journée trop courte cumulée sur ce camion'. PAS DE 5 TOURNÉES À 3H SUR LE MÊME CAMION — un camion physique ne peut pas rouler 16h dans la journée. Vérifie le cumul par camion AVANT de répondre.",
     "",
     "FORMAT DE RÉPONSE (JSON STRICT, rien d'autre) :",
+    "RAPPEL : tu réponds avec UN SEUL objet JSON, jamais deux à la suite. Pas de \"correction\" ou \"version améliorée\" en deuxième objet — un seul objet final.",
     "{",
     "  \"tournees\": [",
     "    {",
@@ -4415,6 +4436,40 @@ function _buildProposeTourneePrompt(date, camions, clients, affectesExistants, m
     "  \"resume\": \"phrase courte expliquant la stratégie globale et le total de tournées\"",
     "}"
   ].join("\n");
+}
+
+// Extrait le PREMIER objet JSON top-level d'une chaîne. Gemini génère
+// parfois deux objets JSON consécutifs (bug observé : "...} {...}") qui
+// font échouer JSON.parse avec "Unexpected non-whitespace character after
+// JSON". On scanne caractère par caractère, en respectant les strings et
+// échappements, et on s'arrête dès qu'on trouve le `}` qui ferme le 1er
+// objet racine. Retourne la sous-chaîne, ou null si aucun objet complet.
+function _extractFirstJsonObject(s) {
+  if (!s || typeof s !== "string") return null;
+  // Trouve le 1er `{` (start de l'objet).
+  var start = s.indexOf("{");
+  if (start < 0) return null;
+  var depth = 0;
+  var inString = false;
+  var escape = false;
+  for (var i = start; i < s.length; i++) {
+    var ch = s.charAt(i);
+    if (escape) { escape = false; continue; }
+    if (inString) {
+      if (ch === "\\") { escape = true; continue; }
+      if (ch === "\"") { inString = false; }
+      continue;
+    }
+    if (ch === "\"") { inString = true; continue; }
+    if (ch === "{") { depth++; continue; }
+    if (ch === "}") {
+      depth--;
+      if (depth === 0) {
+        return s.slice(start, i + 1);
+      }
+    }
+  }
+  return null; // objet pas refermé → JSON tronqué, on laisse l'erreur d'origine
 }
 
 // ---- ROUTING (Google Maps Distance Matrix) ----
