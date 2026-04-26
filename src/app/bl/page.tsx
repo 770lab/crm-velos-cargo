@@ -72,7 +72,7 @@ function BlPage() {
           .dv-table thead tr { background: #3a7d44 !important; color: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .dv-table th { background: #3a7d44 !important; color: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           /* Garder ces blocs ensemble : si trop bas, browser pousse sur la page suivante */
-          .dv-sign, .dv-sign-eq127, .dv-page-footer { page-break-inside: avoid; }
+          .dv-sign, .dv-section, .dv-page-footer { page-break-inside: avoid; }
           /* La liste FNUCI peut s'étendre sur plusieurs pages */
           .dv-fnuci-annexe { break-inside: auto; }
         }
@@ -162,21 +162,28 @@ function BlPage() {
 
         .dv-legal { text-align: center; font-size: 7.2pt; color: #1a1a1a; line-height: 1.6; }
 
-        /* === Page 2 BL : conditions de réception + bloc signature eq-127 === */
+        /* === Page 2 BL : pavé conditions + bloc signature, calquage page 1 ===
+           Le user a demandé que la page 2 ressemble à la page 1 : tableaux à
+           entête verte (#3a7d44), bordures #ccc, footer Page X/Y · BL · Date.
+           On réutilise les classes existantes (.dv-table, .dv-foot-meta) pour
+           les sections "Conditions" et "Signature" afin que les 2 pages
+           partagent le même look. */
 
-        /* Pavé conditions de réception (style emprunté aux "Termes et conditions
-           CEE" du devis BAT-EQ-127). */
-        .dv-conditions {
-          border: 1px solid #ccc;
-          padding: 8px 10px;
-          font-size: 7.5pt;
-          line-height: 1.45;
-          color: #1a1a1a;
-          margin: 6px 0 10px 0;
+        /* Tableau-section : entête vert + corps blanc encadré, comme dv-table
+           mais sans les colonnes Quantité/PU/etc. — sert pour les blocs
+           "Conditions" et "Signature" de la page 2. */
+        .dv-section { width: 100%; border-collapse: collapse; margin: 8px 0 0 0; font-size: 8.5pt; }
+        .dv-section thead th { background: #3a7d44; color: #fff; padding: 5px 8px; text-align: left; font-size: 9pt; font-weight: 700; border: 1px solid #1e5040; }
+        .dv-section td { padding: 6px 10px; border: 1px solid #ccc; vertical-align: top; }
+        .dv-section .dv-section-body { font-size: 8pt; line-height: 1.5; }
+        .dv-section .dv-section-body p { margin: 3px 0; }
+        .dv-section .dv-section-body h5 {
+          font-size: 8.5pt; font-weight: 700; margin: 6px 0 2px 0;
+          text-decoration: underline;
         }
-        .dv-conditions h4 { font-size: 9pt; font-weight: 700; margin: 6px 0 2px 0; text-decoration: underline; }
-        .dv-conditions h4:first-child { margin-top: 0; }
-        .dv-conditions p { margin: 2px 0; }
+        .dv-section .dv-section-body h5:first-child { margin-top: 0; }
+
+        /* Lignes pointillées pour les "Réserves émises". */
         .dv-reserves-lines { margin-top: 4px; }
         .dv-reserves-lines .line { border-bottom: 1px dotted #888; height: 5mm; }
 
@@ -185,39 +192,25 @@ function BlPage() {
         .dv-content-bottom { display: flex; flex-direction: column; }
         .dv-push-bottom { margin-top: auto; }
 
-        /* Bloc signature 3 colonnes façon BAT-EQ-127 :
-           col 1 = rappel Numéro BL + date + Page X/Y
-           col 2 = zone signature/cachet (la plus large)
-           col 3 = "Mention", "A", "Le" */
-        .dv-sign-eq127 {
-          border: 1px solid #1a1a1a;
-          display: flex;
-          font-size: 8pt;
-          margin-top: 12px;
-        }
-        .dv-sign-eq127 > div { padding: 8px 10px; box-sizing: border-box; }
-        .dv-sign-eq127 > div + div { border-left: 1px solid #1a1a1a; }
-        .dv-sign-info {
-          width: 22%;
-          text-align: center;
-          font-size: 8pt;
-        }
-        .dv-sign-info .ref-label { color: #555; font-size: 7.2pt; }
-        .dv-sign-info .ref-value { font-weight: 700; font-size: 8.5pt; margin: 1px 0; }
-        .dv-sign-info .page-label { color: #555; font-size: 7.2pt; margin-top: 6px; }
-        .dv-sign-info .page-value { font-weight: 700; font-size: 9pt; }
-        .dv-sign-main {
+        /* Bloc signature : tableau 2 cellules (Cachet/Signature à gauche,
+           Mention/À/Le à droite) sous l'entête verte. Cohérent avec le reste
+           du document. */
+        .dv-sign-grid { display: flex; }
+        .dv-sign-grid > .left {
           flex: 1;
-          min-height: 38mm;
+          padding: 10px 12px;
+          border-right: 1px solid #ccc;
+          min-height: 36mm;
         }
-        .dv-sign-main .label { font-weight: 600; margin-bottom: 5mm; }
-        .dv-sign-main .cachet-label { font-style: italic; color: #555; margin-top: 2mm; }
-        .dv-sign-side {
-          width: 28%;
+        .dv-sign-grid > .right {
+          width: 38%;
+          padding: 10px 12px;
           font-size: 8.5pt;
         }
-        .dv-sign-side .row { padding: 5px 0; border-bottom: 1px dotted #999; min-height: 7mm; }
-        .dv-sign-side .row:last-child { border-bottom: none; }
+        .dv-sign-grid .label { font-weight: 600; margin-bottom: 5mm; font-size: 8.5pt; }
+        .dv-sign-grid .cachet-label { font-style: italic; color: #555; margin-top: 2mm; }
+        .dv-sign-grid .meta-row { padding: 4px 0; border-bottom: 1px dotted #999; min-height: 7mm; }
+        .dv-sign-grid .meta-row:last-child { border-bottom: none; }
       `}</style>
 
       <div className="no-print fixed top-0 left-0 right-0 bg-white border-b shadow-sm z-50 px-4 py-2 flex items-center justify-between">
@@ -459,73 +452,96 @@ function BlPage() {
                   )}
 
                   {/* TERMES ET CONDITIONS DE RÉCEPTION
-                      Pavé inspiré des "Termes et conditions CEE" du devis
-                      BAT-EQ-127. Sobre, factuel, juridiquement correct. */}
-                  <div className="dv-conditions">
-                    <h4>Termes et conditions de réception</h4>
-                    <p>
-                      À la livraison, le destinataire est tenu de vérifier l&apos;état apparent
-                      des cartons et le nombre d&apos;unités livrées. Toute anomalie (carton
-                      ouvert, écrasé, choqué, manquant, FNUCI illisible) doit être mentionnée
-                      explicitement sur le présent document avant signature, dans la rubrique
-                      « Réserves ».
-                    </p>
-                    <p>
-                      Conformément à l&apos;article L.133-3 du Code de commerce, les réserves
-                      portant sur des avaries non apparentes au déchargement doivent être
-                      confirmées au transporteur par lettre recommandée dans un délai de
-                      trois (3) jours ouvrables suivant la réception.
-                    </p>
-                    <p>
-                      La signature sans réserve du présent bon de livraison vaut acceptation
-                      des marchandises livrées en bon état apparent et reconnaissance du
-                      nombre d&apos;unités remises (cf. tableau « Total remis » page 1).
-                      Les numéros d&apos;immatriculation (FNUCI) listés ci-dessus engagent
-                      Les Artisans Verts SAS pour les obligations déclaratives prévues par le
-                      décret n° 2020-1439 (BicyCode / FNUCI).
-                    </p>
+                      Bloc présenté comme un tableau-section (entête vert,
+                      bordures #ccc) pour matcher visuellement le tableau Détail
+                      de la page 1. */}
+                  <table className="dv-section">
+                    <thead>
+                      <tr>
+                        <th>Termes et conditions de réception</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>
+                          <div className="dv-section-body">
+                            <p>
+                              À la livraison, le destinataire est tenu de vérifier l&apos;état apparent
+                              des cartons et le nombre d&apos;unités livrées. Toute anomalie (carton
+                              ouvert, écrasé, choqué, manquant, FNUCI illisible) doit être mentionnée
+                              explicitement sur le présent document avant signature, dans la rubrique
+                              « Réserves ».
+                            </p>
+                            <p>
+                              Conformément à l&apos;article L.133-3 du Code de commerce, les réserves
+                              portant sur des avaries non apparentes au déchargement doivent être
+                              confirmées au transporteur par lettre recommandée dans un délai de
+                              trois (3) jours ouvrables suivant la réception.
+                            </p>
+                            <p>
+                              La signature sans réserve du présent bon de livraison vaut acceptation
+                              des marchandises livrées en bon état apparent et reconnaissance du
+                              nombre d&apos;unités remises (cf. tableau « Total remis » page 1).
+                              Les numéros d&apos;immatriculation (FNUCI) listés ci-dessus engagent
+                              Les Artisans Verts SAS pour les obligations déclaratives prévues par le
+                              décret n° 2020-1439 (BicyCode / FNUCI).
+                            </p>
 
-                    <h4>Garantie</h4>
-                    <p>
-                      Les vélos-cargos livrés bénéficient de la garantie légale de conformité
-                      (24 mois — articles L.217-3 et suivants du Code de la consommation) ainsi
-                      que de la garantie commerciale du constructeur Thaleos. Les conditions
-                      complètes sont disponibles sur artisansverts.energy.
-                    </p>
+                            <h5>Garantie</h5>
+                            <p>
+                              Les vélos-cargos livrés bénéficient de la garantie légale de conformité
+                              (24 mois — articles L.217-3 et suivants du Code de la consommation) ainsi
+                              que de la garantie commerciale du constructeur Thaleos. Les conditions
+                              complètes sont disponibles sur artisansverts.energy.
+                            </p>
 
-                    <h4>Réserves émises par le client à la réception</h4>
-                    <div className="dv-reserves-lines">
-                      <div className="line" />
-                      <div className="line" />
-                      <div className="line" />
-                    </div>
-                  </div>
+                            <h5>Réserves émises par le client à la réception</h5>
+                            <div className="dv-reserves-lines">
+                              <div className="line" />
+                              <div className="line" />
+                              <div className="line" />
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
 
-                  {/* BLOC SIGNATURE 3 colonnes — calé en bas de page (margin-top: auto) */}
-                  <div className="dv-sign-eq127 dv-push-bottom">
-                    <div className="dv-sign-info">
-                      <div className="ref-label">Bon de livraison</div>
-                      <div className="ref-value">{ref}</div>
-                      <div className="ref-label">du</div>
-                      <div className="ref-value">{dateStr}</div>
-                      <div className="page-label">Page</div>
-                      <div className="page-value">2 / 2</div>
-                    </div>
-                    <div className="dv-sign-main">
-                      <div className="label">
-                        Apposer signature précédée de la mention « bon pour réception »
-                      </div>
-                      <div className="cachet-label">Cachet et signature :</div>
-                    </div>
-                    <div className="dv-sign-side">
-                      <div className="row">Mention :</div>
-                      <div className="row">À :</div>
-                      <div className="row">Le :</div>
-                    </div>
-                  </div>
+                  {/* BLOC SIGNATURE — tableau-section calé en bas de page
+                      (margin-top: auto via dv-push-bottom). 2 colonnes :
+                      cachet/signature à gauche, mention/à/le à droite. */}
+                  <table className="dv-section dv-push-bottom">
+                    <thead>
+                      <tr>
+                        <th>Signature client (bon pour réception)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td style={{ padding: 0 }}>
+                          <div className="dv-sign-grid">
+                            <div className="left">
+                              <div className="label">
+                                Apposer signature précédée de la mention « bon pour réception »
+                              </div>
+                              <div className="cachet-label">Cachet et signature :</div>
+                            </div>
+                            <div className="right">
+                              <div className="meta-row">Mention :</div>
+                              <div className="meta-row">À :</div>
+                              <div className="meta-row">Le :</div>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
                 </div>{/* /dv-content */}
 
-                <PageFooter pageNum={2} withMetaTable={false} />
+                {/* Footer page 2 = tableau Page 2/2 · BL · Date · Paraphe
+                    + mentions légales, identique à la page 1 pour cohérence
+                    visuelle (le user trouvait la page 2 trop différente). */}
+                <PageFooter pageNum={2} withMetaTable={true} />
               </div>{/* /dv-inner */}
             </div>
           </div>
