@@ -29,16 +29,9 @@ export default function QrScanner({
         const scanner = new Html5Qrcode(containerId);
         ref.current = scanner;
         await scanner.start(
-          // Demande explicitement la caméra arrière en haute résolution.
-          // Sans ces contraintes, le navigateur fournit souvent du 640×480 :
-          // un QR BicyCode (~1cm sur le vélo) tient en ~40-60px à 30cm de
-          // distance, soit moins de 2px par module → impossible à décoder.
-          // En 1920×1080, le même QR fait ~120-180px, large marge.
-          {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-          },
+          // 1er arg : cameraIdOrConfig. html5-qrcode impose une SEULE clé ici.
+          // Pour la résolution on passe par videoConstraints dans la config (2e arg).
+          { facingMode: "environment" },
           {
             fps: 10,
             // Zone de détection dynamique : 85% de la plus petite dimension du
@@ -47,6 +40,15 @@ export default function QrScanner({
             qrbox: (vw, vh) => {
               const size = Math.floor(Math.min(vw, vh) * 0.85);
               return { width: size, height: size };
+            },
+            // Contraintes vidéo : on demande explicitement de la haute résolution.
+            // Sans ça, le navigateur fournit souvent du 640×480, où un QR BicyCode
+            // (~1cm sur le vélo) tient en ~40-60px à 30cm = moins de 2px par
+            // module → indécodable. En 1920×1080 le QR fait ~120-180px, large marge.
+            videoConstraints: {
+              facingMode: { ideal: "environment" },
+              width: { ideal: 1920 },
+              height: { ideal: 1080 },
             },
           },
           (decoded) => {
