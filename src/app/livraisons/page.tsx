@@ -558,7 +558,7 @@ function TourneeCard({
 }
 
 function modePalette(mode: string | null) {
-  if (mode === "gros") return { bg: "bg-indigo-100", border: "border-indigo-300", text: "text-indigo-900" };
+  if (mode === "gros") return { bg: "bg-sky-100", border: "border-sky-300", text: "text-sky-900" };
   if (mode === "moyen") return { bg: "bg-orange-100", border: "border-orange-300", text: "text-orange-900" };
   if (mode === "camionnette") return { bg: "bg-teal-100", border: "border-teal-300", text: "text-teal-900" };
   if (mode === "retrait") return { bg: "bg-purple-100", border: "border-purple-300", text: "text-purple-900" };
