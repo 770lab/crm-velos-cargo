@@ -4260,6 +4260,56 @@ function _sanitizeProposeSplit(parsed, clientsEnrichis, camions, clientsTropGros
 
   // Retire les tournées vidées par le sanitizer (déjà warned ci-dessus).
   parsed.tournees = parsed.tournees.filter(function(t) { return t.arrets && t.arrets.length > 0; });
+
+  // Filet de sécurité — plafond CUMULÉ par camion sur la journée.
+  //
+  // La règle 12 du prompt impose ≤ 480 min PAR TOURNÉE INDIVIDUELLE, mais
+  // Gemini empile parfois 5 tournées séquentielles de 3h sur le même camion
+  // (= 16h de roulage cumulé sur la journée). Physiquement impossible.
+  //
+  // On regroupe les tournées par camionId, on calcule
+  //   cumul = somme(dureeMinutesEstimee) + 30 × (nbTournees - 1)
+  // (30 min = rechargement au dépôt entre 2 tournées du même camion)
+  // et si cumul > 480, on retire les tournées en partant de la plus haute
+  // ordreCamion (= dernière dans la séquence) jusqu'à repasser sous 480.
+  // Les arrêts retirés vont en clientsNonAffectes avec raison explicite.
+  var PLAFOND_JOUR = 480; // 8h
+  var RECHARGE_MIN = 30;
+  var byCamion = {};
+  parsed.tournees.forEach(function(t) {
+    var cid = String(t.camionId || "");
+    if (!byCamion[cid]) byCamion[cid] = [];
+    byCamion[cid].push(t);
+  });
+  Object.keys(byCamion).forEach(function(cid) {
+    var ts = byCamion[cid];
+    // Tri par ordreCamion croissant (1, 2, 3…) pour identifier la dernière.
+    ts.sort(function(a, b) { return (Number(a.ordreCamion) || 0) - (Number(b.ordreCamion) || 0); });
+    function cumul() {
+      if (ts.length === 0) return 0;
+      var sum = 0;
+      ts.forEach(function(t) { sum += Number(t.dureeMinutesEstimee) || 0; });
+      return sum + RECHARGE_MIN * (ts.length - 1);
+    }
+    while (ts.length > 0 && cumul() > PLAFOND_JOUR) {
+      var dropped = ts.pop();
+      var camionNom = dropped.camionNom || "camion " + cid;
+      var totalCumul = cumul() + (Number(dropped.dureeMinutesEstimee) || 0) + (ts.length > 0 ? RECHARGE_MIN : 0);
+      var raison = "journée trop courte (" + Math.round(totalCumul / 60 * 10) / 10 + "h cumulées sur " + camionNom + " vs 8h max)";
+      (dropped.arrets || []).forEach(function(a) {
+        parsed.clientsNonAffectes.push({
+          clientId: a.clientId,
+          entreprise: a.entreprise,
+          nbVelos: a.nbVelos,
+          raison: raison
+        });
+      });
+      parsed.warnings.push("Tournée " + camionNom + " T" + (dropped.ordreCamion || "?") + " retirée par le post-processing : " + raison + ". " + (dropped.arrets || []).length + " arrêt(s) déplacé(s) en clientsNonAffectes.");
+      // Retire physiquement de parsed.tournees.
+      var idxInTournees = parsed.tournees.indexOf(dropped);
+      if (idxInTournees >= 0) parsed.tournees.splice(idxInTournees, 1);
+    }
+  });
 }
 
 function _buildProposeTourneePrompt(date, camions, clients, affectesExistants, mode, capa) {
@@ -4339,6 +4389,7 @@ function _buildProposeTourneePrompt(date, camions, clients, affectesExistants, m
     "    d) Si tu manques de chauffeurs/chefs pour le nombre de tournées parallèles que tu voudrais, REDUIS le nombre de tournées parallèles (mets les clients en clientsNonAffectes avec raison='équipe insuffisante').",
     "12. PLAFOND DUR PAR TOURNÉE INDIVIDUELLE : dureeMinutesEstimee ≤ 480 min (8h). Si tu calcules > 480 pour une tournée donnée, tu DOIS la découper en T1 + T2 (même camionId, ordreCamion 1 puis 2) en répartissant les arrêts entre elles. Vérifie chaque dureeMinutesEstimee AVANT de répondre. Les tournées de 9h, 10h, 11h sont INTERDITES, pas de cas spécial.",
     "13. RÈGLES MONTEURS — pas de double comptage : un monteur peut figurer dans plusieurs tournées séquentielles d'un MÊME camion (règle 11.a) — c'est attendu. Mais sur les tournées PARALLÈLES (camions différents qui roulent simultanément), un monteur donné NE PEUT apparaître QUE dans UNE seule de ces tournées parallèles. Sur la journée entière, le nombre de monteurs uniques (déduplication par id) doit être ≤ au nombre de monteurs disponibles annoncé dans ÉQUIPE DISPONIBLE.",
+    "14. PLAFOND DUR CUMULÉ PAR CAMION SUR LA JOURNÉE : pour chaque camionId, somme(dureeMinutesEstimee de toutes ses tournées) + 30 × (nb_tournées_ce_camion - 1) ≤ 480 min. Exemple : si tu mets T1=180min et T2=180min sur le même camion, cumul = 180+180+30 = 390 min ≤ 480, OK. Mais T1+T2+T3 à 180min chacune = 540+60 = 600 min > 480 → INTERDIT, tu dois soit raccourcir une tournée, soit RETIRER une tournée et mettre ses arrêts en clientsNonAffectes avec raison='journée trop courte cumulée sur ce camion'. PAS DE 5 TOURNÉES À 3H SUR LE MÊME CAMION — un camion physique ne peut pas rouler 16h dans la journée. Vérifie le cumul par camion AVANT de répondre.",
     "",
     "FORMAT DE RÉPONSE (JSON STRICT, rien d'autre) :",
     "{",

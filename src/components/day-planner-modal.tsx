@@ -469,6 +469,30 @@ function PropositionView({
   // que le user voie tout de suite et puisse relancer la proposition.
   const tourneesTropLongues = tournees.filter((t) => (t.dureeMinutesEstimee || 0) > 480).length;
 
+  // Cumul par camion (durée roulage + 30 min de rechargement entre 2 tournées).
+  // Le post-processing GAS retire normalement les tournées qui font dépasser
+  // 480 min cumulées, mais on affiche quand même pour que le user voie tout
+  // de suite si un camion frôle la journée pleine.
+  const RECHARGE_MIN = 30;
+  const cumulParCamion = useMemo(() => {
+    const m = new Map<string, { camionNom: string; type?: string; cumulMin: number; nbTournees: number }>();
+    tournees.forEach((t) => {
+      const k = t.camionId;
+      if (!m.has(k)) m.set(k, { camionNom: t.camionNom, type: camionTypeById.get(t.camionId), cumulMin: 0, nbTournees: 0 });
+      const e = m.get(k)!;
+      e.cumulMin += t.dureeMinutesEstimee || 0;
+      e.nbTournees += 1;
+    });
+    // Ajouter le rechargement après-coup (30 min × (N-1)).
+    for (const e of m.values()) {
+      if (e.nbTournees > 1) e.cumulMin += RECHARGE_MIN * (e.nbTournees - 1);
+    }
+    return Array.from(m.values()).sort((a, b) => b.cumulMin - a.cumulMin);
+  }, [tournees, camionTypeById]);
+
+  const fmtH = (min: number) => `${Math.floor(min / 60)}h${String(min % 60).padStart(2, "0")}`;
+  const camionsTropChargees = cumulParCamion.filter((c) => c.cumulMin > 480).length;
+
   return (
     <div className="space-y-3">
       <div className="bg-purple-50 border border-purple-200 rounded-lg p-3">
@@ -482,11 +506,33 @@ function PropositionView({
         <div className="text-xs text-purple-700 mt-1">
           Équipe mobilisée (personnes uniques) : 🚚 {uniqueChauffeurs} chauffeur{uniqueChauffeurs > 1 ? "s" : ""} · 👷 {uniqueChefs} chef{uniqueChefs > 1 ? "s" : ""} · 🔧 {uniqueMonteurs} monteur{uniqueMonteurs > 1 ? "s" : ""}
         </div>
+        {cumulParCamion.length > 0 && (
+          <div className="text-xs text-purple-700 mt-1">
+            Charge par camion :{" "}
+            {cumulParCamion.map((c, idx) => {
+              const over = c.cumulMin > 480;
+              const tight = !over && c.cumulMin > 420;
+              const cls = over ? "text-red-700 font-semibold" : tight ? "text-orange-700 font-semibold" : "text-purple-800";
+              return (
+                <span key={c.camionNom + idx} className={cls}>
+                  {idx > 0 && <span className="text-purple-400"> · </span>}
+                  🚚 {c.camionNom} {fmtH(c.cumulMin)}{c.nbTournees > 1 ? ` (${c.nbTournees}T)` : ""}{over ? " ⚠️" : ""}
+                </span>
+              );
+            })}
+          </div>
+        )}
       </div>
+
+      {camionsTropChargees > 0 && (
+        <div className="border border-red-300 bg-red-50 rounded-lg p-3 text-sm text-red-900">
+          🚛 {camionsTropChargees} camion{camionsTropChargees > 1 ? "s" : ""} dépasse{camionsTropChargees > 1 ? "nt" : ""} 8h cumulées sur la journée (un camion ne peut pas rouler &gt; 8h, rechargements inclus). Le post-processing GAS aurait dû retirer l&apos;excédent — vérifie les warnings ci-dessous, ou relance la proposition.
+        </div>
+      )}
 
       {tourneesTropLongues > 0 && (
         <div className="border border-red-300 bg-red-50 rounded-lg p-3 text-sm text-red-900">
-          ⏰ {tourneesTropLongues} tournée{tourneesTropLongues > 1 ? "s" : ""} dépasse{tourneesTropLongues > 1 ? "nt" : ""} 8h (480 min). Gemini aurait dû splitter — relance la proposition ou ajoute des camions/monteurs.
+          ⏰ {tourneesTropLongues} tournée{tourneesTropLongues > 1 ? "s" : ""} INDIVIDUELLE{tourneesTropLongues > 1 ? "S" : ""} dépasse{tourneesTropLongues > 1 ? "nt" : ""} 8h (480 min). Gemini aurait dû splitter — relance la proposition ou ajoute des camions/monteurs.
         </div>
       )}
 
