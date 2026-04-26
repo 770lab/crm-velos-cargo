@@ -2310,7 +2310,7 @@ function bulkAutoValidate(params) {
 
 var EQUIPE_SHEET_NAME = "Equipe";
 var EQUIPE_COLS = ["id", "nom", "role", "telephone", "email", "actif", "notes", "createdAt"];
-var EQUIPE_ROLES = ["chauffeur", "chef", "monteur"];
+var EQUIPE_ROLES = ["chauffeur", "chef", "monteur", "apporteur"];
 
 function ensureEquipeSheet() {
   var sh = SS.getSheetByName(EQUIPE_SHEET_NAME);
@@ -2362,7 +2362,7 @@ function listEquipe(params) {
 function upsertMembre(body) {
   if (!body || !body.nom) return { error: "Nom requis" };
   var role = body.role;
-  if (!role || EQUIPE_ROLES.indexOf(role) < 0) return { error: "Rôle invalide (chauffeur/chef/monteur)" };
+  if (!role || EQUIPE_ROLES.indexOf(role) < 0) return { error: "Rôle invalide (" + EQUIPE_ROLES.join("/") + ")" };
   var sh = ensureEquipeSheet();
   var data = sh.getDataRange().getValues();
   var headers = data[0];

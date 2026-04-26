@@ -460,8 +460,19 @@ function RappelMailModal({
   const [subject, setSubject] = useState(defaultSubject);
   const [body, setBody] = useState(defaultBody);
 
+  const { equipe } = useData();
+  const apporteurEmail = (() => {
+    const apporteurName = (client.apporteur || "").trim().toLowerCase();
+    if (!apporteurName) return null;
+    const match = equipe.find(
+      (m) => m.role === "apporteur" && m.actif !== false && (m.nom || "").trim().toLowerCase() === apporteurName,
+    );
+    return match?.email || null;
+  })();
+
   const FROM_EMAIL = "velos-cargo@artisansverts.energy";
-  const gmailUrl = `https://mail.google.com/mail/?authuser=${encodeURIComponent(FROM_EMAIL)}&view=cm&fs=1&to=${encodeURIComponent(client.email ?? "")}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
+  const ccParam = apporteurEmail ? `&cc=${encodeURIComponent(apporteurEmail)}` : "";
+  const gmailUrl = `https://mail.google.com/mail/?authuser=${encodeURIComponent(FROM_EMAIL)}&view=cm&fs=1&to=${encodeURIComponent(client.email ?? "")}${ccParam}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 
   const copyBody = async () => {
     try {
@@ -477,6 +488,12 @@ function RappelMailModal({
             <h2 className="text-lg font-semibold">Rappel livraison — {client.entreprise}</h2>
             <p className="text-xs text-gray-500 mt-0.5">
               De : <span className="font-mono">{FROM_EMAIL}</span> → {client.email || <span className="text-red-600">aucun email renseigné</span>}
+              {apporteurEmail && (
+                <> · <span className="text-amber-700">CC apporteur : {apporteurEmail}</span></>
+              )}
+              {client.apporteur && !apporteurEmail && (
+                <> · <span className="text-gray-400" title={`Aucun membre Équipe (rôle apporteur) ne s'appelle "${client.apporteur}". Va sur l'onglet Équipe pour le créer avec son email.`}>apporteur "{client.apporteur}" non rattaché</span></>
+              )}
             </p>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>

@@ -8,18 +8,21 @@ const ROLE_LABEL: Record<EquipeRole, string> = {
   chauffeur: "Chauffeur",
   chef: "Chef d'équipe",
   monteur: "Monteur",
+  apporteur: "Apporteur d'affaires",
 };
 
 const ROLE_ICON: Record<EquipeRole, string> = {
   chauffeur: "🚚",
   chef: "👷",
   monteur: "🔧",
+  apporteur: "🤝",
 };
 
 const ROLE_COLOR: Record<EquipeRole, string> = {
   chauffeur: "bg-blue-100 text-blue-800 border-blue-200",
   chef: "bg-purple-100 text-purple-800 border-purple-200",
   monteur: "bg-emerald-100 text-emerald-800 border-emerald-200",
+  apporteur: "bg-amber-100 text-amber-800 border-amber-200",
 };
 
 export default function EquipePage() {
@@ -31,7 +34,7 @@ export default function EquipePage() {
   const [loadingInactifs, setLoadingInactifs] = useState(false);
 
   const byRole = useMemo(() => {
-    const groups: Record<EquipeRole, EquipeMember[]> = { chauffeur: [], chef: [], monteur: [] };
+    const groups: Record<EquipeRole, EquipeMember[]> = { chauffeur: [], chef: [], monteur: [], apporteur: [] };
     for (const m of equipe) {
       if (m.actif === false) continue;
       if (groups[m.role]) groups[m.role].push(m);
@@ -56,11 +59,11 @@ export default function EquipePage() {
       <div className="mb-6">
         <h1 className="text-2xl font-bold">Équipe</h1>
         <p className="text-sm text-gray-500 mt-1">
-          Chauffeurs, chefs d&apos;équipe et monteurs affectables aux tournées.
+          Chauffeurs, chefs d&apos;équipe et monteurs affectables aux tournées. Les apporteurs d&apos;affaires sont mis en CC des mails clients quand leur nom est renseigné sur la fiche.
         </p>
       </div>
 
-      <div className="grid md:grid-cols-3 gap-4">
+      <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
         {(Object.keys(ROLE_LABEL) as EquipeRole[]).map((role) => (
           <div key={role} className="bg-white border rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
