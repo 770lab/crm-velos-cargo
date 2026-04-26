@@ -22,6 +22,7 @@ type Proposition = {
   }>;
   clientsNonAffectes?: Array<{ clientId: string; entreprise: string; nbVelos: number; raison: string }>;
   resume?: string;
+  warnings?: string[];
 };
 
 type ProposeResponse = {
@@ -415,6 +416,22 @@ function PropositionView({
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {(proposition.proposition?.warnings?.length ?? 0) > 0 && (
+        <div className="border border-red-300 bg-red-50 rounded-lg p-3">
+          <div className="text-sm font-medium text-red-900 mb-2">
+            ⚠️ {proposition.proposition!.warnings!.length} avertissement{proposition.proposition!.warnings!.length > 1 ? "s" : ""} du sanitizer (Gemini a tenté de violer les règles, on a corrigé)
+          </div>
+          <ul className="space-y-1">
+            {proposition.proposition!.warnings!.map((w, i) => (
+              <li key={i} className="text-xs text-red-800">· {w}</li>
+            ))}
+          </ul>
+          <div className="text-[11px] text-red-600 mt-2 italic">
+            Si une tournée manque, relance la proposition (Gemini est non-déterministe).
+          </div>
         </div>
       )}
 

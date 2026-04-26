@@ -3971,15 +3971,18 @@ function proposeTournee(payload) {
   return { error: "Gemini HTTP " + lastCode, body: lastBody.slice(0, 300) };
 }
 
-// Garde-fou serveur : un client = une livraison entière. Si Gemini renvoie
-// un arrêt avec nbVelos < nbVelosRestants, on retire l'arrêt et on bascule
-// le client soit en clientsTropGros (capacité réelle insuffisante), soit en
-// clientsNonAffectes (la flotte aurait pu mais Gemini a mal alloué).
-// Mute parsed.tournees / parsed.clientsNonAffectes en place.
+// Garde-fou serveur : règles métier strictes appliquées à la sortie Gemini.
+// Règle 1 : un client = une livraison entière (pas de split).
+// Règle 2 : capacité du camion jamais dépassée.
+// Règle 3 : chaque camion activé a sa propre tournée (1 tournée par camion).
+// Règle 4 : pas d'arrêt avec nbVelos = 0.
+// Mute parsed.tournees / parsed.clientsNonAffectes / parsed.warnings en place.
 function _sanitizeProposeSplit(parsed, clientsEnrichis, camions, clientsTropGros) {
   if (!parsed || !Array.isArray(parsed.tournees)) return;
   var byId = {};
   clientsEnrichis.forEach(function(c) { byId[String(c.id)] = c; });
+  var capByCamion = {};
+  camions.forEach(function(c) { capByCamion[String(c.id)] = c; });
   var capaMax = camions.reduce(function(m, c) {
     if (c.type === "retrait") return m;
     return Math.max(m, Number(c.capaciteVelos) || 0);
@@ -3987,44 +3990,84 @@ function _sanitizeProposeSplit(parsed, clientsEnrichis, camions, clientsTropGros
   var aRetrait = camions.some(function(c) { return c.type === "retrait"; });
 
   parsed.clientsNonAffectes = Array.isArray(parsed.clientsNonAffectes) ? parsed.clientsNonAffectes : [];
+  parsed.warnings = Array.isArray(parsed.warnings) ? parsed.warnings : [];
 
   parsed.tournees.forEach(function(t) {
     if (!t || !Array.isArray(t.arrets)) return;
+    var camion = capByCamion[String(t.camionId)];
+    var camionNom = (camion && camion.nom) || t.camionNom || ("camion " + t.camionId);
+    var camionCap = camion && camion.type !== "retrait" ? (Number(camion.capaciteVelos) || 0) : Infinity;
     var kept = [];
+    var sum = 0;
+
     t.arrets.forEach(function(a) {
-      var ref = byId[String(a.clientId)];
-      if (!ref) {
-        kept.push(a);
-        return;
-      }
-      var demande = Number(ref.nbVelosRestants) || 0;
       var propose = Number(a.nbVelos) || 0;
-      if (propose === demande) {
-        kept.push(a);
+
+      // Règle 4 : arrêt à 0 vélo → ignorer (hallucination Gemini).
+      if (propose <= 0) {
+        parsed.warnings.push("Arrêt fantôme ignoré dans " + camionNom + " : " + (a.entreprise || a.clientId) + " (nbVelos=" + propose + ").");
         return;
       }
-      // Split détecté : on dégage l'arrêt.
-      if (demande > capaMax && !aRetrait) {
-        clientsTropGros.push({
-          clientId: ref.id,
-          entreprise: ref.entreprise,
-          ville: ref.ville,
-          nbVelosRestants: demande,
-          raison: "Commande de " + demande + "v > capacité max camion dispo (" + capaMax + "v) et pas de retrait client. Gemini avait splitté en " + propose + "v — corrigé."
-        });
-      } else {
-        parsed.clientsNonAffectes.push({
-          clientId: ref.id,
-          entreprise: ref.entreprise,
-          nbVelos: demande,
-          raison: "Split refusé (Gemini proposait " + propose + "v / " + demande + "v). Un client = une livraison intégrale."
-        });
+
+      var ref = byId[String(a.clientId)];
+
+      // Règle 1 : split détecté.
+      if (ref) {
+        var demande = Number(ref.nbVelosRestants) || 0;
+        if (propose !== demande) {
+          if (demande > capaMax && !aRetrait) {
+            clientsTropGros.push({
+              clientId: ref.id,
+              entreprise: ref.entreprise,
+              ville: ref.ville,
+              nbVelosRestants: demande,
+              raison: "Commande de " + demande + "v > capacité max camion dispo (" + capaMax + "v) et pas de retrait client. Gemini avait splitté en " + propose + "v — corrigé."
+            });
+          } else {
+            parsed.clientsNonAffectes.push({
+              clientId: ref.id,
+              entreprise: ref.entreprise,
+              nbVelos: demande,
+              raison: "Split refusé (Gemini proposait " + propose + "v / " + demande + "v dans " + camionNom + "). Un client = une livraison intégrale."
+            });
+          }
+          return;
+        }
       }
+
+      // Règle 2 : capacité du camion.
+      if (sum + propose > camionCap) {
+        parsed.clientsNonAffectes.push({
+          clientId: a.clientId,
+          entreprise: ref ? ref.entreprise : (a.entreprise || a.clientId),
+          nbVelos: propose,
+          raison: "Capacité dépassée — " + camionNom + " (" + camionCap + "v) saturé après " + sum + "v déjà chargés."
+        });
+        return;
+      }
+
+      kept.push(a);
+      sum += propose;
     });
+
     t.arrets = kept;
-    t.totalVelos = kept.reduce(function(s, a) { return s + (Number(a.nbVelos) || 0); }, 0);
+    t.totalVelos = sum;
   });
-  // Retire les tournées vidées par le sanitizer.
+
+  // Règle 3 : 1 camion activé = 1 tournée. Si Gemini a oublié un camion, on le
+  // surface en warning (sans en créer une vide, mais l'utilisateur sait pourquoi).
+  // Si Gemini a vidé une tournée par splits/capacité, on warn aussi.
+  var camionsAvecTournee = {};
+  parsed.tournees.forEach(function(t) {
+    if (t.arrets && t.arrets.length > 0) camionsAvecTournee[String(t.camionId)] = true;
+  });
+  camions.forEach(function(c) {
+    if (!camionsAvecTournee[String(c.id)]) {
+      parsed.warnings.push("Camion " + c.nom + " activé mais sans tournée dans la proposition (Gemini ne l'a pas utilisé ou tous ses arrêts ont été refusés).");
+    }
+  });
+
+  // Retire les tournées vidées par le sanitizer (déjà warned ci-dessus).
   parsed.tournees = parsed.tournees.filter(function(t) { return t.arrets && t.arrets.length > 0; });
 }
 
@@ -4081,12 +4124,14 @@ function _buildProposeTourneePrompt(date, camions, clients, affectesExistants, m
     "",
     "CONTRAINTES STRICTES :",
     "1. Un camion 'NE PEUT PAS entrer Paris' (>3.5T) ne peut PAS livrer un client marqué 'PARIS intra-muros'. Affecte ces clients uniquement aux camions qui PEUVENT entrer Paris.",
-    "2. La somme des vélos d'une tournée ≤ capacité du camion (capaciteVelos). NE DÉPASSE JAMAIS la capacité.",
+    "2. La somme des vélos d'une tournée ≤ capacité du camion (capaciteVelos). NE DÉPASSE JAMAIS la capacité. Vérifie le total avant de répondre.",
     "3. " + modeInstr,
     "4. Boucle Paris en priorité (vide les arrondissements 75001-75020 d'abord avec les petits camions, libère les chauffeurs vite).",
     "5. Pour chaque tournée, ordonne les clients du PLUS PROCHE au PLUS LOIN du dépôt.",
     "6. Maximise le nombre TOTAL de vélos livrés ce jour, mais SANS sacrifier la cohérence géographique : ne mélange pas un client de Bordeaux avec un client de Lille.",
     "7. INTERDICTION DE SPLITTER UN CLIENT. Chaque client doit recevoir TOUS ses vélos (nbVelosRestants) en UNE SEULE livraison dans UNE SEULE tournée. Si la commande d'un client ne tient pas dans le camion auquel tu l'affectes, choisis un autre camion plus gros, OU laisse ce client dans clientsNonAffectes avec raison='commande trop grosse pour la flotte du jour'. Le nbVelos d'un arrêt doit TOUJOURS = nbVelosRestants du client.",
+    "8. UN CAMION = UNE TOURNÉE. Chaque camion listé ci-dessus DOIT avoir EXACTEMENT 1 entrée dans tournees[] (pas plus, pas moins). Si tu n'utilises pas un camion, mets-le quand même avec arrets=[] et motifGlobal expliquant pourquoi. Ne fusionne JAMAIS les arrêts de deux camions dans une seule tournée — chaque camion roule séparément avec son propre chauffeur, son propre chef d'équipe et ses propres monteurs.",
+    "9. INTERDICTION D'ARRÊT FANTÔME. Chaque arrêt doit avoir nbVelos > 0. Pas de stop avec 0 vélo.",
     "",
     "FORMAT DE RÉPONSE (JSON STRICT, rien d'autre) :",
     "{",
