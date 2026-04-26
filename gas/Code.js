@@ -4056,16 +4056,18 @@ function proposeTournee(payload) {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: {
       temperature: 0.1,
-      maxOutputTokens: 32768,
+      // maxOutputTokens couvre thinking + réponse visible (Gemini 2.5 Flash, max 65536).
+      // Avec une réponse JSON typique de 70-80k chars (~25-30k tokens) + un thinking
+      // capé, on calibre large pour éviter MAX_TOKENS sur la sortie.
+      maxOutputTokens: 65536,
       responseMimeType: "application/json",
-      // thinkingBudget: -1 = auto (Gemini choisit son budget de raisonnement).
-      // Avec budget=0, Gemini "raisonne dans la réponse" et finit par injecter
-      // son raisonnement DANS les valeurs JSON (ex: explication d'un calcul de
-      // durée écrite à l'intérieur d'une string UUID monteurId), entre dans une
-      // boucle de répétition (mêmes phrases relancées), épuise les tokens et la
-      // string n'est jamais fermée → MAX_TOKENS + JSON invalide.
-      // Avec thinking actif, le raisonnement est isolé hors du JSON de sortie.
-      thinkingConfig: { thinkingBudget: -1 }
+      // thinkingBudget cap explicite : on a observé que -1 (dynamic) consomme
+      // presque tout maxOutputTokens en thinking sur ce prompt complexe, ne
+      // laissant que ~700 tokens pour la réponse JSON → troncature à 2-3k chars.
+      // 4096 tokens de raisonnement = largement suffisant pour ventiler 14 tournées
+      // avec contraintes capacité/géo/équipes, et libère ~60k tokens pour le JSON.
+      // Précédemment 0 (off) provoquait des hallucinations en boucle dans le JSON.
+      thinkingConfig: { thinkingBudget: 4096 }
     }
   };
 
