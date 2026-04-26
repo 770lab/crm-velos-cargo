@@ -1,27 +1,25 @@
 "use client";
-import { useEffect, useRef, useState } from "react";
-import { BrowserMultiFormatReader } from "@zxing/browser";
-import { DecodeHintType, BarcodeFormat } from "@zxing/library";
+import { useRef, useState } from "react";
+import jsQR from "jsqr";
 
-// Scanner QR utilisé au dépôt. Décodeur : @zxing/browser (port officiel de
-// la lib ZXing, référence industrielle pour QR).
+// Scanner QR — refonte 2026-04-26 : photo native iOS au lieu de flux vidéo.
 //
-// Historique des essais (tous échoués sur iPhone Safari) :
-// - BarcodeDetector natif iOS 17+ : detect() retourne toujours [] sur les
-//   frames vidéo. Bug iOS connu.
-// - html5-qrcode : caméra OK, callback de détection jamais appelé. Lecture
-//   canvas interne incompatible iOS.
-// - jsQR à résolution réduite : trop peu de pixels par module.
-// - jsQR à résolution native : décode correctement les QR de test mais rate
-//   les BicyCode qui ont des bordures noires épaisses et un contraste limite.
+// Historique des essais en flux vidéo (tous échoués sur les stickers BicyCode
+// en condition réelle iPhone Safari) : BarcodeDetector natif, html5-qrcode,
+// jsQR (résolution réduite + native), ZXing/@zxing/browser. Cause racine :
+// stickers BicyCode petits (~10% de la frame), sous plastique transparent
+// réfléchissant, avec bordure noire épaisse. Aucune lib web ne franchit ces
+// conditions sur du flux vidéo, là où l'app caméra native iOS y arrive grâce
+// à son autofocus macro hardware.
 //
-// ZXing gère mieux les conditions difficiles (low-light, angle, contraste
-// limite) grâce à son binarizer adaptatif. Il est aussi multi-formats — on
-// reste sur QR_CODE pour la perf mais on pourrait étendre.
+// Solution : <input type="file" accept="image/*" capture="environment">.
+// L'utilisateur tape sur le bouton, iOS ouvre l'app caméra (vraie macro,
+// vrai autofocus), il prend une photo nette, on récupère le fichier en JS,
+// on décode avec jsQR sur image fixe — beaucoup plus fiable car on a tout
+// le temps de calculer et on travaille sur une image sans flou de mouvement.
 //
-// Compteur de frames affiché en bas pour debug : si le compteur ne bouge
-// pas, c'est que le code n'est pas le bon (cache navigateur). S'il monte
-// mais ne détecte rien, c'est que le QR est vraiment illisible.
+// Pas de redirection vers bicycode.org : on extrait juste le contenu décodé
+// et on le passe à onScan(), exactement comme l'ancien scanner.
 
 export default function QrScanner({
   enabled,
@@ -32,110 +30,115 @@ export default function QrScanner({
   onScan: (decoded: string) => void;
   onError?: (msg: string) => void;
 }) {
-  const [running, setRunning] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [decoding, setDecoding] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
-  const [frameCount, setFrameCount] = useState(0);
-  const videoRef = useRef<HTMLVideoElement>(null);
+  const [lastShot, setLastShot] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!enabled) {
-      setRunning(false);
-      return;
-    }
+  // Décode le QR sur un canvas redimensionné à maxDim au plus.
+  // jsQR est O(n²) sur la résolution — un iPhone shoot 4032×3024 (12MP) ce
+  // qui prendrait ~3s. On essaie d'abord à 1600px (~600ms), et seulement si
+  // ça rate on tente la pleine résolution. Ça couvre 95% des cas en <1s.
+  const decodeAtSize = (img: HTMLImageElement, maxDim: number) => {
+    const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.max(1, Math.floor(img.naturalWidth * scale));
+    const h = Math.max(1, Math.floor(img.naturalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(img, 0, 0, w, h);
+    const imageData = ctx.getImageData(0, 0, w, h);
+    return jsQR(imageData.data, imageData.width, imageData.height, {
+      inversionAttempts: "attemptBoth",
+    });
+  };
 
-    let cancelled = false;
-    let stream: MediaStream | null = null;
+  const handleFile = async (file: File) => {
+    setErrMsg(null);
+    setDecoding(true);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const fr = new FileReader();
+        fr.onload = () => resolve(String(fr.result));
+        fr.onerror = () => reject(fr.error || new Error("FileReader error"));
+        fr.readAsDataURL(file);
+      });
+      setLastShot(dataUrl);
 
-    const hints = new Map<DecodeHintType, unknown>();
-    hints.set(DecodeHintType.POSSIBLE_FORMATS, [BarcodeFormat.QR_CODE]);
-    hints.set(DecodeHintType.TRY_HARDER, true);
-    const reader = new BrowserMultiFormatReader(hints);
+      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+        const i = new Image();
+        i.onload = () => resolve(i);
+        i.onerror = () => reject(new Error("Image illisible"));
+        i.src = dataUrl;
+      });
 
-    let stopFn: (() => void) | null = null;
+      const code =
+        decodeAtSize(img, 1600) ??
+        decodeAtSize(img, Math.max(img.naturalWidth, img.naturalHeight));
 
-    const start = async () => {
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: { ideal: "environment" },
-            width: { ideal: 1920 },
-            height: { ideal: 1080 },
-          },
-          audio: false,
-        });
-        if (cancelled || !videoRef.current) {
-          stream.getTracks().forEach((t) => t.stop());
-          return;
-        }
-        videoRef.current.srcObject = stream;
-        videoRef.current.setAttribute("playsinline", "true");
-        await videoRef.current.play();
-        if (cancelled) return;
-        setRunning(true);
-
-        // decodeFromVideoElement : ZXing gère lui-même la boucle de détection
-        // (callback à chaque frame analysée). Plus simple et plus efficace que
-        // de gérer notre propre requestAnimationFrame.
-        const controls = await reader.decodeFromVideoElement(
-          videoRef.current,
-          (result, err) => {
-            // Compteur de frames pour debug. ZXing appelle ce callback à
-            // chaque tentative de décodage, qu'elle réussisse ou non.
-            setFrameCount((c) => c + 1);
-            if (cancelled) return;
-            if (result) {
-              const text = result.getText();
-              if (text) onScan(text.trim());
-            }
-            // err non-null à chaque frame sans QR détecté : on ignore.
-            void err;
-          }
-        );
-        stopFn = () => controls.stop();
-      } catch (e) {
-        const msg = String(e);
+      if (code && code.data) {
+        setErrMsg(null);
+        setLastShot(null);
+        onScan(code.data.trim());
+      } else {
+        const msg =
+          "QR non détecté sur cette photo. Cadre le QR au centre, bien net, sans reflet, et réessaie.";
         setErrMsg(msg);
         onError?.(msg);
       }
-    };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setErrMsg(msg);
+      onError?.(msg);
+    } finally {
+      setDecoding(false);
+      // Reset la valeur pour permettre de re-sélectionner la même photo si besoin
+      // (sinon onChange ne re-déclenche pas pour le même fichier).
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  };
 
-    start();
-
-    return () => {
-      cancelled = true;
-      if (stopFn) stopFn();
-      if (stream) stream.getTracks().forEach((t) => t.stop());
-      setRunning(false);
-    };
-  }, [enabled, onScan, onError]);
+  if (!enabled) return null;
 
   return (
-    <div className="relative w-full">
-      <video
-        ref={videoRef}
-        className="w-full bg-black rounded-lg"
-        style={{ minHeight: 280, objectFit: "cover" }}
-        playsInline
-        muted
-      />
-      {!running && !errMsg && enabled && (
-        <div className="absolute inset-0 flex items-center justify-center text-white text-sm">
-          Initialisation caméra…
-        </div>
-      )}
-      {running && enabled && (
-        <div className="absolute top-2 right-2 bg-black/60 text-white text-[11px] px-2 py-1 rounded-full flex items-center gap-1">
-          <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-          recherche QR…
-          <span className="opacity-60 ml-1">[{frameCount}]</span>
-        </div>
-      )}
+    <div className="space-y-2">
+      <label
+        className={`flex items-center justify-center gap-2 w-full py-4 rounded-lg font-medium text-white shadow ${
+          decoding
+            ? "bg-gray-500 cursor-wait"
+            : "bg-blue-600 active:bg-blue-700 cursor-pointer"
+        }`}
+      >
+        <span className="text-2xl">📷</span>
+        <span>{decoding ? "Décodage en cours…" : "Scanner le QR (appareil photo)"}</span>
+        <input
+          ref={inputRef}
+          type="file"
+          accept="image/*"
+          capture="environment"
+          className="hidden"
+          disabled={decoding}
+          onChange={(e) => {
+            const f = e.target.files?.[0];
+            if (f) handleFile(f);
+          }}
+        />
+      </label>
+      <div className="text-xs text-gray-500 text-center">
+        L&apos;app photo iPhone va s&apos;ouvrir. Cadre le QR bien net puis valide.
+      </div>
       {errMsg && (
-        <div className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">
-          ⚠ Caméra inaccessible : {errMsg}
-          <div className="mt-1 text-gray-600">
-            Vérifie que tu as autorisé l&apos;accès caméra dans le navigateur, et que tu es en HTTPS.
-          </div>
+        <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">
+          ⚠ {errMsg}
+        </div>
+      )}
+      {lastShot && errMsg && (
+        <div className="text-xs">
+          <div className="text-gray-500 mb-1">Dernière photo :</div>
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={lastShot} alt="dernière capture" className="w-full rounded border" />
         </div>
       )}
     </div>
