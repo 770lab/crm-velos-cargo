@@ -611,7 +611,7 @@ function ensureLivraisonsSchema() {
     sheet = SS.insertSheet("Livraisons");
     var initialCols = [
       "id","clientId","datePrevue","dateEffective","statut","notes",
-      "nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs","chefEquipeIds","preparateurIds"
+      "nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs","chefEquipeIds","preparateurIds","numeroBL"
     ];
     sheet.getRange(1, 1, 1, initialCols.length).setValues([initialCols]);
     return { sheet: sheet, headers: initialCols };
@@ -619,7 +619,7 @@ function ensureLivraisonsSchema() {
 
   var lastCol = sheet.getLastColumn();
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  var needed = ["nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs","chefEquipeIds","preparateurIds"];
+  var needed = ["nbVelos","tourneeId","mode","chauffeurId","chefEquipeId","monteurIds","nbMonteurs","chefEquipeIds","preparateurIds","numeroBL"];
   var added = false;
   for (var k = 0; k < needed.length; k++) {
     if (headers.indexOf(needed[k]) === -1) {
@@ -2892,6 +2892,34 @@ function _getClientName(clientId) {
   return null;
 }
 
+// Compteur global de BL, séquentiel à partir de 1.
+// Atomique grâce à LockService (jamais 2 BL avec le même numéro).
+function _nextBlNumber() {
+  var lock = LockService.getScriptLock();
+  lock.waitLock(10000);
+  try {
+    var props = PropertiesService.getScriptProperties();
+    var current = parseInt(props.getProperty("BL_COUNTER") || "0", 10);
+    var next = current + 1;
+    props.setProperty("BL_COUNTER", String(next));
+    return next;
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// Si la ligne Livraison n'a pas encore de numeroBL, on lui en attribue un.
+// Retourne le numéro (existant ou nouveau).
+function _ensureBlNumber(sheet, rowIdx1Based, headers) {
+  var iBl = headers.indexOf("numeroBL");
+  if (iBl < 0) return null;
+  var current = sheet.getRange(rowIdx1Based, iBl + 1).getValue();
+  if (current && Number(current) > 0) return Number(current);
+  var n = _nextBlNumber();
+  sheet.getRange(rowIdx1Based, iBl + 1).setValue(n);
+  return n;
+}
+
 // Vue agrégée de la progression d'une tournée (utilisée par les pages scan + modale).
 // Retourne par client la liste des vélos avec leurs dates d'étape, et les totaux globaux.
 function getTourneeProgression(tourneeId) {
@@ -2927,19 +2955,30 @@ function getTourneeProgression(tourneeId) {
   // C'est ça le dénominateur attendu, PAS le nombre de lignes Velos pour le client
   // (un client peut avoir des vélos en stock qui ne sont pas dans cette tournée-ci).
   var nbVelosByClient = {};
+  var rowIdxByClient = {}; // clientId -> 1-based row index of the Livraisons line
   var orderedClientIds = [];
   var datePrevue = null;
   for (var i = 1; i < lData.length; i++) {
     if (String(lData[i][iLTid]) !== String(tourneeId)) continue;
     if (!datePrevue && iLDate >= 0) datePrevue = lData[i][iLDate] || null;
     var cid = String(lData[i][iLCid] || "").trim();
-    if (cid && orderedClientIds.indexOf(cid) === -1) orderedClientIds.push(cid);
+    if (cid && orderedClientIds.indexOf(cid) === -1) {
+      orderedClientIds.push(cid);
+      rowIdxByClient[cid] = i + 1; // +1 because sheet rows are 1-indexed and row 1 = headers
+    }
     if (cid && iLNb >= 0) {
       var n = Number(lData[i][iLNb]) || 0;
       nbVelosByClient[cid] = (nbVelosByClient[cid] || 0) + n;
     }
   }
   if (orderedClientIds.length === 0) return { error: "Tournée introuvable: " + tourneeId };
+
+  // Attribue un numéro BL séquentiel à chaque livraison qui n'en a pas encore.
+  // Numéro persistant en colonne numeroBL : une fois attribué, il ne change plus.
+  var numeroBlByClient = {};
+  orderedClientIds.forEach(function(cid) {
+    numeroBlByClient[cid] = _ensureBlNumber(ctx.sheet, rowIdxByClient[cid], lHeaders);
+  });
 
   function clientById(id) {
     for (var k = 1; k < cData.length; k++) {
@@ -2999,6 +3038,7 @@ function getTourneeProgression(tourneeId) {
       codePostal: c.codePostal || "",
       telephone: c.telephone || null,
       contact: c.contact || null,
+      numeroBL: numeroBlByClient[cid] || null,
       velos: velos,
       totals: ct,
     };

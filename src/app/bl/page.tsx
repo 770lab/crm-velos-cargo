@@ -12,6 +12,7 @@ type Client = {
   codePostal: string;
   telephone: string | null;
   contact: string | null;
+  numeroBL: number | null;
   velos: Velo[];
 };
 type Progression =
@@ -50,8 +51,12 @@ function BlPage() {
   const dateLivraison = data.datePrevue ? new Date(data.datePrevue) : new Date();
   const dateStr = dateLivraison.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
 
-  const blRef = (clientId: string) =>
-    `BL-${tourneeId.slice(0, 8).toUpperCase()}-${clientId.slice(-4).toUpperCase()}`;
+  // Le numéro BL est attribué côté serveur dès l'appel getTourneeProgression
+  // (séquentiel global, persistant). Fallback hash si pas encore attribué.
+  const blRef = (c: Client) =>
+    c.numeroBL != null
+      ? `BL-${c.numeroBL}`
+      : `BL-${tourneeId.slice(0, 8).toUpperCase()}-${c.clientId.slice(-4).toUpperCase()}`;
 
   return (
     <>
@@ -175,7 +180,7 @@ function BlPage() {
       <div className="no-print h-12" />
 
       {clients.map((c) => {
-        const ref = blRef(c.clientId);
+        const ref = blRef(c);
         const adresseLivraison = [c.adresse, c.codePostal, c.ville].filter(Boolean).join(", ");
         const nbVelos = c.velos.length;
         return (
