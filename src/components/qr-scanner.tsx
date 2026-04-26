@@ -31,6 +31,8 @@ export default function QrScanner({
     "idle",
   );
   const [errMsg, setErrMsg] = useState<string | null>(null);
+  const [detectionCount, setDetectionCount] = useState(0);
+  const [lastDetected, setLastDetected] = useState<string | null>(null);
 
   // Refs pour les callbacks afin que les changements de props ne re-créent pas
   // le BarcodeReader (recréation = caméra qui se ré-init = flicker + lag).
@@ -97,9 +99,13 @@ export default function QrScanner({
         });
 
         instance.detected = (codes) => {
+          setDetectionCount((n) => n + codes.length);
           if (codes.length === 0) return;
           const data = codes[0].data?.trim();
-          if (data) onScanRef.current(data);
+          if (data) {
+            setLastDetected(data.length > 40 ? data.slice(0, 40) + "…" : data);
+            onScanRef.current(data);
+          }
         };
         instance.onError = (e) => {
           const msg = e instanceof Error ? e.message : String(e);
@@ -180,6 +186,11 @@ export default function QrScanner({
       </div>
       <div className="text-xs text-gray-500 text-center">
         Vise le QR dans le cadre. Bip + vibration à chaque scan réussi.
+      </div>
+      <div className="text-[10px] text-gray-700 bg-gray-100 rounded px-2 py-1 font-mono">
+        <div>strich: {status} · détections: {detectionCount}</div>
+        {lastDetected && <div className="break-all">last: {lastDetected}</div>}
+        {errMsg && <div className="text-red-700 break-all">err: {errMsg}</div>}
       </div>
     </div>
   );
