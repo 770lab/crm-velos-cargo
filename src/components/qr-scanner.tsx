@@ -4,6 +4,7 @@ import {
   scanImageData,
   setModuleArgs,
   getInstance,
+  getDefaultScanner,
   ZBarScanner,
   ZBarSymbolType,
   ZBarConfigType,
@@ -29,6 +30,20 @@ const PAUSE_AFTER_SCAN_MS = 1000;
 setModuleArgs({
   locateFile: (filename) => `${BASE_PATH}/${filename}`,
 });
+
+// BarcodeDetector natif iOS Safari 17+. Avant on l'avait essayé sur un
+// HTMLVideoElement et il retournait toujours [] — peut-être un bug iOS où
+// detect() ne digère pas les video elements en streaming. On essaie ici sur
+// un HTMLCanvasElement (frame statique extraite du flux), qui pourrait être
+// digéré différemment par le décodeur Apple sous-jacent.
+type BarcodeDetectorCtor = new (opts?: { formats?: string[] }) => {
+  detect: (source: CanvasImageSource) => Promise<{ rawValue: string }[]>;
+};
+function getBarcodeDetector(): BarcodeDetectorCtor | null {
+  if (typeof window === "undefined") return null;
+  const w = window as unknown as { BarcodeDetector?: BarcodeDetectorCtor };
+  return w.BarcodeDetector || null;
+}
 
 // Scanner zbar custom avec TEST_INVERTED activé.
 //
@@ -124,7 +139,7 @@ export default function QrScanner({
           setWasmStatus("ready");
           // Marker version explicite pour qu'on voie tout de suite si le
           // navigateur charge bien le dernier code (vs. cache navigateur).
-          setDebugLog("v3: WASM+scanner ready (INV+canvas-check)");
+          setDebugLog("v5: ready (BD-native + zbar-default + zbar-inv)");
         }
       } catch (e) {
         if (cancelled) return;
@@ -188,13 +203,13 @@ export default function QrScanner({
           try {
             const vw = video.videoWidth;
             const vh = video.videoHeight;
-            const scanner = await getInvertedAwareScanner();
 
             scanCounterRef.current += 1;
             const cur = scanCounterRef.current;
-            setScanCount(cur);
+            if (cur % 5 === 0) setScanCount(cur);
 
-            // ---- Pass 1 : frame entière downsamplée à 1280px ----
+            // Une seule capture du frame, taille raisonnable (1280px max).
+            // On testera ensuite 3 décodeurs sur ce même canvas.
             const maxDim = 1280;
             const scale1 = Math.min(1, maxDim / Math.max(vw, vh));
             const w1 = Math.max(1, Math.floor(vw * scale1));
@@ -202,24 +217,20 @@ export default function QrScanner({
             canvas.width = w1;
             canvas.height = h1;
             ctx.drawImage(video, 0, 0, vw, vh, 0, 0, w1, h1);
-            const imageData1 = ctx.getImageData(0, 0, w1, h1);
 
-            // Diagnostic anti-canvas-vide : iOS Safari peut rendre du noir
-            // quand on drawImage depuis un <video>. On échantillonne ~256 px
-            // répartis et on calcule la moyenne + le min/max, pour détecter
-            // un canvas tout noir (avg≈0, max=0) ou tout blanc (min=255).
-            // Affiché toutes les 30 frames pour ne pas spammer le state.
+            // Diagnostic toutes les 30 frames + snapshot toutes les 60.
             if (cur % 30 === 0) {
+              const imageData = ctx.getImageData(0, 0, w1, h1);
               let sum = 0;
               let lo = 255;
               let hi = 0;
               const step = Math.max(
                 4,
-                Math.floor(imageData1.data.length / (256 * 4)) * 4,
+                Math.floor(imageData.data.length / (256 * 4)) * 4,
               );
               let n = 0;
-              for (let i = 0; i < imageData1.data.length; i += step) {
-                const r = imageData1.data[i];
+              for (let i = 0; i < imageData.data.length; i += step) {
+                const r = imageData.data[i];
                 sum += r;
                 if (r < lo) lo = r;
                 if (r > hi) hi = r;
@@ -227,10 +238,8 @@ export default function QrScanner({
               }
               const avg = n > 0 ? Math.round(sum / n) : 0;
               setDebugLog(
-                `v3 #${cur} canvas ${w1}x${h1} R-avg=${avg} min=${lo} max=${hi}`,
+                `v5 #${cur} canvas ${w1}x${h1} R-avg=${avg} min=${lo} max=${hi}`,
               );
-              // Snapshot visuel toutes les 60 frames (12 sec à 5 FPS) pour
-              // que l'user voit ce qu'on passe à zbar.
               if (cur % 60 === 0) {
                 try {
                   setSnapshot(canvas.toDataURL("image/jpeg", 0.5));
@@ -240,54 +249,84 @@ export default function QrScanner({
               }
             }
 
-            let symbols = await scanImageData(imageData1, scanner);
+            // Cascade de 3 décodeurs sur le même canvas. On s'arrête dès
+            // qu'un décode. On tag la source pour savoir lequel a marché.
+            //   1. BarcodeDetector natif iOS (Apple decoder, normalement le
+            //      meilleur sur ces QR — l'app caméra native marche, donc
+            //      le moteur Apple est capable de décoder ces stickers)
+            //   2. zbar default (BINARY=1 seulement)
+            //   3. zbar custom (BINARY=1 + TEST_INVERTED=1)
+            let decoded: { text: string; via: string } | null = null;
 
-            if (cancelled) return;
-
-            if (symbols.length === 0) {
-              // ---- Pass 2 : crop centre 60% à pleine résolution ----
-              const cropSize = Math.floor(Math.min(vw, vh) * 0.6);
-              const sx = Math.floor((vw - cropSize) / 2);
-              const sy = Math.floor((vh - cropSize) / 2);
-              canvas.width = cropSize;
-              canvas.height = cropSize;
-              ctx.drawImage(
-                video,
-                sx,
-                sy,
-                cropSize,
-                cropSize,
-                0,
-                0,
-                cropSize,
-                cropSize,
-              );
-              const imageData2 = ctx.getImageData(0, 0, cropSize, cropSize);
-              symbols = await scanImageData(imageData2, scanner);
-              if (cancelled) return;
+            // ---- 1. BarcodeDetector natif sur canvas ----
+            const Ctor = getBarcodeDetector();
+            if (Ctor && !decoded) {
+              try {
+                const detector = new Ctor({ formats: ["qr_code"] });
+                const codes = await detector.detect(canvas);
+                if (cancelled) return;
+                if (codes.length > 0 && codes[0].rawValue) {
+                  decoded = { text: codes[0].rawValue, via: "BD-native" };
+                }
+              } catch {
+                /* BarcodeDetector pas dispo ou erreur, on tombe sur zbar */
+              }
             }
 
-            if (symbols.length > 0) {
-              const text = symbols[0].decode();
-              if (text) {
-                const trimmed = text.trim();
-                const now = Date.now();
-                const last = lastScannedRef.current;
-                const isDuplicate =
-                  last && last.text === trimmed && now - last.at < 2500;
-                if (!isDuplicate) {
-                  lastScannedRef.current = { text: trimmed, at: now };
-                  setHits((h) => h + 1);
-                  beep();
-                  pausedUntil = now + PAUSE_AFTER_SCAN_MS;
-                  setDebugLog(`Decoded: ${trimmed.slice(0, 80)}`);
-                  onScan(trimmed);
+            // ---- 2. zbar default scanner ----
+            if (!decoded) {
+              try {
+                const imageData = ctx.getImageData(0, 0, w1, h1);
+                const defaultScanner = await getDefaultScanner();
+                const symbols = await scanImageData(imageData, defaultScanner);
+                if (cancelled) return;
+                if (symbols.length > 0) {
+                  const text = symbols[0].decode();
+                  if (text) decoded = { text, via: "zbar-default" };
                 }
+              } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e);
+                setDebugLog(`zbar-default err: ${msg.slice(0, 100)}`);
+              }
+            }
+
+            // ---- 3. zbar custom (TEST_INVERTED) ----
+            if (!decoded) {
+              try {
+                const imageData = ctx.getImageData(0, 0, w1, h1);
+                const customScanner = await getInvertedAwareScanner();
+                const symbols = await scanImageData(imageData, customScanner);
+                if (cancelled) return;
+                if (symbols.length > 0) {
+                  const text = symbols[0].decode();
+                  if (text) decoded = { text, via: "zbar-inv" };
+                }
+              } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e);
+                setDebugLog(`zbar-inv err: ${msg.slice(0, 100)}`);
+              }
+            }
+
+            if (decoded) {
+              const trimmed = decoded.text.trim();
+              const now = Date.now();
+              const last = lastScannedRef.current;
+              const isDuplicate =
+                last && last.text === trimmed && now - last.at < 2500;
+              if (!isDuplicate) {
+                lastScannedRef.current = { text: trimmed, at: now };
+                setHits((h) => h + 1);
+                beep();
+                pausedUntil = now + PAUSE_AFTER_SCAN_MS;
+                setDebugLog(
+                  `Decoded[${decoded.via}]: ${trimmed.slice(0, 80)}`,
+                );
+                onScan(trimmed);
               }
             }
           } catch (e) {
             const msg = e instanceof Error ? e.message : String(e);
-            setDebugLog(`scan err: ${msg.slice(0, 120)}`);
+            setDebugLog(`tick err: ${msg.slice(0, 120)}`);
           } finally {
             scanning = false;
           }
