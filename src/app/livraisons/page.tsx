@@ -739,7 +739,12 @@ function TourneeModal({
     return map;
   }, [allClients]);
   const [busy, setBusy] = useState<string | null>(null);
-  const [monteurs, setMonteurs] = useState(() => tournee.nbMonteurs > 0 ? tournee.nbMonteurs : MONTEURS_PAR_EQUIPE);
+  const monteurIdsAssignes = tournee.livraisons[0]?.monteurIds || [];
+  const [monteurs, setMonteurs] = useState(() => {
+    if (tournee.nbMonteurs > 0) return tournee.nbMonteurs;
+    if (monteurIdsAssignes.length > 0) return monteurIdsAssignes.length;
+    return MONTEURS_PAR_EQUIPE;
+  });
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [editingDate, setEditingDate] = useState(false);
   const [newDate, setNewDate] = useState(tournee.datePrevue ? isoDate(tournee.datePrevue) : "");
@@ -748,7 +753,9 @@ function TourneeModal({
 
   useEffect(() => {
     if (!tournee.tourneeId) return;
-    const init = tournee.nbMonteurs > 0 ? tournee.nbMonteurs : MONTEURS_PAR_EQUIPE;
+    const init = tournee.nbMonteurs > 0
+      ? tournee.nbMonteurs
+      : (monteurIdsAssignes.length > 0 ? monteurIdsAssignes.length : MONTEURS_PAR_EQUIPE);
     if (monteurs === init) return;
     const t = setTimeout(() => {
       gasPost("assignTournee", { tourneeId: tournee.tourneeId, nbMonteurs: monteurs })

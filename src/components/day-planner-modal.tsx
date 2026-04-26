@@ -178,6 +178,7 @@ export default function DayPlannerModal({
             chauffeurId: chauffeurArr.length ? chauffeurArr[i % chauffeurArr.length] : "",
             chefEquipeIds: chefArr.length ? [chefArr[i % chefArr.length]] : [],
             monteurIds: monteurBuckets[i],
+            nbMonteurs: monteurBuckets[i].length,
           }),
         ),
       );
