@@ -83,12 +83,11 @@ export default function QrScanner({
         const instance = new BarcodeReader({
           selector: hostRef.current,
           engine: {
-            // Strich détecte les QR standards de qr-code-generator mais pas les
-            // BicyCode physiques. On élargit aux variantes visuellement proches
-            // (Data Matrix, Micro QR) au cas où le sticker n'est pas un QR plein.
+            // Inspection des stickers BicyCode actuels (apic-asso.com / bicycode.eu)
+            // : ce sont des QR standards (modules noirs sur fond clair), pas inverted
+            // comme le suggérait l'ancien commentaire. iOS Photo les détecte
+            // instantanément. On garde aussi datamatrix + microqr par sécurité.
             symbologies: ["qr", "datamatrix", "microqr"],
-            // BicyCode officiels = QR clair sur fond sombre, polarité inversée
-            invertedCodes: true,
             // Évite les multiples détections du même code à la suite.
             duplicateInterval: 2500,
           },
