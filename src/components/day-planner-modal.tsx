@@ -33,6 +33,12 @@ type ProposeResponse = {
   proposition?: Proposition;
   error?: string;
   raw?: string;
+  parseError?: string;
+  finishReason?: string;
+  rawLength?: number;
+  rawHead?: string;
+  rawTail?: string;
+  body?: string;
 };
 
 function isoToday() {
@@ -260,8 +266,30 @@ export default function DayPlannerModal({
               <div className="bg-red-50 border border-red-200 rounded-lg p-3 text-sm text-red-800">
                 <div className="font-medium">Erreur Gemini</div>
                 <div className="mt-1">{proposition.error}</div>
+                {(proposition.finishReason || proposition.rawLength != null || proposition.parseError) && (
+                  <div className="mt-1 text-xs text-red-700 space-y-0.5">
+                    {proposition.finishReason && <div>finishReason : <code>{proposition.finishReason}</code></div>}
+                    {proposition.rawLength != null && <div>longueur réponse : {proposition.rawLength} chars</div>}
+                    {proposition.parseError && <div>parseError : <code>{proposition.parseError}</code></div>}
+                  </div>
+                )}
+                {proposition.rawHead && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-xs text-red-700">Début de la réponse</summary>
+                    <pre className="mt-1 text-xs whitespace-pre-wrap text-red-700 bg-red-100 p-2 rounded max-h-40 overflow-y-auto">{proposition.rawHead}</pre>
+                  </details>
+                )}
+                {proposition.rawTail && (
+                  <details className="mt-2">
+                    <summary className="cursor-pointer text-xs text-red-700">Fin de la réponse</summary>
+                    <pre className="mt-1 text-xs whitespace-pre-wrap text-red-700 bg-red-100 p-2 rounded max-h-40 overflow-y-auto">{proposition.rawTail}</pre>
+                  </details>
+                )}
                 {proposition.raw && (
                   <pre className="mt-2 text-xs whitespace-pre-wrap text-red-700 bg-red-100 p-2 rounded max-h-40 overflow-y-auto">{proposition.raw}</pre>
+                )}
+                {proposition.body && (
+                  <pre className="mt-2 text-xs whitespace-pre-wrap text-red-700 bg-red-100 p-2 rounded max-h-40 overflow-y-auto">{proposition.body}</pre>
                 )}
               </div>
             ) : (

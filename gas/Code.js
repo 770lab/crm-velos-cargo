@@ -3164,8 +3164,9 @@ function proposeTournee(payload) {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: {
       temperature: 0.1,
-      maxOutputTokens: 8192,
-      responseMimeType: "application/json"
+      maxOutputTokens: 32768,
+      responseMimeType: "application/json",
+      thinkingConfig: { thinkingBudget: 0 }
     }
   };
 
@@ -3183,11 +3184,18 @@ function proposeTournee(payload) {
       lastCode = res.getResponseCode();
       if (lastCode === 200) {
         var data = JSON.parse(res.getContentText());
-        var parts = (((data.candidates || [])[0] || {}).content || {}).parts;
-        if (!parts || !parts[0] || !parts[0].text) return { error: "Réponse Gemini vide" };
+        var cand = (data.candidates || [])[0] || {};
+        var parts = (cand.content || {}).parts;
+        var finishReason = cand.finishReason || null;
+        if (!parts || !parts[0] || !parts[0].text) return { error: "Réponse Gemini vide", finishReason: finishReason };
         var raw = parts[0].text;
+        var cleaned = raw
+          .replace(/^﻿/, "")
+          .replace(/^\s*```(?:json)?\s*\n?/i, "")
+          .replace(/\n?\s*```\s*$/i, "")
+          .trim();
         try {
-          var parsed = JSON.parse(raw);
+          var parsed = JSON.parse(cleaned);
           return {
             ok: true,
             date: date,
@@ -3204,7 +3212,14 @@ function proposeTournee(payload) {
             proposition: parsed
           };
         } catch (parseErr) {
-          return { error: "Réponse Gemini non-JSON", raw: raw.slice(0, 500) };
+          return {
+            error: "Réponse Gemini non-JSON",
+            parseError: String(parseErr && parseErr.message || parseErr),
+            finishReason: finishReason,
+            rawLength: raw.length,
+            rawHead: cleaned.slice(0, 400),
+            rawTail: cleaned.slice(-400)
+          };
         }
       }
       lastBody = res.getContentText();
