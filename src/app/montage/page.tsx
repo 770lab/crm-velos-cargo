@@ -135,7 +135,10 @@ function ClientMontageView({
   // null → on est entre 2 vélos (afficher bouton "📸 Démarrer un nouveau vélo")
   const [currentFnuci, setCurrentFnuci] = useState<string | null>(null);
   const [currentSlot, setCurrentSlot] = useState<Slot>("etiquette");
-  const [busy, setBusy] = useState(false);
+  // Phase courante pour afficher au user où on en est ("Envoi…" générique
+  // donnait l'impression que rien ne se passe quand l'appel Gemini durait 3s).
+  const [phase, setPhase] = useState<"idle" | "compressing" | "identifying" | "uploading">("idle");
+  const busy = phase !== "idle";
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
 
@@ -180,9 +183,15 @@ function ClientMontageView({
     { total: 0, done: 0 },
   );
 
-  // Compresse l'image avant de l'envoyer. Sinon l'upload met 30s sur 4G et
-  // Gemini timeout. 800px/JPEG 0.7 → ~50–80 KB par image.
-  const compressImage = async (file: File): Promise<{ base64: string; mimeType: string }> => {
+  // Compresse l'image avant de l'envoyer. Pour les slots etiquette/qrvelo,
+  // on est limité par la lisibilité du FNUCI BicyCode imprimé : 720px/JPEG 0.6
+  // suffit pour Gemini Vision (testé) et fait passer le poids de ~70 KB à ~30 KB,
+  // soit -55% sur l'upload + l'inférence Gemini. Pour le slot "monte" (preuve
+  // de réalisation), 600px/JPEG 0.55 — pas besoin de fine résolution, juste
+  // attester qu'il y a un vélo monté à l'image.
+  const compressImage = async (file: File, slot: Slot): Promise<{ base64: string; mimeType: string }> => {
+    const targetW = slot === "monte" ? 600 : 720;
+    const quality = slot === "monte" ? 0.55 : 0.6;
     const dataUrl = await new Promise<string>((resolve, reject) => {
       const r = new FileReader();
       r.onload = () => resolve(String(r.result || ""));
@@ -196,7 +205,7 @@ function ClientMontageView({
       im.src = dataUrl;
     });
     const ratio = img.width / img.height;
-    const w = Math.min(800, img.width);
+    const w = Math.min(targetW, img.width);
     const h = Math.round(w / ratio);
     const canvas = document.createElement("canvas");
     canvas.width = w;
@@ -204,16 +213,16 @@ function ClientMontageView({
     const ctx = canvas.getContext("2d");
     if (!ctx) throw new Error("canvas indisponible");
     ctx.drawImage(img, 0, 0, w, h);
-    const out = canvas.toDataURL("image/jpeg", 0.7);
+    const out = canvas.toDataURL("image/jpeg", quality);
     const comma = out.indexOf(",");
     return { base64: out.slice(comma + 1), mimeType: "image/jpeg" };
   };
 
   const onFileChosen = async (file: File) => {
     setErrMsg(null);
-    setBusy(true);
+    setPhase("compressing");
     try {
-      const compressed = await compressImage(file);
+      const compressed = await compressImage(file, currentSlot);
 
       // Slot etiquette : on identifie d'abord le FNUCI (Gemini), on vérifie
       // qu'il appartient à ce client et qu'il n'est pas déjà monté.
@@ -222,6 +231,7 @@ function ClientMontageView({
       // Slot monte : pas d'extraction, on utilise le FNUCI courant.
       let resolvedFnuci = currentFnuci;
       if (currentSlot === "etiquette" || currentSlot === "qrvelo") {
+        setPhase("identifying");
         const ident = (await gasUpload("extractFnuciFromImage", {
           imageBase64: compressed.base64,
           mimeType: compressed.mimeType,
@@ -276,6 +286,7 @@ function ClientMontageView({
       }
 
       // Upload de la photo dans le bon slot.
+      setPhase("uploading");
       const up = (await gasUpload("uploadMontagePhoto", {
         fnuci: resolvedFnuci,
         slot: currentSlot,
@@ -306,7 +317,7 @@ function ClientMontageView({
     } catch (e) {
       setErrMsg(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      setPhase("idle");
       if (fileRef.current) fileRef.current.value = "";
     }
   };
@@ -437,9 +448,10 @@ function ClientMontageView({
             disabled={busy || (totals.done === totals.total && totals.total > 0)}
             className="w-full bg-blue-600 text-white rounded-lg py-3 font-medium disabled:opacity-50"
           >
-            {busy
-              ? "Envoi…"
-              : `${SLOT_EMOJI[currentSlot]} Photo ${SLOT_LABEL[currentSlot].toLowerCase()}`}
+            {phase === "compressing" && "📦 Compression…"}
+            {phase === "identifying" && "🤖 Lecture du FNUCI par Gemini…"}
+            {phase === "uploading" && "💾 Sauvegarde sur Drive…"}
+            {phase === "idle" && `${SLOT_EMOJI[currentSlot]} Photo ${SLOT_LABEL[currentSlot].toLowerCase()}`}
           </button>
 
           {currentFnuci && (
