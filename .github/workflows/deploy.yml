@@ -26,6 +26,7 @@ jobs:
       - run: npx next build
         env:
           NEXT_PUBLIC_GAS_URL: ${{ vars.NEXT_PUBLIC_GAS_URL }}
+          NEXT_PUBLIC_STRICH_LICENSE_KEY: ${{ secrets.STRICH_LICENSE_KEY }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: out
