@@ -928,6 +928,42 @@ function TourneeModal({
 
   const isRetrait = tournee.mode === "retrait";
 
+  // Segments routiers réels via Google Maps Distance Matrix (endpoint GAS
+  // getRouting). Tableau ordonné : [ENTREPOT→arret0, arret0→arret1, ...,
+  // arretN→ENTREPOT]. Null tant que l'appel n'est pas revenu — le rendu
+  // utilise alors le fallback haversine ci-dessous.
+  const [apiSegments, setApiSegments] = useState<{ distKm: number; trajetMin: number }[] | null>(null);
+
+  useEffect(() => {
+    const livs = tournee.livraisons;
+    if (livs.length === 0) {
+      setApiSegments(null);
+      return;
+    }
+    let cancelled = false;
+    setApiSegments(null);
+    // On envoie TOUS les points (entrepôt + arrêts + entrepôt) y compris ceux
+    // sans coords (le GAS renvoie {0,0,skip} pour ces segments-là).
+    const points: { lat: number; lng: number }[] = [
+      { lat: ENTREPOT.lat, lng: ENTREPOT.lng },
+      ...livs.map((l) => ({ lat: l.client.lat ?? 0, lng: l.client.lng ?? 0 })),
+      { lat: ENTREPOT.lat, lng: ENTREPOT.lng },
+    ];
+    gasPost("getRouting", { points })
+      .then((r: { ok?: boolean; segments?: { distKm: number; trajetMin: number }[] }) => {
+        if (cancelled) return;
+        if (r.ok && r.segments && r.segments.length === points.length - 1) {
+          setApiSegments(r.segments);
+        }
+      })
+      .catch(() => {
+        // Silencieux : on garde le fallback haversine, c'est mieux que rien.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tournee.livraisons]);
+
   const segments = useMemo(() => {
     const segs: { distKm: number; trajetMin: number; fromLabel: string }[] = [];
     for (let i = 0; i < tournee.livraisons.length; i++) {
@@ -935,6 +971,15 @@ function TourneeModal({
       const prevLat = i === 0 ? ENTREPOT.lat : (tournee.livraisons[i - 1].client.lat ?? 0);
       const prevLng = i === 0 ? ENTREPOT.lng : (tournee.livraisons[i - 1].client.lng ?? 0);
       const fromLabel = i === 0 ? ENTREPOT.label : "";
+      // Priorité 1 : segment routier réel renvoyé par Google Maps
+      // (apiSegments[i] correspond à entrepôt→arret0 pour i=0, sinon arret[i-1]→arret[i]).
+      const apiSeg = apiSegments?.[i];
+      if (apiSeg && (apiSeg.distKm > 0 || apiSeg.trajetMin > 0)) {
+        segs.push({ distKm: apiSeg.distKm, trajetMin: apiSeg.trajetMin, fromLabel });
+        continue;
+      }
+      // Fallback haversine × 1.3 puis 30 km/h. Optimiste en zone urbaine
+      // mais c'est le mieux qu'on a sans l'API (offline ou erreur Maps).
       if (prevLat && prevLng && curr.lat && curr.lng) {
         const d = haversineKm(prevLat, prevLng, curr.lat, curr.lng);
         const routeKm = d * 1.3;
@@ -944,16 +989,21 @@ function TourneeModal({
       }
     }
     return segs;
-  }, [tournee.livraisons]);
+  }, [tournee.livraisons, apiSegments]);
 
   const retourSegment = useMemo(() => {
     if (tournee.livraisons.length === 0) return { distKm: 0, trajetMin: 0 };
+    // apiSegments[N] = dernier arrêt → entrepôt (où N = nb de livraisons)
+    const apiRetour = apiSegments?.[tournee.livraisons.length];
+    if (apiRetour && (apiRetour.distKm > 0 || apiRetour.trajetMin > 0)) {
+      return { distKm: apiRetour.distKm, trajetMin: apiRetour.trajetMin };
+    }
     const last = tournee.livraisons[tournee.livraisons.length - 1].client;
     if (!last.lat || !last.lng) return { distKm: 0, trajetMin: 0 };
     const d = haversineKm(last.lat, last.lng, ENTREPOT.lat, ENTREPOT.lng);
     const routeKm = d * 1.3;
     return { distKm: Math.round(routeKm * 10) / 10, trajetMin: Math.round(routeKm / 0.5) };
-  }, [tournee.livraisons]);
+  }, [tournee.livraisons, apiSegments]);
 
   const totalTrajetMin = segments.reduce((s, seg) => s + seg.trajetMin, 0) + retourSegment.trajetMin;
   const totalMontageMin = tournee.totalVelos * MINUTES_PAR_VELO;
@@ -1306,6 +1356,28 @@ function TourneeModal({
                     const tot = cp?.total ?? l._count.velos;
                     const tid = encodeURIComponent(tournee.tourneeId);
                     const cid = l.clientId ? `&clientId=${encodeURIComponent(l.clientId)}` : "";
+                    // Effectif mobilisé par étape, basé sur l'équipe assignée à la
+                    // tournée (preparateurIds, chauffeurId, chefEquipeIds, monteurIds
+                    // — tous portés par la 1re livraison de la tournée).
+                    // Mapping :
+                    //   Prép. = nb préparateurs
+                    //   Charg. = chauffeur(1) + monteurs (équipe au dépôt)
+                    //   Livr. = chauffeur(1) + chefs (responsables remise client)
+                    //   Mont. = monteurs déployés sur CET arrêt précis (deployPlan)
+                    const liv0 = tournee.livraisons[0];
+                    const nbPreparateurs = liv0?.preparateurIds?.length || 0;
+                    const nbMonteursAssignes = liv0?.monteurIds?.length || monteurs;
+                    const nbChefs = liv0?.chefEquipeIds?.length || 0;
+                    const hasChauffeur = !!liv0?.chauffeurId;
+                    const nbCharg = (hasChauffeur ? 1 : 0) + nbMonteursAssignes;
+                    const nbLivr = (hasChauffeur ? 1 : 0) + nbChefs;
+                    const nbMontIci = deployPlan.steps[i]?.monteursAffectes ?? nbMonteursAssignes;
+                    const effectifs: Record<"prepare" | "charge" | "livre" | "monte", number> = {
+                      prepare: nbPreparateurs,
+                      charge: nbCharg,
+                      livre: nbLivr,
+                      monte: nbMontIci,
+                    };
                     const stages: { key: "prepare" | "charge" | "livre" | "monte"; label: string; emoji: string; href: string | null }[] = [
                       { key: "prepare", label: "Prép.", emoji: "📦", href: `/crm-velos-cargo/preparation?tourneeId=${tid}${cid}` },
                       { key: "charge", label: "Charg.", emoji: "🚚", href: `/crm-velos-cargo/chargement?tourneeId=${tid}${cid}` },
@@ -1331,11 +1403,13 @@ function TourneeModal({
                           if (isLivreeStatut && !done && (s.key === "livre" || (prevDone && v < tot))) {
                             cls = "bg-red-100 text-red-800 border-red-300";
                           }
+                          const eff = effectifs[s.key];
                           const content = (
                             <span className="inline-flex items-center gap-1">
                               <span>{s.emoji}</span>
                               <span className="font-medium">{s.label}</span>
                               <span className="font-mono">{v}/{tot}</span>
+                              {eff > 0 && <span className="opacity-70">({eff}p)</span>}
                               {done && <span>✓</span>}
                             </span>
                           );

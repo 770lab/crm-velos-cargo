@@ -217,6 +217,11 @@ function handleRequest(e) {
           mode: bodyPT.mode || e.parameter.mode || "fillGaps"
         });
         break;
+      case "getRouting":
+        var bodyGR = getBody();
+        var pointsGR = bodyGR.points || (e.parameter.points ? JSON.parse(e.parameter.points) : []);
+        result = getRouting({ points: pointsGR });
+        break;
       default:
         result = { error: "Action inconnue: " + action };
     }
@@ -4359,4 +4364,101 @@ function _buildProposeTourneePrompt(date, camions, clients, affectesExistants, m
     "  \"resume\": \"phrase courte expliquant la stratégie globale et le total de tournées\"",
     "}"
   ].join("\n");
+}
+
+// ---- ROUTING (Google Maps Distance Matrix) ----
+
+// Calcule la distance/durée routière réelle entre points consécutifs via
+// l'API Distance Matrix de Google Maps. Remplace l'estimation haversine
+// (très optimiste en zone urbaine dense — 8 min pour traverser Paris alors
+// qu'il en faut 20-30).
+//
+// Body : { points: [{ lat, lng }, ...] } — au moins 2 points.
+// Retourne : { ok, segments: [{ distKm, trajetMin, source }], apiCalls, cached }
+//   - source = "api" | "cache" | "skip" (point sans coords) | "api_error" | "fetch_error"
+//   - distKm en km (1 décimale), trajetMin en minutes (entier)
+//
+// Cache : CacheService 6h (max), clé = paire (lat,lng) arrondie à 5 décimales.
+// Coût : 1 appel API par segment NON caché. Couvert par le free tier
+// Maps Platform 200$/mois (env. 40000 appels gratuits sur Distance Matrix).
+function getRouting(opts) {
+  var points = (opts && opts.points) || [];
+  if (!Array.isArray(points) || points.length < 2) {
+    return { ok: false, error: "Au moins 2 points requis", segments: [] };
+  }
+
+  var apiKey = PropertiesService.getScriptProperties().getProperty("GOOGLE_MAPS_API_KEY");
+  if (!apiKey) {
+    return { ok: false, error: "GOOGLE_MAPS_API_KEY manquante en Script Properties", segments: [] };
+  }
+
+  var cache = CacheService.getScriptCache();
+  var segments = [];
+  var apiCalls = 0;
+  var cachedCount = 0;
+
+  for (var i = 0; i < points.length - 1; i++) {
+    var p1 = points[i];
+    var p2 = points[i + 1];
+    if (!p1 || !p2 || typeof p1.lat !== "number" || typeof p1.lng !== "number" ||
+        typeof p2.lat !== "number" || typeof p2.lng !== "number" ||
+        (p1.lat === 0 && p1.lng === 0) || (p2.lat === 0 && p2.lng === 0)) {
+      segments.push({ distKm: 0, trajetMin: 0, source: "skip" });
+      continue;
+    }
+
+    // Clé cache arrondie à 5 décimales (~1m de précision) pour absorber le
+    // jitter sans dégrader la précision routière.
+    var key = "dm:" + p1.lat.toFixed(5) + "," + p1.lng.toFixed(5) +
+              "->" + p2.lat.toFixed(5) + "," + p2.lng.toFixed(5);
+    var cached = cache.get(key);
+    if (cached) {
+      try {
+        var c = JSON.parse(cached);
+        segments.push({ distKm: c.distKm, trajetMin: c.trajetMin, source: "cache" });
+        cachedCount++;
+        continue;
+      } catch (eParse) {
+        // cache corrompu, on retombe sur l'API
+      }
+    }
+
+    var url = "https://maps.googleapis.com/maps/api/distancematrix/json" +
+              "?origins=" + p1.lat + "," + p1.lng +
+              "&destinations=" + p2.lat + "," + p2.lng +
+              "&mode=driving" +
+              "&units=metric" +
+              "&language=fr" +
+              "&key=" + apiKey;
+
+    try {
+      var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      var data = JSON.parse(resp.getContentText());
+      apiCalls++;
+      if (data.status === "OK" &&
+          data.rows && data.rows[0] &&
+          data.rows[0].elements && data.rows[0].elements[0] &&
+          data.rows[0].elements[0].status === "OK") {
+        var el = data.rows[0].elements[0];
+        var distKm = Math.round(el.distance.value / 100) / 10; // m → km, 1 décimale
+        var trajetMin = Math.round(el.duration.value / 60); // s → min
+        segments.push({ distKm: distKm, trajetMin: trajetMin, source: "api" });
+        // Cache 6h (max autorisé par CacheService).
+        cache.put(key, JSON.stringify({ distKm: distKm, trajetMin: trajetMin }), 21600);
+      } else {
+        var elemStatus = (data.rows && data.rows[0] && data.rows[0].elements && data.rows[0].elements[0])
+          ? data.rows[0].elements[0].status : "NO_ELEMENT";
+        segments.push({
+          distKm: 0, trajetMin: 0,
+          source: "api_error",
+          apiStatus: data.status,
+          elemStatus: elemStatus
+        });
+      }
+    } catch (eFetch) {
+      segments.push({ distKm: 0, trajetMin: 0, source: "fetch_error", err: String(eFetch) });
+    }
+  }
+
+  return { ok: true, segments: segments, apiCalls: apiCalls, cached: cachedCount };
 }
