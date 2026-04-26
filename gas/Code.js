@@ -4580,8 +4580,13 @@ function getRouting(opts) {
 // laisse l'opérateur prendre une photo et on demande à Gemini Vision d'extraire
 // les codes (visibles à la fois en clair imprimé ET dans le QR).
 //
-// Body : { imageBase64, mimeType?, tourneeId, userId?, etape }
+// Body : { imageBase64, mimeType?, tourneeId, userId?, etape, forceClientId? }
 //   etape = "preparation" | "chargement" | "livraisonScan"
+//   forceClientId : si présent, le préparateur a sélectionné un client de la
+//     tournée à l'avance — on attribue chaque FNUCI extrait à ce client (via
+//     assignFnuciToClient) AVANT de marquer l'étape. C'est le workflow réel
+//     du préparateur en stock : il prend N vélos anonymes, les photographie
+//     pour le client courant, change de client, photographie les suivants.
 // Renvoie : { ok, extracted: ["BC..."], invalid: [...], results: [{ fnuci, result }], rawGeminiText }
 function extractFnuciFromImage(body) {
   body = body || {};
@@ -4591,6 +4596,7 @@ function extractFnuciFromImage(body) {
   if (etape !== "preparation" && etape !== "chargement" && etape !== "livraisonScan") {
     return { error: "etape invalide: " + etape };
   }
+  var forceClientId = body.forceClientId ? String(body.forceClientId) : null;
 
   var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
   if (!apiKey) return { error: "GEMINI_API_KEY absente dans Script Properties" };
@@ -4674,6 +4680,19 @@ function extractFnuciFromImage(body) {
 
   var results = extracted.map(function (fnuci) {
     var markBody = { fnuci: fnuci, tourneeId: body.tourneeId, userId: body.userId || null };
+    var assigned = null;
+    if (forceClientId) {
+      try {
+        assigned = assignFnuciToClient(fnuci, forceClientId);
+      } catch (errA) {
+        assigned = { error: "Assignation plantée: " + errA.message };
+      }
+      // Si l'assignation a échoué (FNUCI déjà ailleurs, client saturé, etc.),
+      // on n'essaie même pas de marquer — on remonte l'erreur d'assignation.
+      if (assigned && assigned.error) {
+        return { fnuci: fnuci, assigned: assigned, result: null };
+      }
+    }
     var r;
     try {
       if (etape === "preparation") r = markVeloPrepare(markBody);
@@ -4682,7 +4701,7 @@ function extractFnuciFromImage(body) {
     } catch (errM) {
       r = { error: "Marquage planté: " + errM.message };
     }
-    return { fnuci: fnuci, result: r };
+    return { fnuci: fnuci, assigned: assigned, result: r };
   });
 
   return {

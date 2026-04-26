@@ -462,6 +462,12 @@ function Inner({ mode }: { mode: ScanMode }) {
                 etape={cfg.unmarkEtape}
                 onAfter={loadProgression}
                 disabled={allDone}
+                clients={mode === "preparation" && "clients" in prog ? prog.clients.map((c) => ({
+                  clientId: c.clientId,
+                  entreprise: c.entreprise,
+                  total: c.totals.total,
+                  prepare: c.totals[cfg.totalsKey],
+                })) : undefined}
               />
             </div>
 
