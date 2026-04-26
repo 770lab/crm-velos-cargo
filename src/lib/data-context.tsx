@@ -121,6 +121,11 @@ interface EquipeMember {
   notes: string | null;
   createdAt?: string | null;
   hasCode?: boolean;
+  /** EUR/jour de travail, sert au calcul de la masse salariale par tournée. */
+  salaireJournalier?: number | null;
+  /** EUR par vélo (0-5). Pour chauffeurs/chefs : tous les vélos de la tournée.
+   *  Pour monteurs : split entre les monteurs de l'équipe sur la tournée. */
+  primeVelo?: number | null;
 }
 
 type CamionType = "gros" | "moyen" | "petit" | "retrait";

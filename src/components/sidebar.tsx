@@ -17,6 +17,7 @@ const NAV_BY_ROLE: Record<EquipeRole, NavItem[]> = {
     { href: "/carte", label: "Carte & Tournées", icon: "🗺️" },
     { href: "/livraisons", label: "Livraisons", icon: "🚚" },
     { href: "/equipe", label: "Équipe", icon: "👷" },
+    { href: "/finances", label: "Finances", icon: "💶" },
     { href: "/verifications", label: "À vérifier", icon: "🔎", badge: true },
   ],
   preparateur: [

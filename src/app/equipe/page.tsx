@@ -210,6 +210,13 @@ function MembreModal({
   const [telephone, setTelephone] = useState(String(member?.telephone ?? ""));
   const [email, setEmail] = useState(String(member?.email ?? ""));
   const [notes, setNotes] = useState(String(member?.notes ?? ""));
+  // Champs financiers : EUR. Vide = non defini (traite comme 0 cote calcul).
+  const [salaireJournalier, setSalaireJournalier] = useState(
+    member?.salaireJournalier != null ? String(member.salaireJournalier) : "",
+  );
+  const [primeVelo, setPrimeVelo] = useState(
+    member?.primeVelo != null ? String(member.primeVelo) : "",
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPinForm, setShowPinForm] = useState(false);
@@ -228,6 +235,23 @@ function MembreModal({
     setLoading(true);
     setError(null);
     try {
+      // Validation primeVelo : 0-5 EUR pour terrain, 10-50 EUR pour apporteur
+      // (plus eleve car commission commerciale, pas de salaire journalier).
+      // On bloque cote front pour afficher un message clair plutot que
+      // l'erreur GAS generique.
+      const sj = salaireJournalier.trim();
+      const pv = primeVelo.trim();
+      const maxPrime = role === "apporteur" ? 50 : 5;
+      if (pv && (Number(pv) < 0 || Number(pv) > maxPrime || !isFinite(Number(pv)))) {
+        setError(`Prime vélo : 0 à ${maxPrime} € maximum pour ${ROLE_LABEL[role].toLowerCase()}.`);
+        setLoading(false);
+        return;
+      }
+      if (sj && (Number(sj) < 0 || !isFinite(Number(sj)))) {
+        setError("Salaire journalier : nombre positif (€/jour).");
+        setLoading(false);
+        return;
+      }
       const payload: Record<string, unknown> = {
         id: member?.id,
         nom: nom.trim(),
@@ -235,6 +259,8 @@ function MembreModal({
         telephone: telephone.trim() || null,
         email: email.trim() || null,
         notes: notes.trim() || null,
+        salaireJournalier: sj ? Number(sj) : null,
+        primeVelo: pv ? Number(pv) : null,
       };
       if (isArchived) payload.actif = true;
       const r = await gasPost("upsertMembre", payload);
@@ -376,6 +402,54 @@ function MembreModal({
               className="w-full px-3 py-2 border rounded-lg text-sm resize-none"
               placeholder="Ex : permis C, disponible seulement mardi/jeudi…"
             />
+          </div>
+
+          {/* Champs financiers : sert au calcul de la masse salariale dans la
+              page Finances. Apporteur = commercial pur, paye uniquement a la
+              prime/commission (pas de salaire journalier). Roles terrain :
+              salaire/jour + prime modeste 0-5 EUR par velo. */}
+          <div className="border-t pt-3 mt-1 space-y-3">
+            <div className="text-xs font-semibold text-gray-700">💶 Rémunération</div>
+            <div className={`grid ${role === "apporteur" ? "grid-cols-1" : "grid-cols-2"} gap-3`}>
+              {role !== "apporteur" && (
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Salaire journalier (€/jour)</label>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    min={0}
+                    step={1}
+                    value={salaireJournalier}
+                    onChange={(e) => setSalaireJournalier(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-lg text-sm"
+                    placeholder="ex : 120"
+                  />
+                </div>
+              )}
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">
+                  Prime vélo (€, {role === "apporteur" ? "10-50" : "0-5"})
+                </label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  max={role === "apporteur" ? 50 : 5}
+                  step={role === "apporteur" ? 5 : 0.5}
+                  value={primeVelo}
+                  onChange={(e) => setPrimeVelo(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg text-sm"
+                  placeholder={role === "apporteur" ? "ex : 30" : "ex : 2"}
+                />
+              </div>
+            </div>
+            <p className="text-[11px] text-gray-400 leading-snug">
+              {role === "apporteur"
+                ? "Apporteur : prime de 10 à 50 €/vélo, calculée sur les vélos livrés des clients qu'il a apportés."
+                : role === "monteur"
+                ? "Prime monteur : split entre les monteurs de la tournée (si 2 monteurs sur 10 vélos, chacun touche prime × 5)."
+                : "Tous les vélos de la tournée comptent pour la prime."}
+            </p>
           </div>
 
           {isEdit && !isArchived && (

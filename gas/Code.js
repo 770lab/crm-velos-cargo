@@ -120,6 +120,9 @@ function handleRequest(e) {
       case "listEquipe":
         result = listEquipe(e.parameter);
         break;
+      case "getFinancesSummary":
+        result = getFinancesSummary(e.parameter);
+        break;
       case "upsertMembre":
         result = upsertMembre(getBody());
         break;
@@ -2636,7 +2639,13 @@ function bulkAutoValidate(params) {
 // ===========================================================================
 
 var EQUIPE_SHEET_NAME = "Equipe";
-var EQUIPE_COLS = ["id", "nom", "role", "telephone", "email", "actif", "notes", "createdAt", "pinHash"];
+// salaireJournalier : EUR/jour de travail (jour = 1 tournee a laquelle le
+//   membre est affecte ; on n'a pas de pointage horaire). 0 = ne touche pas
+//   au salaire (ex: apporteur d'affaires).
+// primeVelo : EUR par velo, 0-5. Pour les chauffeurs/chefs : tous les velos
+//   de la tournee. Pour les monteurs : les velos qu'ils ont montes (split
+//   entre les monteurs de l'equipe pour la tournee).
+var EQUIPE_COLS = ["id", "nom", "role", "telephone", "email", "actif", "notes", "createdAt", "pinHash", "salaireJournalier", "primeVelo"];
 var EQUIPE_ROLES = ["admin", "chauffeur", "chef", "monteur", "apporteur", "preparateur"];
 
 function ensureEquipeSheet() {
@@ -2670,6 +2679,17 @@ function _equipeRowToObject(row, headers) {
   ["nom", "telephone", "email", "notes"].forEach(function(k) {
     if (obj[k] != null && typeof obj[k] !== "string") obj[k] = String(obj[k]);
     if (obj[k] === "") obj[k] = null;
+  });
+  // Coerce les champs financiers en number (Sheets peut renvoyer du string si
+  // la cellule est en format Texte). null si vide pour distinguer "non defini"
+  // de "0 EUR" — mais a la lecture pour les calculs on traite null comme 0.
+  ["salaireJournalier", "primeVelo"].forEach(function(k) {
+    var v = obj[k];
+    if (v === "" || v == null) obj[k] = null;
+    else {
+      var n = Number(v);
+      obj[k] = isFinite(n) ? n : null;
+    }
   });
   // Ne pas renvoyer le hash en clair, juste un booléen "a un code".
   if (obj.pinHash !== undefined) {
@@ -2781,6 +2801,26 @@ function upsertMembre(body) {
   if (!body || !body.nom) return { error: "Nom requis" };
   var role = body.role;
   if (!role || EQUIPE_ROLES.indexOf(role) < 0) return { error: "Rôle invalide (" + EQUIPE_ROLES.join("/") + ")" };
+  // Normalisation des champs financiers : convertit en number, clamp et rejette
+  // les valeurs absurdes. null/string-vide accepte (= "non defini" -> traite
+  // comme 0 dans les calculs cout). primeVelo bornee a 5 EUR (regle metier).
+  if (body.salaireJournalier !== undefined && body.salaireJournalier !== null && body.salaireJournalier !== "") {
+    var sj = Number(body.salaireJournalier);
+    if (!isFinite(sj) || sj < 0) return { error: "salaireJournalier invalide (>=0)" };
+    body.salaireJournalier = sj;
+  }
+  if (body.primeVelo !== undefined && body.primeVelo !== null && body.primeVelo !== "") {
+    var pv = Number(body.primeVelo);
+    // 0-5 EUR pour les roles terrain (chauffeur/chef/monteur/prep) ; 10-50 EUR
+    // pour les apporteurs d'affaires (commercial pur, paye uniquement a la
+    // commission). On valide la borne haute selon le role pour eviter de saisir
+    // 50 sur un monteur par erreur.
+    var maxPv = role === "apporteur" ? 50 : 5;
+    if (!isFinite(pv) || pv < 0 || pv > maxPv) {
+      return { error: "primeVelo invalide (0-" + maxPv + " EUR pour " + role + ")" };
+    }
+    body.primeVelo = pv;
+  }
   var sh = ensureEquipeSheet();
   var data = sh.getDataRange().getValues();
   var headers = data[0];
@@ -2821,6 +2861,245 @@ function upsertMembre(body) {
   sh.appendRow(row);
   SpreadsheetApp.flush();
   return { ok: true, id: id, created: true };
+}
+
+// Calcule la masse salariale de l'equipe sur une fenetre de dates.
+// Param : { from: "yyyy-MM-dd", to: "yyyy-MM-dd" } (bornes incluses).
+//
+// Regle de calcul :
+//  - chauffeur / chef d'equipe / preparateur : 1 jour de salaire par tournee
+//    a laquelle il participe, + prime velo x totalVelos de la tournee
+//  - monteur : 1 jour par tournee, + prime velo x (totalVelos / nbMonteurs)
+//    pour eviter de payer 2x la meme prime quand 2 monteurs sont sur 10 velos
+//  - apporteur : pas de jour, juste prime x nbVelos des LIVRAISONS de SES
+//    clients (matching par champ client.apporteur = membre.nom). Couvre les
+//    velos livres dans la fenetre, pas les commandes en cours.
+//  - admin : exclu du calcul (pas de remuneration variable suivie ici).
+//
+// Renvoie un recap par membre + totaux globaux. Rapide jusqu'a ~1000 livraisons :
+// 1 lecture par sheet + boucles O(N).
+function getFinancesSummary(params) {
+  params = params || {};
+  var from = params.from ? String(params.from) : "";
+  var to = params.to ? String(params.to) : "";
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(from) || !/^\d{4}-\d{2}-\d{2}$/.test(to)) {
+    return { error: "from/to requis au format yyyy-MM-dd" };
+  }
+  if (from > to) return { error: "from doit etre <= to" };
+
+  // 1) Charge l'equipe (avec baremes salaire/prime, indexee par id et par nom).
+  var equipeRes = listEquipe({ includeInactifs: false });
+  var members = (equipeRes && equipeRes.items) || [];
+  var memById = {};
+  var memByName = {};
+  for (var m = 0; m < members.length; m++) {
+    memById[String(members[m].id)] = members[m];
+    memByName[String(members[m].nom || "").trim().toLowerCase()] = members[m];
+  }
+
+  // 2) Charge les livraisons et filtre par date.
+  var livSheet = SS.getSheetByName("Livraisons");
+  if (!livSheet) return { error: "Feuille Livraisons introuvable" };
+  var livData = livSheet.getDataRange().getValues();
+  var livHeaders = livData[0];
+  var iLId = livHeaders.indexOf("id");
+  var iLClient = livHeaders.indexOf("clientId");
+  var iLTournee = livHeaders.indexOf("tourneeId");
+  var iLDate = livHeaders.indexOf("datePrevue");
+  var iLStatut = livHeaders.indexOf("statut");
+  var iLNbVelos = livHeaders.indexOf("nbVelos");
+  var iLChauffeur = livHeaders.indexOf("chauffeurId");
+  var iLChef = livHeaders.indexOf("chefEquipeId");
+  var iLChefIds = livHeaders.indexOf("chefEquipeIds");
+  var iLMonteurs = livHeaders.indexOf("monteurIds");
+  var iLPrep = livHeaders.indexOf("preparateurIds");
+
+  var dateToIso = function(v) {
+    if (!v) return "";
+    if (v instanceof Date) return Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM-dd");
+    var s = String(v).trim();
+    if (s.length >= 10) return s.substring(0, 10);
+    return "";
+  };
+  var parseIds = function(v) {
+    if (!v) return [];
+    if (v instanceof Array) return v.map(String);
+    var s = String(v).trim();
+    if (!s) return [];
+    // Format stocke : json array, ou csv, ou id seul
+    if (s.charAt(0) === "[") {
+      try { var arr = JSON.parse(s); return Array.isArray(arr) ? arr.map(String) : []; }
+      catch (e) { return []; }
+    }
+    return s.split(/[,;]/).map(function(x) { return x.trim(); }).filter(Boolean);
+  };
+
+  // 3) Index Clients pour resoudre l'apporteur (champ texte = nom).
+  var clientSheet = SS.getSheetByName("Clients");
+  var clientApporteurById = {};
+  if (clientSheet) {
+    var cData = clientSheet.getDataRange().getValues();
+    var cHeaders = cData[0];
+    var iCId = cHeaders.indexOf("id");
+    var iCApp = cHeaders.indexOf("apporteur");
+    if (iCId >= 0 && iCApp >= 0) {
+      for (var ci = 1; ci < cData.length; ci++) {
+        clientApporteurById[String(cData[ci][iCId])] = String(cData[ci][iCApp] || "").trim();
+      }
+    }
+  }
+
+  // 4) Regroupe les livraisons par tournee+date pour distribuer 1 jour de
+  //    salaire par tournee (et pas par client de la tournee).
+  var tournees = {};   // key = tourneeId|date -> { date, totalVelos, chauffeur, chefs, monteurs, preps }
+  var apporteurVelosByName = {};
+
+  for (var li = 1; li < livData.length; li++) {
+    var row = livData[li];
+    var d = dateToIso(row[iLDate]);
+    if (!d || d < from || d > to) continue;
+    var statut = String(row[iLStatut] || "");
+    if (statut === "annulee") continue;
+
+    var tId = String(row[iLTournee] || "") || "no-tournee-" + row[iLId];
+    var key = tId + "|" + d;
+    if (!tournees[key]) {
+      tournees[key] = {
+        tourneeId: tId,
+        date: d,
+        totalVelos: 0,
+        chauffeurId: "",
+        chefIds: {},
+        monteurIds: {},
+        prepIds: {},
+      };
+    }
+    var t = tournees[key];
+    var nb = iLNbVelos >= 0 ? Number(row[iLNbVelos] || 0) : 0;
+    if (!isFinite(nb) || nb < 0) nb = 0;
+    t.totalVelos += nb;
+    if (iLChauffeur >= 0 && row[iLChauffeur]) t.chauffeurId = String(row[iLChauffeur]);
+    if (iLChef >= 0 && row[iLChef]) t.chefIds[String(row[iLChef])] = true;
+    if (iLChefIds >= 0) parseIds(row[iLChefIds]).forEach(function(x) { t.chefIds[x] = true; });
+    if (iLMonteurs >= 0) parseIds(row[iLMonteurs]).forEach(function(x) { t.monteurIds[x] = true; });
+    if (iLPrep >= 0) parseIds(row[iLPrep]).forEach(function(x) { t.prepIds[x] = true; });
+
+    // Prime apporteur : on l'agrege des qu'on est en statut livre (sinon le
+    // user paie une commission sur des dossiers pas encore conclus).
+    if (statut === "livree") {
+      var appName = clientApporteurById[String(row[iLClient] || "")];
+      if (appName) {
+        var nameKey = appName.trim().toLowerCase();
+        apporteurVelosByName[nameKey] = (apporteurVelosByName[nameKey] || 0) + nb;
+      }
+    }
+  }
+
+  // 5) Distribution par membre. addJour incremente un Set de dates pour eviter
+  //    de payer 2 jours quand un meme membre est sur 2 tournees le meme jour
+  //    (cas extreme mais possible).
+  var perMember = {};
+  var initMember = function(mem) {
+    var key = String(mem.id);
+    if (!perMember[key]) {
+      perMember[key] = {
+        id: mem.id,
+        nom: mem.nom,
+        role: mem.role,
+        salaireJournalier: mem.salaireJournalier || 0,
+        primeVelo: mem.primeVelo || 0,
+        joursDates: {},
+        velosPrimes: 0,
+      };
+    }
+    return perMember[key];
+  };
+  var addJour = function(mem, date) {
+    var p = initMember(mem);
+    p.joursDates[date] = true;
+  };
+  var addVelos = function(mem, n) {
+    var p = initMember(mem);
+    p.velosPrimes += n;
+  };
+
+  Object.keys(tournees).forEach(function(k) {
+    var t = tournees[k];
+    if (t.chauffeurId && memById[t.chauffeurId]) {
+      addJour(memById[t.chauffeurId], t.date);
+      addVelos(memById[t.chauffeurId], t.totalVelos);
+    }
+    Object.keys(t.chefIds).forEach(function(id) {
+      if (memById[id]) {
+        addJour(memById[id], t.date);
+        addVelos(memById[id], t.totalVelos);
+      }
+    });
+    Object.keys(t.prepIds).forEach(function(id) {
+      if (memById[id]) {
+        addJour(memById[id], t.date);
+        addVelos(memById[id], t.totalVelos);
+      }
+    });
+    var monteurIdsArr = Object.keys(t.monteurIds).filter(function(id) { return memById[id]; });
+    if (monteurIdsArr.length > 0) {
+      var sharePerMonteur = t.totalVelos / monteurIdsArr.length;
+      monteurIdsArr.forEach(function(id) {
+        addJour(memById[id], t.date);
+        addVelos(memById[id], sharePerMonteur);
+      });
+    }
+  });
+
+  // 6) Apporteurs (matching par nom — pas d'id de membre stocke sur le client).
+  Object.keys(apporteurVelosByName).forEach(function(nameKey) {
+    var mem = memByName[nameKey];
+    if (mem && mem.role === "apporteur") {
+      addVelos(mem, apporteurVelosByName[nameKey]);
+    }
+  });
+
+  // 7) Mise en forme + totaux.
+  var byMember = Object.keys(perMember).map(function(id) {
+    var p = perMember[id];
+    var jours = Object.keys(p.joursDates).length;
+    var coutSalaire = jours * p.salaireJournalier;
+    var coutPrime = p.velosPrimes * p.primeVelo;
+    return {
+      id: p.id,
+      nom: p.nom,
+      role: p.role,
+      salaireJournalier: p.salaireJournalier,
+      primeVelo: p.primeVelo,
+      jours: jours,
+      velosPrimes: Math.round(p.velosPrimes * 100) / 100,
+      coutSalaire: Math.round(coutSalaire * 100) / 100,
+      coutPrime: Math.round(coutPrime * 100) / 100,
+      coutTotal: Math.round((coutSalaire + coutPrime) * 100) / 100,
+    };
+  }).sort(function(a, b) { return b.coutTotal - a.coutTotal; });
+
+  var totals = byMember.reduce(function(acc, m) {
+    acc.coutSalaires += m.coutSalaire;
+    acc.coutPrimes += m.coutPrime;
+    acc.coutTotal += m.coutTotal;
+    acc.jours += m.jours;
+    return acc;
+  }, { coutSalaires: 0, coutPrimes: 0, coutTotal: 0, jours: 0 });
+
+  return {
+    ok: true,
+    from: from,
+    to: to,
+    nbTournees: Object.keys(tournees).length,
+    byMember: byMember,
+    totals: {
+      coutSalaires: Math.round(totals.coutSalaires * 100) / 100,
+      coutPrimes: Math.round(totals.coutPrimes * 100) / 100,
+      coutTotal: Math.round(totals.coutTotal * 100) / 100,
+      jours: totals.jours,
+    },
+  };
 }
 
 function archiveMembre(id) {
