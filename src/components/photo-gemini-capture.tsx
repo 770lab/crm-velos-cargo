@@ -288,32 +288,31 @@ export default function PhotoGeminiCapture({
 
   // Retry d'un item qui a foiré (réseau, FNUCI_INCONNU, 0 codes extraits…).
   // On garde la photo, on relance juste l'extraction + marquage côté serveur.
-  const retryItem = useCallback(async (id: string) => {
-    if (!tourneeId) return;
-    let snapshot: BatchItem | undefined;
-    setItems((prev) => {
-      snapshot = prev.find((it) => it.id === id);
-      return prev.map((it) =>
-        it.id === id ? { ...it, status: "processing", resp: undefined, errorMsg: undefined } : it,
-      );
-    });
-    if (!snapshot || !snapshot.base64) return;
+  // On reçoit l'item complet en argument (pas juste l'id) pour éviter une
+  // capture-via-setItems qui peut être bloquée en concurrent mode React.
+  const retryItem = useCallback(async (item: BatchItem) => {
+    if (!tourneeId || !item.base64) return;
+    setItems((prev) =>
+      prev.map((it) =>
+        it.id === item.id ? { ...it, status: "processing", resp: undefined, errorMsg: undefined } : it,
+      ),
+    );
     try {
       const resp = (await gasUpload("extractFnuciFromImage", {
-        imageBase64: snapshot.base64,
-        mimeType: snapshot.mimeType,
+        imageBase64: item.base64,
+        mimeType: item.mimeType,
         tourneeId,
         userId,
         etape,
         forceClientId: forceClientId || undefined,
       })) as ExtractResp;
       setItems((prev) =>
-        prev.map((it) => (it.id === id ? { ...it, status: "done", resp } : it)),
+        prev.map((it) => (it.id === item.id ? { ...it, status: "done", resp } : it)),
       );
     } catch (e) {
       setItems((prev) =>
         prev.map((it) =>
-          it.id === id
+          it.id === item.id
             ? { ...it, status: "error", errorMsg: e instanceof Error ? e.message : String(e) }
             : it,
         ),
@@ -446,7 +445,7 @@ export default function PhotoGeminiCapture({
                 key={it.id}
                 item={it}
                 onRemove={() => removeItem(it.id)}
-                onRetry={() => retryItem(it.id)}
+                onRetry={() => retryItem(it)}
                 canRemove={!identifying && it.status !== "processing"}
               />
             ))}
