@@ -1,6 +1,13 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { scanImageData, setModuleArgs, getInstance } from "@undecaf/zbar-wasm";
+import {
+  scanImageData,
+  setModuleArgs,
+  getInstance,
+  ZBarScanner,
+  ZBarSymbolType,
+  ZBarConfigType,
+} from "@undecaf/zbar-wasm";
 
 // Scanner QR continu — zbar-wasm + diagnostic visible.
 // Cette version expose en UI le statut du WASM et la dernière erreur de scan
@@ -22,6 +29,37 @@ const PAUSE_AFTER_SCAN_MS = 1000;
 setModuleArgs({
   locateFile: (filename) => `${BASE_PATH}/${filename}`,
 });
+
+// Scanner zbar custom avec TEST_INVERTED activé.
+//
+// Le scanner par défaut (getDefaultScanner) ne configure que BINARY=1, mais
+// laisse TEST_INVERTED à 0. Or les stickers BicyCode officiels APIC ont des
+// QR clair (cream/blanc) sur fond NOIR — polarité inversée par rapport au
+// QR standard noir-sur-blanc. zbar refuse alors de les décoder.
+//
+// Avec ZBAR_CFG_TEST_INVERTED=1, zbar tente d'abord la passe normale, puis
+// la passe inversée si rien trouvé. Coût négligeable, marche sur les deux
+// polarités, fix les BicyCode.
+//
+// Le scanner est lourd à créer (alloc côté WASM heap), on le crée une fois
+// et on le réutilise pour tous les scans.
+let cachedScanner: ZBarScanner | null = null;
+async function getInvertedAwareScanner(): Promise<ZBarScanner> {
+  if (cachedScanner) return cachedScanner;
+  const scanner = await ZBarScanner.create();
+  scanner.setConfig(
+    ZBarSymbolType.ZBAR_NONE,
+    ZBarConfigType.ZBAR_CFG_BINARY,
+    1,
+  );
+  scanner.setConfig(
+    ZBarSymbolType.ZBAR_NONE,
+    ZBarConfigType.ZBAR_CFG_TEST_INVERTED,
+    1,
+  );
+  cachedScanner = scanner;
+  return scanner;
+}
 
 let audioCtx: AudioContext | null = null;
 function beep() {
@@ -73,24 +111,27 @@ export default function QrScanner({
   );
   const [debugLog, setDebugLog] = useState<string>("");
 
-  // Pré-init zbar-wasm au mount du composant. Si le .wasm 404 ou si CORS
-  // bloque, on le saura tout de suite (status = error) au lieu d'avoir des
-  // erreurs silencieuses à chaque tick de scan.
+  // Pré-init zbar-wasm + scanner custom au mount. Permet de surfacer toute
+  // erreur de chargement (.wasm 404, CORS, scanner alloc) avant que la
+  // caméra démarre. Une fois "ready", le scanner avec TEST_INVERTED est
+  // prêt à décoder les BicyCode (QR inversés clair/sombre).
   useEffect(() => {
     let cancelled = false;
-    getInstance()
-      .then(() => {
+    (async () => {
+      try {
+        await getInstance();
+        await getInvertedAwareScanner();
         if (!cancelled) {
           setWasmStatus("ready");
-          setDebugLog("WASM ready");
+          setDebugLog("WASM ready (TEST_INVERTED on)");
         }
-      })
-      .catch((e) => {
+      } catch (e) {
         if (cancelled) return;
         setWasmStatus("error");
         const msg = e instanceof Error ? e.message : String(e);
         setDebugLog(`WASM init error: ${msg}`);
-      });
+      }
+    })();
     return () => {
       cancelled = true;
     };
@@ -146,6 +187,7 @@ export default function QrScanner({
           try {
             const vw = video.videoWidth;
             const vh = video.videoHeight;
+            const scanner = await getInvertedAwareScanner();
 
             setScanCount((c) => c + 1);
 
@@ -158,7 +200,7 @@ export default function QrScanner({
             canvas.height = h1;
             ctx.drawImage(video, 0, 0, vw, vh, 0, 0, w1, h1);
             const imageData1 = ctx.getImageData(0, 0, w1, h1);
-            let symbols = await scanImageData(imageData1);
+            let symbols = await scanImageData(imageData1, scanner);
 
             if (cancelled) return;
 
@@ -181,7 +223,7 @@ export default function QrScanner({
                 cropSize,
               );
               const imageData2 = ctx.getImageData(0, 0, cropSize, cropSize);
-              symbols = await scanImageData(imageData2);
+              symbols = await scanImageData(imageData2, scanner);
               if (cancelled) return;
             }
 
