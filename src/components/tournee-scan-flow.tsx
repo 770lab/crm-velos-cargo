@@ -146,7 +146,14 @@ function Inner({ mode }: { mode: ScanMode }) {
   useEffect(() => { loadProgression(); }, [loadProgression]);
 
   const handleScan = useCallback(async (raw: string) => {
-    const fnuci = raw.trim();
+    const trimmed = raw.trim();
+    // QR BicyCode : encode une URL du type https://www.bicycode.org/.../BC38FKZZ7H
+    // Le code FNUCI suit le pattern "BC" + 8 alphanumériques (ex: BC38FKZZ7H,
+    // BCZ9CANA4D, BCA24SN97A). On l'extrait où qu'il soit dans la string scannée
+    // pour que le scan d'un QR (URL) ou d'un code-barres (texte brut) fonctionne
+    // pareil. Si rien ne matche on garde la string telle quelle (saisie manuelle).
+    const match = trimmed.match(/BC[A-Z0-9]{8}/i);
+    const fnuci = match ? match[0].toUpperCase() : trimmed;
     if (!fnuci || busy) return;
     setBusy(true);
     setScannerEnabled(false);

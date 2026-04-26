@@ -45,10 +45,13 @@ export default function ReceptionCartonsPage() {
 
   const onScan = async (decoded: string) => {
     if (busy || step !== "scan") return;
+    // Extrait BC + 8 alphanum d'une URL BicyCode (ou garde tel quel si saisie manuelle).
+    const match = decoded.trim().match(/BC[A-Z0-9]{8}/i);
+    const fnuci = match ? match[0].toUpperCase() : decoded.trim();
     setBusy(true);
-    setScannedFnuci(decoded);
+    setScannedFnuci(fnuci);
     try {
-      const r = (await gasGet("lookupFnuci", { fnuci: decoded })) as LookupResp;
+      const r = (await gasGet("lookupFnuci", { fnuci })) as LookupResp;
       setLookup(r);
       setStep("choose-client");
     } finally {
