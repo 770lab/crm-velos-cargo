@@ -1223,7 +1223,6 @@ function TourneeModal({
         {/* Suivi opérationnel : préparation → chargement → livraison → montage */}
         {tournee.tourneeId && progression && progression.totals.total > 0 && (() => {
           const t = progression.totals;
-          const tid = encodeURIComponent(tournee.tourneeId);
           const Bar = ({ value, total, color }: { value: number; total: number; color: string }) => (
             <div className="h-1.5 bg-gray-200 rounded overflow-hidden">
               <div className={color} style={{ width: total ? `${(value / total) * 100}%` : "0%", height: "100%" }} />
@@ -1250,15 +1249,10 @@ function TourneeModal({
                   <Bar value={t.monte} total={t.total} color="bg-green-500" />
                 </div>
               </div>
-              <div className="grid grid-cols-3 gap-2 pt-1">
-                <a href={`/crm-velos-cargo/preparation?tourneeId=${tid}`} target="_blank" rel="noopener noreferrer" className="text-center text-xs bg-blue-600 text-white rounded py-2 hover:bg-blue-700">📦 Préparer</a>
-                <a href={`/crm-velos-cargo/chargement?tourneeId=${tid}`} target="_blank" rel="noopener noreferrer" className="text-center text-xs bg-indigo-600 text-white rounded py-2 hover:bg-indigo-700">🚚 Charger</a>
-                <a href={`/crm-velos-cargo/livraison?tourneeId=${tid}`} target="_blank" rel="noopener noreferrer" className="text-center text-xs bg-purple-600 text-white rounded py-2 hover:bg-purple-700">📍 Livrer</a>
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                <a href={`/crm-velos-cargo/etiquettes?tourneeId=${tid}`} target="_blank" rel="noopener noreferrer" className="text-center text-xs bg-gray-200 text-gray-800 rounded py-2 hover:bg-gray-300">🏷️ Étiquettes (10×15)</a>
-                <a href={`/crm-velos-cargo/bl?tourneeId=${tid}`} target="_blank" rel="noopener noreferrer" className="text-center text-xs bg-gray-200 text-gray-800 rounded py-2 hover:bg-gray-300">📄 Bon de livraison (A4)</a>
-              </div>
+              {/* Plus de boutons bulk Préparer/Charger/Livrer/Étiquettes/BL ici :
+                  workflow client par client uniquement, via les badges Prép./Charg./
+                  Livr./Mont. de chaque client plus bas (Yoann préfère fiabilité >
+                  rapidité, voir mémoire crm_velos_cargo_step_by_step). */}
             </div>
           );
         })()}
