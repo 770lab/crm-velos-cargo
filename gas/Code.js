@@ -172,6 +172,9 @@ function handleRequest(e) {
       case "uploadBlSignedPhoto":
         result = uploadBlSignedPhoto(getBody());
         break;
+      case "markClientAsDelivered":
+        result = markClientAsDelivered(getBody());
+        break;
       case "markVeloPrepare":
         result = markVeloPrepare(getBody());
         break;
@@ -3124,6 +3127,60 @@ function uploadBlSignedPhoto(body) {
     tourneeId: body.tourneeId,
     photoUrl: photoUrl,
   };
+}
+
+// Passe la livraison (clientId, tourneeId) au statut "livree" et remplit
+// dateEffective avec maintenant. Appelé depuis le bouton "✅ Marquer comme livré"
+// qui apparaît sur la page livraison quand tous les vélos du client ont été
+// scannés livrés. Évite au chauffeur d'avoir à manipuler le sélecteur de
+// statut sur la page admin.
+function markClientAsDelivered(body) {
+  body = body || {};
+  if (!body.tourneeId) return { error: "tourneeId requis" };
+  if (!body.clientId) return { error: "clientId requis" };
+
+  var ctx = ensureLivraisonsSchema();
+  var sheet = ctx.sheet;
+  var headers = ctx.headers;
+  var iId = headers.indexOf("id");
+  var iClientId = headers.indexOf("clientId");
+  var iTourneeId = headers.indexOf("tourneeId");
+  var iStatut = headers.indexOf("statut");
+  var iDateEffective = headers.indexOf("dateEffective");
+  if (iId < 0 || iStatut < 0 || iDateEffective < 0) {
+    return { error: "Schema Livraisons incomplet (relance ensureLivraisonsSchema)" };
+  }
+
+  var data = sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    if (
+      String(data[i][iClientId]) === String(body.clientId) &&
+      String(data[i][iTourneeId]) === String(body.tourneeId)
+    ) {
+      var existingStatut = String(data[i][iStatut] || "").toLowerCase();
+      var existingDate = data[i][iDateEffective];
+      var nowIso = new Date().toISOString();
+      sheet.getRange(i + 1, iStatut + 1).setValue("livree");
+      // dateEffective n'est remplie que si vide (on garde la 1re date pour
+      // l'historique en cas de re-clic).
+      if (!existingDate || (existingDate instanceof Date && isNaN(existingDate))) {
+        sheet.getRange(i + 1, iDateEffective + 1).setValue(nowIso);
+      } else if (typeof existingDate === "string" && !existingDate.trim()) {
+        sheet.getRange(i + 1, iDateEffective + 1).setValue(nowIso);
+      }
+      SpreadsheetApp.flush();
+      return {
+        ok: true,
+        livraisonId: data[i][iId],
+        clientId: body.clientId,
+        tourneeId: body.tourneeId,
+        previousStatut: existingStatut,
+        statut: "livree",
+        dateEffective: existingDate || nowIso,
+      };
+    }
+  }
+  return { error: "Aucune livraison trouvée pour ce client/tournée" };
 }
 
 function _getClientName(clientId) {

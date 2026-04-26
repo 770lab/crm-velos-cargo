@@ -581,17 +581,24 @@ function Inner({ mode }: { mode: ScanMode }) {
               );
             })()}
 
-            {/* Livraison terminée pour ce client → photo du BL signé.
-                Le bloc s'affiche dès que tous les vélos du client ont été
-                marqués livrés ; il reste accessible ensuite pour reprendre
-                la photo si la 1re est ratée. */}
+            {/* Livraison terminée pour ce client → photo du BL signé +
+                bouton "Marquer comme livré". Les 2 blocs s'affichent dès que
+                tous les vélos du client ont été marqués livrés. */}
             {mode === "livraison" && allDone && focusClientId && (
-              <div className="mb-3">
-                <BlSignedUploader
+              <>
+                <div className="mb-3">
+                  <BlSignedUploader
+                    tourneeId={tourneeId}
+                    clientId={focusClientId}
+                  />
+                </div>
+                <DeliveredButton
                   tourneeId={tourneeId}
                   clientId={focusClientId}
+                  clientName={focusClient?.entreprise}
+                  onDelivered={loadProgression}
                 />
-              </div>
+              </>
             )}
 
             {tourneeAllDone && cfg.nextLink && (
@@ -610,6 +617,79 @@ function Inner({ mode }: { mode: ScanMode }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// Bouton "✅ Marquer comme livré" qui apparaît quand tous les vélos du client
+// sont scannés livrés sur la page livraison. Côté serveur, ça passe le statut
+// de la livraison en "livree" et remplit dateEffective. Sans ce bouton le
+// statut restait "planifiee" et le dot "BL signé" sur la page Clients ne
+// passait jamais en vert.
+function DeliveredButton({
+  tourneeId,
+  clientId,
+  clientName,
+  onDelivered,
+}: {
+  tourneeId: string;
+  clientId: string;
+  clientName?: string;
+  onDelivered?: () => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState(false);
+  const [errMsg, setErrMsg] = useState<string | null>(null);
+
+  const submit = async () => {
+    if (!confirm(`Marquer la livraison de ${clientName || "ce client"} comme livrée ?\n\nCette action passe la livraison en statut « Livrée » avec la date d'aujourd'hui.`)) return;
+    setErrMsg(null);
+    setBusy(true);
+    try {
+      const r = (await gasPost("markClientAsDelivered", { tourneeId, clientId })) as
+        | { ok: true; statut: string; dateEffective: string }
+        | { error: string };
+      if ("error" in r) {
+        setErrMsg(r.error);
+        return;
+      }
+      setDone(true);
+      if (onDelivered) onDelivered();
+    } catch (e) {
+      setErrMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <div className="bg-emerald-50 border-2 border-emerald-500 rounded-xl p-4 mb-3 text-center">
+        <div className="text-3xl">🎉</div>
+        <div className="font-bold text-emerald-900 mt-1">
+          Livraison validée pour {clientName || "ce client"}
+        </div>
+        <div className="text-xs text-emerald-700 mt-1">
+          Statut passé à « Livrée » · BL archivé sur Drive
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mb-3 space-y-2">
+      <button
+        onClick={submit}
+        disabled={busy}
+        className="w-full bg-green-600 text-white rounded-lg py-3 font-semibold hover:bg-green-700 disabled:opacity-50"
+      >
+        {busy ? "Validation…" : "✅ Marquer comme livré"}
+      </button>
+      {errMsg && (
+        <div className="bg-red-50 border border-red-200 text-red-800 text-xs rounded p-2">
+          {errMsg}
+        </div>
+      )}
     </div>
   );
 }
