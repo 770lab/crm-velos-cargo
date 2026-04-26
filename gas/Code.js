@@ -563,7 +563,19 @@ function getStats() {
 
   var isBool = isBoolTmp;
 
-  var velosLivres = vRowsActive.filter(function(v) { return isBool(v[vHeaders.indexOf("photoQrPrise")]); }).length;
+  // velosLivres = vélos avec dateLivraisonScan rempli (workflow scan livraison
+  // Gemini), avec fallback sur l'ancien flag photoQrPrise pour rétrocompat.
+  var iDateLivStats = vHeaders.indexOf("dateLivraisonScan");
+  var iPhotoQrStats = vHeaders.indexOf("photoQrPrise");
+  var nonEmptyStats = function(v) {
+    if (v instanceof Date) return true;
+    return !!String(v || "").trim();
+  };
+  var velosLivres = vRowsActive.filter(function(v) {
+    if (iDateLivStats >= 0 && nonEmptyStats(v[iDateLivStats])) return true;
+    if (iPhotoQrStats >= 0 && isBool(v[iPhotoQrStats])) return true;
+    return false;
+  }).length;
   var certificatsRecus = vRowsActive.filter(function(v) { return isBool(v[vHeaders.indexOf("certificatRecu")]); }).length;
   var velosFacturables = vRowsActive.filter(function(v) { return isBool(v[vHeaders.indexOf("facturable")]); }).length;
   var velosFactures = vRowsActive.filter(function(v) { return isBool(v[vHeaders.indexOf("facture")]); }).length;
@@ -635,7 +647,18 @@ function getCarte() {
         telephone: r[headers.indexOf("telephone")],
         email: r[headers.indexOf("email")],
         docsComplets: isBool(r[headers.indexOf("kbisRecu")]) && isBool(r[headers.indexOf("attestationRecue")]) && isBool(r[headers.indexOf("signatureOk")]) && isBool(r[headers.indexOf("devisSignee")]),
-        velosLivres: clientVelos.filter(function(v) { return isBool(v[vHeaders.indexOf("photoQrPrise")]); }).length,
+        velosLivres: clientVelos.filter(function(v) {
+          // Idem getStats : dateLivraisonScan en priorité, fallback photoQrPrise.
+          var iDLS = vHeaders.indexOf("dateLivraisonScan");
+          var iPQ = vHeaders.indexOf("photoQrPrise");
+          if (iDLS >= 0) {
+            var dls = v[iDLS];
+            if (dls instanceof Date) return true;
+            if (String(dls || "").trim()) return true;
+          }
+          if (iPQ >= 0 && isBool(v[iPQ])) return true;
+          return false;
+        }).length,
         velosPlanifies: planifiesByClient[id] || 0,
       };
     });
