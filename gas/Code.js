@@ -2364,7 +2364,7 @@ function bulkAutoValidate(params) {
 
 var EQUIPE_SHEET_NAME = "Equipe";
 var EQUIPE_COLS = ["id", "nom", "role", "telephone", "email", "actif", "notes", "createdAt"];
-var EQUIPE_ROLES = ["chauffeur", "chef", "monteur", "apporteur"];
+var EQUIPE_ROLES = ["admin", "chauffeur", "chef", "monteur", "apporteur", "preparateur"];
 
 function ensureEquipeSheet() {
   var sh = SS.getSheetByName(EQUIPE_SHEET_NAME);

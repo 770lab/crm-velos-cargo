@@ -1,9 +1,9 @@
 "use client";
-import { Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Suspense, useCallback, useEffect, useState } from "react";
 import dynamic from "next/dynamic";
 import { useSearchParams } from "next/navigation";
 import { gasGet, gasPost } from "@/lib/gas";
-import { useData } from "@/lib/data-context";
+import { useCurrentUser } from "@/lib/current-user";
 
 const QrScanner = dynamic(() => import("@/components/qr-scanner"), { ssr: false });
 
@@ -109,16 +109,12 @@ function Inner({ mode }: { mode: ScanMode }) {
   const cfg = MODE_CONFIG[mode];
   const sp = useSearchParams();
   const tourneeId = sp.get("tourneeId") || "";
-  const { equipe, refresh } = useData();
+  const currentUser = useCurrentUser();
+  const userId = currentUser?.id || "";
+  const userName = currentUser?.nom || "";
 
   const [progression, setProgression] = useState<Progression | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-
-  const [userId, setUserId] = useState<string>(() => {
-    if (typeof window === "undefined") return "";
-    return localStorage.getItem(cfg.storageKey) || "";
-  });
-  const [pickingUser, setPickingUser] = useState<boolean>(!userId);
 
   const [history, setHistory] = useState<ScanEvent[]>([]);
   const [scannerEnabled, setScannerEnabled] = useState<boolean>(true);
@@ -126,8 +122,6 @@ function Inner({ mode }: { mode: ScanMode }) {
   // En mode préparation, si on scanne un FNUCI inconnu on propose d'assigner
   // à un client de la tournée (fusionne réception + préparation).
   const [pendingFnuci, setPendingFnuci] = useState<string | null>(null);
-
-  useEffect(() => { refresh("equipe"); }, [refresh]);
 
   const loadProgression = useCallback(async () => {
     if (!tourneeId) return;
@@ -141,8 +135,6 @@ function Inner({ mode }: { mode: ScanMode }) {
   }, [tourneeId]);
 
   useEffect(() => { loadProgression(); }, [loadProgression]);
-
-  const userName = useMemo(() => equipe.find((m) => m.id === userId)?.nom || "", [equipe, userId]);
 
   const handleScan = useCallback(async (raw: string) => {
     const fnuci = raw.trim();
@@ -240,18 +232,6 @@ function Inner({ mode }: { mode: ScanMode }) {
     }
   }, [pendingFnuci, cfg.endpoint, cfg.title, tourneeId, userId, loadProgression]);
 
-  const changeUser = () => {
-    localStorage.removeItem(cfg.storageKey);
-    setUserId("");
-    setPickingUser(true);
-  };
-
-  const pickUser = (id: string) => {
-    localStorage.setItem(cfg.storageKey, id);
-    setUserId(id);
-    setPickingUser(false);
-  };
-
   if (!tourneeId) {
     return (
       <div className="min-h-screen p-6 text-center text-sm text-red-600">
@@ -313,33 +293,9 @@ function Inner({ mode }: { mode: ScanMode }) {
           </div>
         )}
 
-        {!pickingUser && userId && (
-          <div className="bg-white rounded-xl shadow p-2 mb-3 flex items-center justify-between">
-            <div className="text-sm">
-              <span className="text-gray-500">Opérateur :</span> <span className="font-medium">{userName || "?"}</span>
-            </div>
-            <button onClick={changeUser} className="text-xs text-blue-600 hover:underline">Changer</button>
-          </div>
-        )}
-
-        {pickingUser && (
-          <div className="bg-white rounded-xl shadow p-4 space-y-3">
-            <div className="text-sm text-gray-700">Qui es-tu ?</div>
-            <div className="space-y-2">
-              {equipe.filter((m) => m.actif !== false).map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => pickUser(m.id)}
-                  className="w-full border rounded-lg p-3 text-left hover:bg-blue-50 hover:border-blue-300"
-                >
-                  <div className="font-medium">{m.nom}</div>
-                  <div className="text-xs text-gray-500">{m.role || ""}</div>
-                </button>
-              ))}
-              {equipe.length === 0 && (
-                <div className="text-xs text-gray-500 text-center py-4">Aucun membre dans l&apos;équipe.</div>
-              )}
-            </div>
+        {userId && (
+          <div className="bg-white rounded-xl shadow p-2 mb-3 text-sm">
+            <span className="text-gray-500">Opérateur :</span> <span className="font-medium">{userName || "?"}</span>
           </div>
         )}
 
@@ -371,7 +327,7 @@ function Inner({ mode }: { mode: ScanMode }) {
           </div>
         )}
 
-        {!pickingUser && userId && prog && !pendingFnuci && (
+        {userId && prog && !pendingFnuci && (
           <>
             <div className="bg-white rounded-xl shadow p-4 space-y-3 mb-3">
               <div className="text-sm text-gray-700">Scanne le QR FNUCI du vélo.</div>

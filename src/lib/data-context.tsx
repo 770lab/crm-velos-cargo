@@ -103,7 +103,7 @@ interface LivraisonRow {
   _count: { velos: number };
 }
 
-type EquipeRole = "chauffeur" | "chef" | "monteur" | "apporteur" | "preparateur";
+type EquipeRole = "admin" | "chauffeur" | "chef" | "monteur" | "apporteur" | "preparateur";
 
 interface EquipeMember {
   id: string;

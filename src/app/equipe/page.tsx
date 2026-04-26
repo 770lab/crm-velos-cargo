@@ -5,6 +5,7 @@ import { gasPost, gasGet } from "@/lib/gas";
 import { useData, type EquipeMember, type EquipeRole } from "@/lib/data-context";
 
 const ROLE_LABEL: Record<EquipeRole, string> = {
+  admin: "Admin",
   chauffeur: "Chauffeur",
   chef: "Chef d'équipe",
   monteur: "Monteur",
@@ -13,6 +14,7 @@ const ROLE_LABEL: Record<EquipeRole, string> = {
 };
 
 const ROLE_ICON: Record<EquipeRole, string> = {
+  admin: "🛡️",
   chauffeur: "🚚",
   chef: "👷",
   monteur: "🔧",
@@ -21,6 +23,7 @@ const ROLE_ICON: Record<EquipeRole, string> = {
 };
 
 const ROLE_COLOR: Record<EquipeRole, string> = {
+  admin: "bg-red-100 text-red-800 border-red-200",
   chauffeur: "bg-blue-100 text-blue-800 border-blue-200",
   chef: "bg-purple-100 text-purple-800 border-purple-200",
   monteur: "bg-emerald-100 text-emerald-800 border-emerald-200",
@@ -37,7 +40,7 @@ export default function EquipePage() {
   const [loadingInactifs, setLoadingInactifs] = useState(false);
 
   const byRole = useMemo(() => {
-    const groups: Record<EquipeRole, EquipeMember[]> = { chauffeur: [], chef: [], monteur: [], preparateur: [], apporteur: [] };
+    const groups: Record<EquipeRole, EquipeMember[]> = { admin: [], chauffeur: [], chef: [], monteur: [], preparateur: [], apporteur: [] };
     for (const m of equipe) {
       if (m.actif === false) continue;
       if (groups[m.role]) groups[m.role].push(m);

@@ -1,34 +1,27 @@
 "use client";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import dynamic from "next/dynamic";
 import { gasPost } from "@/lib/gas";
-import { useData } from "@/lib/data-context";
+import { useCurrentUser } from "@/lib/current-user";
 
 const QrScanner = dynamic(() => import("@/components/qr-scanner"), { ssr: false });
 
-type Step = "pick-monteur" | "scan" | "photo" | "saving" | "done" | "error";
+type Step = "scan" | "photo" | "saving" | "done" | "error";
 
 type MarkResp =
   | { ok: true; veloId: string; fnuci: string; clientId: string; clientName: string | null; alreadyMonte: boolean; dateMontage: string; photoUrl: string }
   | { error: string };
 
 export default function MontagePage() {
-  const { equipe, refresh } = useData();
-  const [monteurId, setMonteurId] = useState<string>(() => {
-    if (typeof window === "undefined") return "";
-    return localStorage.getItem("montage:monteurId") || "";
-  });
-  const [step, setStep] = useState<Step>(monteurId ? "scan" : "pick-monteur");
+  const currentUser = useCurrentUser();
+  const monteurId = currentUser?.id || "";
+  const monteurNom = currentUser?.nom || "";
+  const [step, setStep] = useState<Step>("scan");
   const [scannedFnuci, setScannedFnuci] = useState<string | null>(null);
   const [photoData, setPhotoData] = useState<string | null>(null); // base64 sans prefix
   const [photoPreview, setPhotoPreview] = useState<string | null>(null); // data URL
   const [result, setResult] = useState<MarkResp | null>(null);
   const photoInputRef = useRef<HTMLInputElement>(null);
-
-  useEffect(() => { refresh("equipe"); }, [refresh]);
-
-  const monteurs = useMemo(() => equipe.filter((m) => m.role === "monteur" && m.actif !== false), [equipe]);
-  const monteurNom = useMemo(() => monteurs.find((m) => m.id === monteurId)?.nom || "", [monteurs, monteurId]);
 
   const onScan = (decoded: string) => {
     if (step !== "scan") return;
@@ -74,12 +67,6 @@ export default function MontagePage() {
     setStep("scan");
   };
 
-  const changeMonteur = () => {
-    localStorage.removeItem("montage:monteurId");
-    setMonteurId("");
-    setStep("pick-monteur");
-  };
-
   return (
     <div className="min-h-screen bg-gray-50 p-3 md:p-6">
       <div className="max-w-md mx-auto">
@@ -88,36 +75,9 @@ export default function MontagePage() {
           <a href="/crm-velos-cargo/" className="text-sm text-gray-500 hover:text-gray-700">← Accueil</a>
         </div>
 
-        {monteurId && step !== "pick-monteur" && (
-          <div className="bg-white rounded-xl shadow p-2 mb-3 flex items-center justify-between">
-            <div className="text-sm">
-              <span className="text-gray-500">Monteur :</span> <span className="font-medium">{monteurNom || "?"}</span>
-            </div>
-            <button onClick={changeMonteur} className="text-xs text-blue-600 hover:underline">Changer</button>
-          </div>
-        )}
-
-        {step === "pick-monteur" && (
-          <div className="bg-white rounded-xl shadow p-4 space-y-3">
-            <div className="text-sm text-gray-700">Qui es-tu ?</div>
-            <div className="space-y-2">
-              {monteurs.map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => {
-                    localStorage.setItem("montage:monteurId", m.id);
-                    setMonteurId(m.id);
-                    setStep("scan");
-                  }}
-                  className="w-full border rounded-lg p-3 text-left hover:bg-blue-50 hover:border-blue-300"
-                >
-                  <div className="font-medium">{m.nom}</div>
-                </button>
-              ))}
-              {monteurs.length === 0 && (
-                <div className="text-xs text-gray-500 text-center py-4">Aucun monteur dans l&apos;équipe.</div>
-              )}
-            </div>
+        {monteurId && (
+          <div className="bg-white rounded-xl shadow p-2 mb-3 text-sm">
+            <span className="text-gray-500">Monteur :</span> <span className="font-medium">{monteurNom || "?"}</span>
           </div>
         )}
 

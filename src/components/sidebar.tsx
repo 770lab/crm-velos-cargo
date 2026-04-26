@@ -2,24 +2,59 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { gasGet } from "@/lib/gas";
+import { clearCurrentUser, useCurrentUser } from "@/lib/current-user";
+import type { EquipeRole } from "@/lib/data-context";
 
-const nav = [
-  { href: "/", label: "Tableau de bord", icon: "📊" },
-  { href: "/clients", label: "Clients", icon: "🏢" },
-  { href: "/carte", label: "Carte & Tournées", icon: "🗺️" },
-  { href: "/livraisons", label: "Livraisons", icon: "🚚" },
-  { href: "/equipe", label: "Équipe", icon: "👷" },
-  { href: "/verifications", label: "À vérifier", icon: "🔎", badge: true as const },
-];
+type NavItem = { href: string; label: string; icon: string; badge?: true };
+
+// Pages accessibles par rôle. Admin voit tout. Les autres voient le strict utile.
+const NAV_BY_ROLE: Record<EquipeRole, NavItem[]> = {
+  admin: [
+    { href: "/", label: "Tableau de bord", icon: "📊" },
+    { href: "/clients", label: "Clients", icon: "🏢" },
+    { href: "/carte", label: "Carte & Tournées", icon: "🗺️" },
+    { href: "/livraisons", label: "Livraisons", icon: "🚚" },
+    { href: "/equipe", label: "Équipe", icon: "👷" },
+    { href: "/verifications", label: "À vérifier", icon: "🔎", badge: true },
+  ],
+  preparateur: [
+    { href: "/livraisons", label: "Livraisons", icon: "🚚" },
+    { href: "/clients", label: "Clients", icon: "🏢" },
+  ],
+  chef: [
+    { href: "/livraisons", label: "Livraisons", icon: "🚚" },
+    { href: "/clients", label: "Clients", icon: "🏢" },
+  ],
+  chauffeur: [
+    { href: "/livraisons", label: "Livraisons", icon: "🚚" },
+  ],
+  monteur: [
+    { href: "/montage", label: "Montage", icon: "🔧" },
+  ],
+  apporteur: [
+    { href: "/", label: "Accueil", icon: "🏠" },
+  ],
+};
+
+const ROLE_LABEL: Record<EquipeRole, string> = {
+  admin: "Admin",
+  chauffeur: "Chauffeur",
+  chef: "Chef d'équipe",
+  monteur: "Monteur",
+  preparateur: "Préparateur",
+  apporteur: "Apporteur",
+};
 
 export function Sidebar() {
   const pathname = usePathname();
   const [open, setOpen] = useState(false);
   const [pendingCount, setPendingCount] = useState<number>(0);
+  const user = useCurrentUser();
 
   useEffect(() => {
+    if (user?.role !== "admin") return;
     let cancelled = false;
     const load = async () => {
       try {
@@ -37,7 +72,13 @@ export function Sidebar() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [pathname]);
+  }, [pathname, user?.role]);
+
+  const nav = useMemo(() => (user ? NAV_BY_ROLE[user.role] : []), [user]);
+
+  const logout = () => {
+    clearCurrentUser();
+  };
 
   return (
     <>
@@ -72,7 +113,7 @@ export function Sidebar() {
               item.href === "/"
                 ? pathname === "/"
                 : pathname.startsWith(item.href);
-            const showBadge = "badge" in item && item.badge && pendingCount > 0;
+            const showBadge = item.badge && pendingCount > 0;
             return (
               <Link
                 key={item.href}
@@ -95,9 +136,21 @@ export function Sidebar() {
             );
           })}
         </nav>
-        <div className="p-4 border-t border-gray-700 text-xs text-gray-500">
-          velos-cargo@artisansverts.energy
-        </div>
+        {user && (
+          <div className="p-4 border-t border-gray-700">
+            <div className="text-xs text-gray-500 mb-1">{ROLE_LABEL[user.role]}</div>
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium truncate">{user.nom}</div>
+              <button
+                onClick={logout}
+                className="text-xs text-gray-400 hover:text-white px-2 py-1 rounded hover:bg-gray-800"
+                title="Se déconnecter"
+              >
+                ⏻
+              </button>
+            </div>
+          </div>
+        )}
       </aside>
     </>
   );
