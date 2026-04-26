@@ -157,6 +157,18 @@ function handleRequest(e) {
         var bodyMVM = getBody();
         result = markVeloMonte(bodyMVM);
         break;
+      case "markVeloPrepare":
+        result = markVeloPrepare(getBody());
+        break;
+      case "markVeloCharge":
+        result = markVeloCharge(getBody());
+        break;
+      case "markVeloLivreScan":
+        result = markVeloLivreScan(getBody());
+        break;
+      case "getTourneeProgression":
+        result = getTourneeProgression(e.parameter.tourneeId);
+        break;
       case "uploadVeloPhoto":
         var bodyUVP = getBody();
         result = uploadVeloPhoto(bodyUVP);
@@ -1920,7 +1932,7 @@ function ensureVelosSchema() {
   if (!sheet) return { sheet: null, headers: [], annuleCol: -1 };
   var lastCol = sheet.getLastColumn();
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  var needed = ["annule", "fnuci", "photoVeloUrl", "photoFnuciUrl", "photoDate", "korpValide", "dateMontage", "monteParId", "photoMontageUrl"];
+  var needed = ["annule", "fnuci", "photoVeloUrl", "photoFnuciUrl", "photoDate", "korpValide", "dateMontage", "monteParId", "photoMontageUrl", "datePreparation", "prepareParId", "dateChargement", "chargeParId", "dateLivraisonScan", "livreParId", "tourneeIdScan"];
   for (var k = 0; k < needed.length; k++) {
     if (headers.indexOf(needed[k]) === -1) {
       lastCol++;
@@ -2760,6 +2772,221 @@ function _getClientName(clientId) {
     if (String(data[i][iId]) === String(clientId)) return data[i][iEntreprise] || null;
   }
   return null;
+}
+
+// Vue agrégée de la progression d'une tournée (utilisée par les pages scan + modale).
+// Retourne par client la liste des vélos avec leurs dates d'étape, et les totaux globaux.
+function getTourneeProgression(tourneeId) {
+  if (!tourneeId) return { error: "tourneeId requis" };
+  var ctx = ensureLivraisonsSchema();
+  var lData = ctx.sheet.getDataRange().getValues();
+  var lHeaders = lData[0];
+  var iLTid = lHeaders.indexOf("tourneeId");
+  var iLCid = lHeaders.indexOf("clientId");
+  var iLDate = lHeaders.indexOf("datePrevue");
+
+  var clientsSheet = SS.getSheetByName("Clients");
+  var cData = clientsSheet ? clientsSheet.getDataRange().getValues() : [[]];
+  var cHeaders = cData[0] || [];
+  var cIdCol = cHeaders.indexOf("id");
+
+  var velosMeta = ensureVelosSchema();
+  var vSheet = velosMeta.sheet;
+  var vHeaders = velosMeta.headers;
+  var vData = vSheet ? vSheet.getDataRange().getValues() : [vHeaders];
+  var iVId = vHeaders.indexOf("id");
+  var iVCid = vHeaders.indexOf("clientId");
+  var iVFnuci = vHeaders.indexOf("fnuci");
+  var iVAnnule = vHeaders.indexOf("annule");
+  var iVPrep = vHeaders.indexOf("datePreparation");
+  var iVChar = vHeaders.indexOf("dateChargement");
+  var iVLivS = vHeaders.indexOf("dateLivraisonScan");
+  var iVPhotoQr = vHeaders.indexOf("photoQrPrise");
+  var iVMont = vHeaders.indexOf("dateMontage");
+
+  var orderedClientIds = [];
+  var datePrevue = null;
+  for (var i = 1; i < lData.length; i++) {
+    if (String(lData[i][iLTid]) !== String(tourneeId)) continue;
+    if (!datePrevue && iLDate >= 0) datePrevue = lData[i][iLDate] || null;
+    var cid = String(lData[i][iLCid] || "").trim();
+    if (cid && orderedClientIds.indexOf(cid) === -1) orderedClientIds.push(cid);
+  }
+  if (orderedClientIds.length === 0) return { error: "Tournée introuvable: " + tourneeId };
+
+  function clientById(id) {
+    for (var k = 1; k < cData.length; k++) {
+      if (String(cData[k][cIdCol]) === String(id)) {
+        var obj = {};
+        cHeaders.forEach(function(h, j) { obj[h] = cData[k][j]; });
+        return obj;
+      }
+    }
+    return null;
+  }
+
+  function isTrue(v) { return v === true || v === "TRUE"; }
+
+  var totals = { total: 0, prepare: 0, charge: 0, livre: 0, monte: 0 };
+  var clients = orderedClientIds.map(function(cid) {
+    var c = clientById(cid) || {};
+    var velos = [];
+    var ct = { total: 0, prepare: 0, charge: 0, livre: 0, monte: 0 };
+    for (var vi = 1; vi < vData.length; vi++) {
+      if (String(vData[vi][iVCid]) !== String(cid)) continue;
+      if (iVAnnule >= 0 && isTrue(vData[vi][iVAnnule])) continue;
+      var datePrep = iVPrep >= 0 ? vData[vi][iVPrep] : "";
+      var dateChar = iVChar >= 0 ? vData[vi][iVChar] : "";
+      var dateLivS = iVLivS >= 0 ? vData[vi][iVLivS] : "";
+      var photoQr = iVPhotoQr >= 0 ? isTrue(vData[vi][iVPhotoQr]) : false;
+      var dateMont = iVMont >= 0 ? vData[vi][iVMont] : "";
+      var prepDone = !!(datePrep && String(datePrep).trim());
+      var charDone = !!(dateChar && String(dateChar).trim());
+      var livDone = !!(dateLivS && String(dateLivS).trim()) || photoQr;
+      var montDone = !!(dateMont && String(dateMont).trim());
+      ct.total++;
+      if (prepDone) ct.prepare++;
+      if (charDone) ct.charge++;
+      if (livDone) ct.livre++;
+      if (montDone) ct.monte++;
+      velos.push({
+        veloId: vData[vi][iVId],
+        fnuci: String(vData[vi][iVFnuci] || "").trim() || null,
+        datePreparation: prepDone ? String(datePrep) : null,
+        dateChargement: charDone ? String(dateChar) : null,
+        dateLivraisonScan: livDone ? (String(dateLivS).trim() ? String(dateLivS) : "(via photoQrPrise)") : null,
+        dateMontage: montDone ? String(dateMont) : null,
+      });
+    }
+    totals.total += ct.total;
+    totals.prepare += ct.prepare;
+    totals.charge += ct.charge;
+    totals.livre += ct.livre;
+    totals.monte += ct.monte;
+    return {
+      clientId: cid,
+      entreprise: c.entreprise || "",
+      ville: c.ville || "",
+      adresse: c.adresse || "",
+      codePostal: c.codePostal || "",
+      telephone: c.telephone || null,
+      contact: c.contact || null,
+      velos: velos,
+      totals: ct,
+    };
+  });
+
+  return {
+    tourneeId: tourneeId,
+    datePrevue: datePrevue ? (datePrevue instanceof Date ? datePrevue.toISOString() : String(datePrevue)) : null,
+    totals: totals,
+    clients: clients,
+  };
+}
+
+// Liste les clientId d'une tournée (toutes les Livraisons partageant le tourneeId).
+function _getClientsOfTournee(tourneeId) {
+  if (!tourneeId) return [];
+  var ctx = ensureLivraisonsSchema();
+  var data = ctx.sheet.getDataRange().getValues();
+  var headers = data[0];
+  var iTid = headers.indexOf("tourneeId");
+  var iCid = headers.indexOf("clientId");
+  if (iTid < 0 || iCid < 0) return [];
+  var ids = [];
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][iTid]) === String(tourneeId)) {
+      var cid = String(data[i][iCid] || "").trim();
+      if (cid && ids.indexOf(cid) === -1) ids.push(cid);
+    }
+  }
+  return ids;
+}
+
+// Logique commune : scanne un FNUCI dans le contexte d'une tournée et marque l'étape.
+// etape : "preparation" | "chargement" | "livraisonScan"
+// Retourne {ok, alreadyDone?, veloId, fnuci, clientId, clientName, etape}
+//          ou {error, code} si FNUCI inconnu, vélo annulé, ou hors tournée.
+function _markVeloEtape(fnuci, tourneeId, userId, etape) {
+  if (!fnuci) return { error: "fnuci requis" };
+  if (!tourneeId) return { error: "tourneeId requis" };
+  var clean = String(fnuci).trim();
+
+  var dateCol, userCol;
+  if (etape === "preparation") { dateCol = "datePreparation"; userCol = "prepareParId"; }
+  else if (etape === "chargement") { dateCol = "dateChargement"; userCol = "chargeParId"; }
+  else if (etape === "livraisonScan") { dateCol = "dateLivraisonScan"; userCol = "livreParId"; }
+  else return { error: "etape invalide: " + etape };
+
+  var meta = ensureVelosSchema();
+  if (!meta.sheet) return { error: "Feuille Velos introuvable" };
+  var headers = meta.headers;
+  var iId = headers.indexOf("id");
+  var iClientId = headers.indexOf("clientId");
+  var iFnuci = headers.indexOf("fnuci");
+  var iAnnule = headers.indexOf("annule");
+  var iDate = headers.indexOf(dateCol);
+  var iUser = headers.indexOf(userCol);
+  var iTid = headers.indexOf("tourneeIdScan");
+  if (iDate < 0) return { error: "Colonne " + dateCol + " absente (relance ensureVelosSchema)" };
+
+  var allowedClients = _getClientsOfTournee(tourneeId);
+  if (allowedClients.length === 0) return { error: "Tournée introuvable: " + tourneeId, code: "TOURNEE_INCONNUE" };
+
+  var data = meta.sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (String(row[iFnuci] || "").trim() !== clean) continue;
+    var isAnnule = iAnnule >= 0 && (row[iAnnule] === true || row[iAnnule] === "TRUE");
+    if (isAnnule) continue;
+
+    var cid = String(row[iClientId] || "");
+    if (allowedClients.indexOf(cid) === -1) {
+      return {
+        error: "Vélo hors tournée",
+        code: "HORS_TOURNEE",
+        fnuci: clean,
+        veloClientId: cid,
+        veloClientName: _getClientName(cid),
+      };
+    }
+
+    var existing = row[iDate];
+    var alreadyDone = !!(existing && String(existing).trim());
+    var nowIso = new Date().toISOString();
+    if (!alreadyDone) {
+      meta.sheet.getRange(i + 1, iDate + 1).setValue(nowIso);
+      if (iUser >= 0 && userId) meta.sheet.getRange(i + 1, iUser + 1).setValue(String(userId));
+      if (iTid >= 0) meta.sheet.getRange(i + 1, iTid + 1).setValue(String(tourneeId));
+      SpreadsheetApp.flush();
+    }
+    return {
+      ok: true,
+      alreadyDone: alreadyDone,
+      etape: etape,
+      veloId: row[iId],
+      fnuci: clean,
+      clientId: cid,
+      clientName: _getClientName(cid),
+      date: alreadyDone ? String(existing) : nowIso,
+    };
+  }
+  return { error: "FNUCI inconnu — passe d'abord par Réception cartons", code: "FNUCI_INCONNU", fnuci: clean };
+}
+
+function markVeloPrepare(body) {
+  body = body || {};
+  return _markVeloEtape(body.fnuci, body.tourneeId, body.userId || null, "preparation");
+}
+
+function markVeloCharge(body) {
+  body = body || {};
+  return _markVeloEtape(body.fnuci, body.tourneeId, body.userId || null, "chargement");
+}
+
+function markVeloLivreScan(body) {
+  body = body || {};
+  return _markVeloEtape(body.fnuci, body.tourneeId, body.userId || null, "livraisonScan");
 }
 
 function _getClientFolder(clientId) {
