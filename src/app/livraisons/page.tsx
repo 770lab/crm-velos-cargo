@@ -645,6 +645,7 @@ function StatutPill({ statut }: { statut: Tournee["statutGlobal"] }) {
 const MINUTES_PAR_VELO = 12;
 const HEURES_JOURNEE = 8;
 const SEUIL_SPLIT_MIN = 90;
+const MAX_TEMPS_SUR_PLACE_MIN = 120; // 2h max chez un client, au-delà alerte effectif d'urgence
 const ENTREPOT = { lat: 48.9545398, lng: 2.4557494, label: "AXDIS PRO – 2 Rue des Frères Lumière, 93150 Le Blanc-Mesnil" };
 
 interface DeployStep {
@@ -1123,16 +1124,31 @@ function TourneeModal({
               <div className="text-[10px] text-purple-700 space-y-0.5">
                 {deployPlan.steps.map((s, i) => {
                   const l = tournee.livraisons[s.stopIndex];
+                  const tropLong = s.tempsSurPlace > MAX_TEMPS_SUR_PLACE_MIN;
+                  const monteursNecessaires = Math.ceil(s.montageTotal / MAX_TEMPS_SUR_PLACE_MIN);
+                  const renfortMin = Math.max(0, monteursNecessaires - s.monteursAffectes);
                   return (
-                    <div key={i} className="flex items-center gap-1">
+                    <div key={i} className={`flex items-center gap-1 ${tropLong ? "bg-red-100 px-1 rounded" : ""}`}>
                       <span className="w-4 text-center font-bold">{s.stopIndex + 1}</span>
                       <span className="truncate flex-1">{l.client.entreprise}</span>
-                      <span>{l._count.velos}v · {s.monteursAffectes} mont. · {fmtDuree(s.tempsSurPlace)}</span>
-                      {!s.camionAttend && <span className="text-purple-600 font-medium ml-1">→ camion avance</span>}
-                      {s.camionAttend && <span className="text-gray-500 ml-1">camion attend</span>}
+                      <span className={tropLong ? "text-red-700 font-bold" : ""}>{l._count.velos}v · {s.monteursAffectes} mont. · {fmtDuree(s.tempsSurPlace)}</span>
+                      {tropLong ? (
+                        <span className="text-red-700 font-bold ml-1" title={`${fmtDuree(s.tempsSurPlace)} sur place > ${MAX_TEMPS_SUR_PLACE_MIN / 60}h max. Prévoir +${renfortMin} monteur${renfortMin > 1 ? "s" : ""} en renfort pour tomber à ${fmtDuree(s.montageTotal / monteursNecessaires)}.`}>
+                          ⚠ +{renfortMin} mont. urgence
+                        </span>
+                      ) : !s.camionAttend ? (
+                        <span className="text-purple-600 font-medium ml-1">→ camion avance</span>
+                      ) : (
+                        <span className="text-gray-500 ml-1">camion attend</span>
+                      )}
                     </div>
                   );
                 })}
+                {deployPlan.steps.some((s) => s.tempsSurPlace > MAX_TEMPS_SUR_PLACE_MIN) && (
+                  <div className="pt-1 border-t border-red-300 text-red-800 font-medium bg-red-50 -mx-2 -mb-1 px-2 py-1 rounded-b">
+                    ⚠ {deployPlan.steps.filter((s) => s.tempsSurPlace > MAX_TEMPS_SUR_PLACE_MIN).length} arrêt(s) dépassent {MAX_TEMPS_SUR_PLACE_MIN / 60}h sur place — prévoir un effectif d&apos;urgence pour ne pas bloquer le client.
+                  </div>
+                )}
                 <div className="pt-1 border-t border-purple-200 font-medium">
                   Gain parallèle : {fmtDuree(totalJourneeSimple - totalJourneeEffectif)} économisés
                 </div>
