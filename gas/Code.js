@@ -222,6 +222,9 @@ function handleRequest(e) {
         var pointsGR = bodyGR.points || (e.parameter.points ? JSON.parse(e.parameter.points) : []);
         result = getRouting({ points: pointsGR });
         break;
+      case "extractFnuciFromImage":
+        result = extractFnuciFromImage(getBody());
+        break;
       default:
         result = { error: "Action inconnue: " + action };
     }
@@ -4567,4 +4570,126 @@ function getRouting(opts) {
   }
 
   return { ok: true, segments: segments, apiCalls: apiCalls, cached: cachedCount };
+}
+
+// ---- GEMINI VISION : extraction FNUCI depuis photo ----
+//
+// Pourquoi : aucune lib JS de scan QR (Strich inclus) n'arrive à lire les
+// stickers BicyCode plastifiés sur iOS Safari, alors qu'iOS Photo natif les
+// décode instantanément. Plutôt que de continuer à bricoler des SDKs scan, on
+// laisse l'opérateur prendre une photo et on demande à Gemini Vision d'extraire
+// les codes (visibles à la fois en clair imprimé ET dans le QR).
+//
+// Body : { imageBase64, mimeType?, tourneeId, userId?, etape }
+//   etape = "preparation" | "chargement" | "livraisonScan"
+// Renvoie : { ok, extracted: ["BC..."], invalid: [...], results: [{ fnuci, result }], rawGeminiText }
+function extractFnuciFromImage(body) {
+  body = body || {};
+  if (!body.imageBase64) return { error: "imageBase64 requis" };
+  if (!body.tourneeId) return { error: "tourneeId requis" };
+  var etape = body.etape || "preparation";
+  if (etape !== "preparation" && etape !== "chargement" && etape !== "livraisonScan") {
+    return { error: "etape invalide: " + etape };
+  }
+
+  var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
+  if (!apiKey) return { error: "GEMINI_API_KEY absente dans Script Properties" };
+
+  // Prompt minimal et strict : Gemini retourne uniquement un JSON avec la liste
+  // des codes FNUCI. La validation regex côté serveur (ci-dessous) sert de
+  // garde-fou contre toute hallucination.
+  var prompt =
+    "Tu reçois une photo d'un ou plusieurs stickers BicyCode collés sur des vélos. " +
+    "Chaque sticker contient un code d'identification FNUCI au format STRICT 'BC' suivi " +
+    "de 8 caractères alphanumériques majuscules (exemples : BCZ9CANA4D, BCA24SN97A, BC38FKZZ7H). " +
+    "Le code apparaît soit en clair imprimé sur le sticker, soit encodé dans un QR code " +
+    "(qui contient une URL de la forme https://moncompte.bicycode.eu/<CODE>).\n\n" +
+    "TÂCHE : extrais TOUS les codes FNUCI lisibles dans l'image. Réponds uniquement par un JSON " +
+    "valide au format exact : {\"fnucis\":[\"BC...\",\"BC...\"]}. " +
+    "Ne renvoie aucun texte hors du JSON. Si tu ne vois aucun code lisible, réponds {\"fnucis\":[]}. " +
+    "Ne devine jamais : si un code est partiellement masqué, flou ou que tu n'es pas certain, ne le mets pas dans la liste.";
+
+  var payload = {
+    contents: [{
+      parts: [
+        { text: prompt },
+        { inline_data: { mime_type: body.mimeType || "image/jpeg", data: body.imageBase64 } }
+      ]
+    }],
+    generationConfig: {
+      temperature: 0,
+      response_mime_type: "application/json"
+    }
+  };
+
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
+  var res;
+  try {
+    res = UrlFetchApp.fetch(url, {
+      method: "post",
+      contentType: "application/json",
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+  } catch (errF) {
+    return { error: "Gemini fetch failed: " + errF.message };
+  }
+
+  var httpCode = res.getResponseCode();
+  var bodyText = res.getContentText();
+  if (httpCode !== 200) {
+    return { error: "Gemini HTTP " + httpCode, body: bodyText.slice(0, 500) };
+  }
+
+  var rawText = "";
+  try {
+    var data = JSON.parse(bodyText);
+    var parts = (((data.candidates || [])[0] || {}).content || {}).parts || [];
+    rawText = parts.map(function (p) { return p.text || ""; }).join("");
+  } catch (errP) {
+    return { error: "Réponse Gemini illisible", body: bodyText.slice(0, 500) };
+  }
+
+  var rawFnucis = [];
+  try {
+    var jsonStr = rawText;
+    var match = rawText.match(/\{[\s\S]*\}/);
+    if (match) jsonStr = match[0];
+    var parsed = JSON.parse(jsonStr);
+    rawFnucis = (parsed.fnucis || []).map(function (f) { return String(f).trim().toUpperCase(); });
+  } catch (errJ) {
+    return { error: "JSON Gemini invalide", rawText: rawText.slice(0, 500) };
+  }
+
+  var rx = /^BC[A-Z0-9]{8}$/;
+  var seen = {};
+  var extracted = [];
+  var invalid = [];
+  rawFnucis.forEach(function (f) {
+    if (!rx.test(f)) { invalid.push(f); return; }
+    if (seen[f]) return;
+    seen[f] = true;
+    extracted.push(f);
+  });
+
+  var results = extracted.map(function (fnuci) {
+    var markBody = { fnuci: fnuci, tourneeId: body.tourneeId, userId: body.userId || null };
+    var r;
+    try {
+      if (etape === "preparation") r = markVeloPrepare(markBody);
+      else if (etape === "chargement") r = markVeloCharge(markBody);
+      else r = markVeloLivreScan(markBody);
+    } catch (errM) {
+      r = { error: "Marquage planté: " + errM.message };
+    }
+    return { fnuci: fnuci, result: r };
+  });
+
+  return {
+    ok: true,
+    extracted: extracted,
+    invalid: invalid,
+    results: results,
+    rawGeminiText: rawText.slice(0, 500)
+  };
 }

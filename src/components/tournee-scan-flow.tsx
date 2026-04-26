@@ -6,6 +6,7 @@ import { gasGet, gasPost } from "@/lib/gas";
 import { useCurrentUser } from "@/lib/current-user";
 
 const QrScanner = dynamic(() => import("@/components/qr-scanner"), { ssr: false });
+const PhotoGeminiCapture = dynamic(() => import("@/components/photo-gemini-capture"), { ssr: false });
 
 export type ScanMode = "preparation" | "chargement" | "livraison";
 
@@ -452,6 +453,16 @@ function Inner({ mode }: { mode: ScanMode }) {
                 />
                 <button type="submit" className="px-3 py-2 bg-gray-700 text-white rounded-lg text-sm">OK</button>
               </form>
+            </div>
+
+            <div className="bg-white rounded-xl shadow p-4 mb-3">
+              <PhotoGeminiCapture
+                tourneeId={tourneeId}
+                userId={userId}
+                etape={cfg.unmarkEtape}
+                onAfter={loadProgression}
+                disabled={allDone}
+              />
             </div>
 
             {history.length > 0 && (
