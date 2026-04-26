@@ -1,25 +1,72 @@
 "use client";
-import { useRef, useState } from "react";
-import jsQR from "jsqr";
+import { useEffect, useRef, useState } from "react";
+import { scanImageData, setModuleArgs } from "@undecaf/zbar-wasm";
 
-// Scanner QR — refonte 2026-04-26 : photo native iOS au lieu de flux vidéo.
+// Scanner QR continu (refonte 2026-04-26 #2) — zbar-wasm + scan vidéo continu.
 //
-// Historique des essais en flux vidéo (tous échoués sur les stickers BicyCode
-// en condition réelle iPhone Safari) : BarcodeDetector natif, html5-qrcode,
-// jsQR (résolution réduite + native), ZXing/@zxing/browser. Cause racine :
-// stickers BicyCode petits (~10% de la frame), sous plastique transparent
-// réfléchissant, avec bordure noire épaisse. Aucune lib web ne franchit ces
-// conditions sur du flux vidéo, là où l'app caméra native iOS y arrive grâce
-// à son autofocus macro hardware.
+// Historique des libs essayées sur les stickers BicyCode iPhone :
+// 1. BarcodeDetector natif iOS 17+ — detect() retourne []
+// 2. html5-qrcode — callback jamais appelé
+// 3. jsQR (basse + haute résolution sur flux vidéo) — pas de détection
+// 4. ZXing/@zxing/browser — 139 frames analysées, 0 détection
+// 5. jsQR sur photo native iOS multi-passes (région crop) — échoue aussi
 //
-// Solution : <input type="file" accept="image/*" capture="environment">.
-// L'utilisateur tape sur le bouton, iOS ouvre l'app caméra (vraie macro,
-// vrai autofocus), il prend une photo nette, on récupère le fichier en JS,
-// on décode avec jsQR sur image fixe — beaucoup plus fiable car on a tout
-// le temps de calculer et on travaille sur une image sans flou de mouvement.
+// 6e tentative : zbar-wasm. ZBar (la lib C originale) est connue pour gérer
+// les QR avec quiet zone tronquée, léger flou, contraste limite, et
+// surface courbée — exactement le profil d'un sticker BicyCode sur tube
+// vélo. C'est la dernière option crédible avant le décodage server-side.
 //
-// Pas de redirection vers bicycode.org : on extrait juste le contenu décodé
-// et on le passe à onScan(), exactement comme l'ancien scanner.
+// Stratégie :
+// - getUserMedia 1080p (résolution nécessaire pour décoder un petit QR)
+// - Crop centre 60% pour zoom digital (le QR remplit naturellement la zone
+//   où l'user vise, et zbar a 2.5× plus de pixels par module)
+// - Scan toutes les ~200ms (~5 FPS, perf vs latence)
+// - Bip + vibration + pause 1s à chaque scan réussi (UX série de 15 vélos)
+//
+// WASM : le fichier zbar.wasm (~230KB) est dans public/zbar.wasm. setModuleArgs
+// pointe vers /crm-velos-cargo/zbar.wasm (basePath du Next config).
+
+const BASE_PATH = "/crm-velos-cargo";
+const SCAN_INTERVAL_MS = 200;
+const PAUSE_AFTER_SCAN_MS = 1000;
+
+// Configure zbar-wasm une seule fois au chargement du module.
+// locateFile est appelé par Emscripten pour résoudre le chemin du .wasm.
+setModuleArgs({
+  locateFile: (filename) => `${BASE_PATH}/${filename}`,
+});
+
+// Bip via WebAudio (pas de fichier audio à charger, créé à la volée).
+// Sur iOS Safari l'AudioContext doit être créé/repris suite à un user gesture
+// — ici l'user a déjà cliqué sur "scanner" donc le contexte est unlocked.
+let audioCtx: AudioContext | null = null;
+function beep() {
+  try {
+    if (!audioCtx) {
+      const Ctor =
+        window.AudioContext ||
+        (window as unknown as { webkitAudioContext?: typeof AudioContext })
+          .webkitAudioContext;
+      if (!Ctor) return;
+      audioCtx = new Ctor();
+    }
+    const ac = audioCtx;
+    const osc = ac.createOscillator();
+    const gain = ac.createGain();
+    osc.frequency.value = 1200;
+    gain.gain.value = 0.25;
+    osc.connect(gain).connect(ac.destination);
+    osc.start();
+    osc.stop(ac.currentTime + 0.08);
+  } catch {
+    // ignore
+  }
+  try {
+    if ("vibrate" in navigator) navigator.vibrate(50);
+  } catch {
+    // ignore
+  }
+}
 
 export default function QrScanner({
   enabled,
@@ -30,149 +77,172 @@ export default function QrScanner({
   onScan: (decoded: string) => void;
   onError?: (msg: string) => void;
 }) {
-  const inputRef = useRef<HTMLInputElement>(null);
-  const [decoding, setDecoding] = useState(false);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const lastScannedRef = useRef<{ text: string; at: number } | null>(null);
+  const [running, setRunning] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
-  const [lastShot, setLastShot] = useState<string | null>(null);
+  const [scanCount, setScanCount] = useState(0);
+  const [hits, setHits] = useState(0);
 
-  // Décode le QR sur une région de l'image dessinée dans un canvas.
-  // sx/sy/sw/sh = rectangle source (en coordonnées image native).
-  // outMax = taille max de la sortie (downsample pour perf jsQR — O(n²)).
-  // jsQR sur 1600px ≈ 600ms ; à pleine res 4032×3024 ≈ 3s.
-  const decodeRegion = (
-    img: HTMLImageElement,
-    sx: number,
-    sy: number,
-    sw: number,
-    sh: number,
-    outMax: number,
-  ) => {
-    const scale = Math.min(1, outMax / Math.max(sw, sh));
-    const w = Math.max(1, Math.floor(sw * scale));
-    const h = Math.max(1, Math.floor(sh * scale));
-    const canvas = document.createElement("canvas");
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return null;
-    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
-    const imageData = ctx.getImageData(0, 0, w, h);
-    return jsQR(imageData.data, imageData.width, imageData.height, {
-      inversionAttempts: "attemptBoth",
-    });
-  };
-
-  // Stratégie multi-passes : sur stickers BicyCode, le QR n'occupe que 5-15%
-  // de la photo (le code FNUCI texte prend la majorité du sticker). En
-  // décodant l'image entière au downsample, le QR se retrouve avec trop peu
-  // de pixels par module. Solution : essayer aussi des sous-régions à pleine
-  // résolution. Dans la sous-région, le QR pèse 2-4× plus, jsQR le trouve.
-  //
-  // Ordre : du plus probable au moins probable. On retourne dès qu'on trouve.
-  const tryAllPasses = (img: HTMLImageElement) => {
-    const W = img.naturalWidth;
-    const H = img.naturalHeight;
-    const passes: Array<[number, number, number, number, number]> = [
-      // 1. Image entière, downsample 1600px (rapide, marche si QR ≥ 15% frame)
-      [0, 0, W, H, 1600],
-      // 2. Moitié basse à pleine résolution (QR généralement bas du sticker)
-      [0, Math.floor(H * 0.4), W, Math.floor(H * 0.6), 2000],
-      // 3. Moitié haute à pleine résolution (sticker à l'envers)
-      [0, 0, W, Math.floor(H * 0.6), 2000],
-      // 4. Centre 60% à pleine résolution (sticker bien centré)
-      [Math.floor(W * 0.2), Math.floor(H * 0.2), Math.floor(W * 0.6), Math.floor(H * 0.6), 2000],
-      // 5. Dernier recours : pleine résolution complète (lent mais exhaustif)
-      [0, 0, W, H, Math.max(W, H)],
-    ];
-    for (const [sx, sy, sw, sh, outMax] of passes) {
-      const code = decodeRegion(img, sx, sy, sw, sh, outMax);
-      if (code && code.data) return code;
+  useEffect(() => {
+    if (!enabled) {
+      setRunning(false);
+      return;
     }
-    return null;
-  };
 
-  const handleFile = async (file: File) => {
-    setErrMsg(null);
-    setDecoding(true);
-    try {
-      const dataUrl = await new Promise<string>((resolve, reject) => {
-        const fr = new FileReader();
-        fr.onload = () => resolve(String(fr.result));
-        fr.onerror = () => reject(fr.error || new Error("FileReader error"));
-        fr.readAsDataURL(file);
-      });
-      setLastShot(dataUrl);
+    let cancelled = false;
+    let stream: MediaStream | null = null;
+    let intervalId: number | null = null;
+    let pausedUntil = 0;
+    let scanning = false;
 
-      const img = await new Promise<HTMLImageElement>((resolve, reject) => {
-        const i = new Image();
-        i.onload = () => resolve(i);
-        i.onerror = () => reject(new Error("Image illisible"));
-        i.src = dataUrl;
-      });
+    if (!canvasRef.current) {
+      canvasRef.current = document.createElement("canvas");
+    }
+    const canvas = canvasRef.current;
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
 
-      const code = tryAllPasses(img);
+    const start = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: { ideal: "environment" },
+            width: { ideal: 1920 },
+            height: { ideal: 1080 },
+          },
+          audio: false,
+        });
+        if (cancelled || !videoRef.current) {
+          stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        videoRef.current.srcObject = stream;
+        videoRef.current.setAttribute("playsinline", "true");
+        await videoRef.current.play();
+        if (cancelled) return;
+        setRunning(true);
 
-      if (code && code.data) {
-        setErrMsg(null);
-        setLastShot(null);
-        onScan(code.data.trim());
-      } else {
-        const msg =
-          "QR non détecté. Approche-toi à ~15 cm — le QR doit remplir l'écran. Sinon, tape le code FNUCI manuellement (champ ci-dessous).";
+        intervalId = window.setInterval(async () => {
+          if (cancelled || scanning) return;
+          if (!videoRef.current || !ctx) return;
+          if (Date.now() < pausedUntil) return;
+          const video = videoRef.current;
+          if (video.readyState < video.HAVE_ENOUGH_DATA || !video.videoWidth) return;
+
+          scanning = true;
+          try {
+            // Crop centre 60% pour zoom digital. Le QR sticker est petit
+            // physiquement, l'user le vise au centre — en croppant on lui
+            // donne 2.5× plus de pixels par module.
+            const vw = video.videoWidth;
+            const vh = video.videoHeight;
+            const cropSize = Math.floor(Math.min(vw, vh) * 0.6);
+            const sx = Math.floor((vw - cropSize) / 2);
+            const sy = Math.floor((vh - cropSize) / 2);
+            canvas.width = cropSize;
+            canvas.height = cropSize;
+            ctx.drawImage(video, sx, sy, cropSize, cropSize, 0, 0, cropSize, cropSize);
+            const imageData = ctx.getImageData(0, 0, cropSize, cropSize);
+
+            setScanCount((c) => c + 1);
+            const symbols = await scanImageData(imageData);
+            if (cancelled) return;
+
+            if (symbols.length > 0) {
+              const text = symbols[0].decode();
+              if (text) {
+                const trimmed = text.trim();
+                // Évite de re-déclencher 2× sur le même QR si l'user n'a pas
+                // bougé. Re-scan possible après 2.5s même même QR (cas où il
+                // re-scanne volontairement).
+                const now = Date.now();
+                const last = lastScannedRef.current;
+                const isDuplicate =
+                  last && last.text === trimmed && now - last.at < 2500;
+                if (!isDuplicate) {
+                  lastScannedRef.current = { text: trimmed, at: now };
+                  setHits((h) => h + 1);
+                  beep();
+                  pausedUntil = now + PAUSE_AFTER_SCAN_MS;
+                  onScan(trimmed);
+                }
+              }
+            }
+          } catch {
+            // erreurs ponctuelles (frame pas prête, WASM init en cours) ignorées
+          } finally {
+            scanning = false;
+          }
+        }, SCAN_INTERVAL_MS);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
         setErrMsg(msg);
         onError?.(msg);
       }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      setErrMsg(msg);
-      onError?.(msg);
-    } finally {
-      setDecoding(false);
-      // Reset la valeur pour permettre de re-sélectionner la même photo si besoin
-      // (sinon onChange ne re-déclenche pas pour le même fichier).
-      if (inputRef.current) inputRef.current.value = "";
-    }
-  };
+    };
+
+    start();
+
+    return () => {
+      cancelled = true;
+      if (intervalId) clearInterval(intervalId);
+      if (stream) stream.getTracks().forEach((t) => t.stop());
+      setRunning(false);
+    };
+  }, [enabled, onScan, onError]);
 
   if (!enabled) return null;
 
   return (
     <div className="space-y-2">
-      <label
-        className={`flex items-center justify-center gap-2 w-full py-4 rounded-lg font-medium text-white shadow ${
-          decoding
-            ? "bg-gray-500 cursor-wait"
-            : "bg-blue-600 active:bg-blue-700 cursor-pointer"
-        }`}
+      <div
+        className="relative w-full bg-black rounded-lg overflow-hidden"
+        style={{ minHeight: 320 }}
       >
-        <span className="text-2xl">📷</span>
-        <span>{decoding ? "Décodage en cours…" : "Scanner le QR (appareil photo)"}</span>
-        <input
-          ref={inputRef}
-          type="file"
-          accept="image/*"
-          capture="environment"
-          className="hidden"
-          disabled={decoding}
-          onChange={(e) => {
-            const f = e.target.files?.[0];
-            if (f) handleFile(f);
-          }}
+        <video
+          ref={videoRef}
+          className="w-full"
+          style={{ minHeight: 320, maxHeight: 480, objectFit: "cover" }}
+          playsInline
+          muted
         />
-      </label>
+        {/* Cadre vert 60% centre = zone de scan (crop décodé) */}
+        {running && (
+          <div className="absolute inset-0 pointer-events-none flex items-center justify-center">
+            <div
+              className="border-4 border-green-400 rounded-xl"
+              style={{
+                width: "60%",
+                aspectRatio: "1/1",
+                boxShadow: "0 0 0 9999px rgba(0,0,0,0.35)",
+              }}
+            />
+          </div>
+        )}
+        {!running && !errMsg && (
+          <div className="absolute inset-0 flex items-center justify-center text-white text-sm">
+            Initialisation caméra…
+          </div>
+        )}
+        {running && (
+          <div className="absolute top-2 right-2 bg-black/60 text-white text-[11px] px-2 py-1 rounded-full flex items-center gap-1">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
+            <span>scan</span>
+            <span className="opacity-60 ml-1">[{scanCount}]</span>
+            {hits > 0 && (
+              <span className="text-green-400 ml-1 font-semibold">✓{hits}</span>
+            )}
+          </div>
+        )}
+      </div>
       <div className="text-xs text-gray-500 text-center">
-        L&apos;app photo iPhone va s&apos;ouvrir. Cadre le QR bien net puis valide.
+        Vise le QR dans le cadre vert. Bip à chaque scan réussi (1 s de pause
+        avant le scan suivant).
       </div>
       {errMsg && (
         <div className="text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">
-          ⚠ {errMsg}
-        </div>
-      )}
-      {lastShot && errMsg && (
-        <div className="text-xs">
-          <div className="text-gray-500 mb-1">Dernière photo :</div>
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src={lastShot} alt="dernière capture" className="w-full rounded border" />
+          ⚠ Caméra inaccessible : {errMsg}
         </div>
       )}
     </div>
