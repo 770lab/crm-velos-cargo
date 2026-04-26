@@ -1305,10 +1305,11 @@ function TourneeModal({
                     const cp = progression?.clients?.find((c) => c.clientId === l.clientId)?.totals;
                     const tot = cp?.total ?? l._count.velos;
                     const tid = encodeURIComponent(tournee.tourneeId);
+                    const cid = l.clientId ? `&clientId=${encodeURIComponent(l.clientId)}` : "";
                     const stages: { key: "prepare" | "charge" | "livre" | "monte"; label: string; emoji: string; href: string | null }[] = [
-                      { key: "prepare", label: "Prép.", emoji: "📦", href: `/crm-velos-cargo/preparation?tourneeId=${tid}` },
-                      { key: "charge", label: "Charg.", emoji: "🚚", href: `/crm-velos-cargo/chargement?tourneeId=${tid}` },
-                      { key: "livre", label: "Livr.", emoji: "📍", href: `/crm-velos-cargo/livraison?tourneeId=${tid}` },
+                      { key: "prepare", label: "Prép.", emoji: "📦", href: `/crm-velos-cargo/preparation?tourneeId=${tid}${cid}` },
+                      { key: "charge", label: "Charg.", emoji: "🚚", href: `/crm-velos-cargo/chargement?tourneeId=${tid}${cid}` },
+                      { key: "livre", label: "Livr.", emoji: "📍", href: `/crm-velos-cargo/livraison?tourneeId=${tid}${cid}` },
                       { key: "monte", label: "Mont.", emoji: "🔧", href: `/crm-velos-cargo/montage` },
                     ];
                     return (

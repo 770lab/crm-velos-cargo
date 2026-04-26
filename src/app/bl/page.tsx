@@ -29,6 +29,7 @@ export default function BlPageWrapper() {
 function BlPage() {
   const sp = useSearchParams();
   const tourneeId = sp.get("tourneeId") || "";
+  const focusClientId = sp.get("clientId") || "";
   const [data, setData] = useState<Progression | null>(null);
 
   useEffect(() => {
@@ -40,6 +41,7 @@ function BlPage() {
   if (!data) return <div className="p-6 text-sm text-gray-500">Chargement…</div>;
   if ("error" in data) return <div className="p-6 text-red-600">{data.error}</div>;
 
+  const clients = focusClientId ? data.clients.filter((c) => c.clientId === focusClientId) : data.clients;
   const dateStr = data.datePrevue ? new Date(data.datePrevue).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" }) : "";
 
   return (
@@ -70,7 +72,7 @@ function BlPage() {
       <div className="no-print fixed top-0 left-0 right-0 bg-white border-b shadow-sm z-50 px-4 py-2 flex items-center justify-between">
         <div className="text-sm">
           <span className="font-bold">📄 Bons de livraison</span>
-          <span className="text-gray-500 ml-2">Tournée {tourneeId} · {data.clients.length} client{data.clients.length > 1 ? "s" : ""}</span>
+          <span className="text-gray-500 ml-2">Tournée {tourneeId} · {clients.length} client{clients.length > 1 ? "s" : ""}{focusClientId ? " (focus)" : ""}</span>
         </div>
         <button onClick={() => window.print()} className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">
           🖨️ Imprimer
@@ -80,7 +82,7 @@ function BlPage() {
       <div className="no-print h-12" />
 
       <div className="max-w-3xl mx-auto p-6 print:p-0 print:max-w-none">
-        {data.clients.map((c) => (
+        {clients.map((c) => (
           <div key={c.clientId} className="bl-page">
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", borderBottom: "2px solid #111", paddingBottom: "0.4cm" }}>
               <div>

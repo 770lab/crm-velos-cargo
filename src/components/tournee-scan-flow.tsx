@@ -109,6 +109,7 @@ function Inner({ mode }: { mode: ScanMode }) {
   const cfg = MODE_CONFIG[mode];
   const sp = useSearchParams();
   const tourneeId = sp.get("tourneeId") || "";
+  const focusClientId = sp.get("clientId") || "";
   const currentUser = useCurrentUser();
   const userId = currentUser?.id || "";
   const userName = currentUser?.nom || "";
@@ -241,7 +242,9 @@ function Inner({ mode }: { mode: ScanMode }) {
   }
 
   const prog = progression && !("error" in progression) ? progression : null;
-  const totals = prog?.totals;
+  const focusClient = focusClientId && prog ? prog.clients.find((c) => c.clientId === focusClientId) : null;
+  // Si focusClientId est passé en URL : on compte uniquement les vélos de ce client.
+  const totals = focusClient ? focusClient.totals : prog?.totals;
   const counter = totals ? totals[cfg.totalsKey] : 0;
   const total = totals?.total || 0;
   const allDone = total > 0 && counter >= total;
@@ -272,6 +275,18 @@ function Inner({ mode }: { mode: ScanMode }) {
               <span>Tournée {prog.tourneeId}{prog.datePrevue ? " · " + new Date(prog.datePrevue).toLocaleDateString() : ""}</span>
               <span>{prog.clients.length} client{prog.clients.length > 1 ? "s" : ""}</span>
             </div>
+            {focusClient && (
+              <div className="bg-orange-50 border border-orange-200 rounded p-2 mb-2 text-xs">
+                <div className="font-semibold text-orange-900">🎯 Focus client : {focusClient.entreprise}</div>
+                <div className="text-orange-700">{focusClient.codePostal} {focusClient.ville}</div>
+                <a
+                  href={`/crm-velos-cargo/${mode === "preparation" ? "preparation" : mode === "chargement" ? "chargement" : "livraison"}?tourneeId=${encodeURIComponent(tourneeId)}`}
+                  className="text-[10px] text-blue-600 underline mt-1 inline-block"
+                >
+                  Voir la tournée entière →
+                </a>
+              </div>
+            )}
             <div className="flex items-baseline justify-between mb-2">
               <div className="text-2xl font-bold">{counter} <span className="text-base text-gray-400 font-normal">/ {total}</span></div>
               {allDone && <div className="text-green-600 text-sm font-medium">✅ Terminé</div>}
@@ -373,24 +388,27 @@ function Inner({ mode }: { mode: ScanMode }) {
               </div>
             )}
 
-            {mode === "preparation" && (
-              <div className="bg-white rounded-xl shadow p-3 mb-3 grid grid-cols-2 gap-2">
-                <a
-                  href={`/crm-velos-cargo/etiquettes?tourneeId=${encodeURIComponent(tourneeId)}`}
-                  target="_blank" rel="noopener noreferrer"
-                  className="text-center bg-gray-100 rounded-lg py-3 text-sm font-medium hover:bg-gray-200"
-                >
-                  🏷️ Étiquettes
-                </a>
-                <a
-                  href={`/crm-velos-cargo/bl?tourneeId=${encodeURIComponent(tourneeId)}`}
-                  target="_blank" rel="noopener noreferrer"
-                  className="text-center bg-gray-100 rounded-lg py-3 text-sm font-medium hover:bg-gray-200"
-                >
-                  📄 Bon de livraison
-                </a>
-              </div>
-            )}
+            {mode === "preparation" && (() => {
+              const cid = focusClientId ? `&clientId=${encodeURIComponent(focusClientId)}` : "";
+              return (
+                <div className="bg-white rounded-xl shadow p-3 mb-3 grid grid-cols-2 gap-2">
+                  <a
+                    href={`/crm-velos-cargo/etiquettes?tourneeId=${encodeURIComponent(tourneeId)}${cid}`}
+                    target="_blank" rel="noopener noreferrer"
+                    className="text-center bg-gray-100 rounded-lg py-3 text-sm font-medium hover:bg-gray-200"
+                  >
+                    🏷️ Étiquettes
+                  </a>
+                  <a
+                    href={`/crm-velos-cargo/bl?tourneeId=${encodeURIComponent(tourneeId)}${cid}`}
+                    target="_blank" rel="noopener noreferrer"
+                    className="text-center bg-gray-100 rounded-lg py-3 text-sm font-medium hover:bg-gray-200"
+                  >
+                    📄 Bon de livraison
+                  </a>
+                </div>
+              );
+            })()}
 
             {allDone && cfg.nextLink && (
               <a

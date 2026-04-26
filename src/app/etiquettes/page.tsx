@@ -22,6 +22,7 @@ export default function EtiquettesPageWrapper() {
 function EtiquettesPage() {
   const sp = useSearchParams();
   const tourneeId = sp.get("tourneeId") || "";
+  const focusClientId = sp.get("clientId") || "";
   const [data, setData] = useState<Progression | null>(null);
 
   useEffect(() => {
@@ -33,11 +34,12 @@ function EtiquettesPage() {
   if (!data) return <div className="p-6 text-sm text-gray-500">Chargement…</div>;
   if ("error" in data) return <div className="p-6 text-red-600">{data.error}</div>;
 
+  const clients = focusClientId ? data.clients.filter((c) => c.clientId === focusClientId) : data.clients;
   const items: { client: Client; velo: Velo; index: number; total: number }[] = [];
   let total = 0;
-  data.clients.forEach((c) => { total += c.velos.length; });
+  clients.forEach((c) => { total += c.velos.length; });
   let i = 0;
-  data.clients.forEach((c) => {
+  clients.forEach((c) => {
     c.velos.forEach((v) => { i++; items.push({ client: c, velo: v, index: i, total }); });
   });
 
