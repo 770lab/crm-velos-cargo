@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { gasGet, gasPost } from "@/lib/gas";
-import { useData, type LivraisonRow } from "@/lib/data-context";
+import { useData, type LivraisonRow, type EquipeMember, type ClientPoint } from "@/lib/data-context";
 import DateLoadPicker, { type DayLoad } from "@/components/date-load-picker";
 import AddClientModal from "@/components/add-client-modal";
 import DayPlannerModal from "@/components/day-planner-modal";
@@ -732,7 +732,8 @@ function TourneeModal({
   onClose: () => void;
   onChanged: () => void;
 }) {
-  const { carte: allClients } = useData();
+  const { carte: allClients, equipe } = useData();
+  const [showRappel, setShowRappel] = useState(false);
   const clientInfo = useMemo(() => {
     const map = new Map<string, typeof allClients[number]>();
     for (const c of allClients) map.set(c.id, c);
@@ -1042,6 +1043,13 @@ function TourneeModal({
               </a>
             )}
             <button
+              onClick={() => setShowRappel(true)}
+              className="px-3 py-1 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-1"
+              title="Envoie un rappel par mail à chaque client de la tournée avec sa fenêtre de passage estimée"
+            >
+              📧 Rappels veille
+            </button>
+            <button
               onClick={() => setShowPrint(true)}
               className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-1"
             >
@@ -1345,6 +1353,16 @@ function TourneeModal({
           </button>
         </div>
       </div>
+      {showRappel && (
+        <RappelVeilleModal
+          tournee={tournee}
+          segments={segments}
+          monteurs={monteurs}
+          equipe={equipe}
+          clientInfo={clientInfo}
+          onClose={() => setShowRappel(false)}
+        />
+      )}
     </div>
   );
 }
@@ -1731,6 +1749,226 @@ function EquipeAssignBlock({
         >
           {saving ? "..." : "Enregistrer l'affectation"}
         </button>
+      </div>
+    </div>
+  );
+}
+
+const FROM_EMAIL_RAPPEL = "velos-cargo@artisansverts.energy";
+const DEPART_DEPOT_HEURE = 9; // 9h00 du matin
+const FENETRE_HEURES = 2;
+
+function fmtHM(totalMinutesFromMidnight: number): string {
+  const h = Math.floor(totalMinutesFromMidnight / 60);
+  const m = Math.round(totalMinutesFromMidnight % 60);
+  return `${String(h).padStart(2, "0")}h${String(m).padStart(2, "0")}`;
+}
+
+function RappelVeilleModal({
+  tournee,
+  segments,
+  monteurs,
+  equipe,
+  clientInfo,
+  onClose,
+}: {
+  tournee: Tournee;
+  segments: { distKm: number; trajetMin: number }[];
+  monteurs: number;
+  equipe: EquipeMember[];
+  clientInfo: Map<string, ClientPoint>;
+  onClose: () => void;
+}) {
+  // Calcule l'arrivée estimée à chaque arrêt en partant de 9h00 du dépôt
+  // arrivée[i] = 9h00 + sum(trajets[0..i]) + sum(montages[0..i-1])
+  // montage à un arrêt = nbVelos * MINUTES_PAR_VELO / monteurs
+  const stops = useMemo(() => {
+    const startMin = DEPART_DEPOT_HEURE * 60;
+    let cumul = startMin;
+    return tournee.livraisons.map((l, i) => {
+      cumul += segments[i]?.trajetMin || 0;
+      const arrivee = cumul;
+      const montageStop = ((l.nbVelos || 0) * MINUTES_PAR_VELO) / Math.max(1, monteurs);
+      cumul += montageStop;
+      return {
+        livraison: l,
+        arriveeMin: arrivee,
+        finStopMin: cumul,
+      };
+    });
+  }, [tournee, segments, monteurs]);
+
+  const dateObj = tournee.datePrevue ? new Date(tournee.datePrevue) : null;
+  const dateLabel = dateObj
+    ? dateObj.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })
+    : "";
+
+  // Auto-coche tout par défaut, sauf clients sans email
+  const [selected, setSelected] = useState<Set<string>>(() => {
+    const s = new Set<string>();
+    stops.forEach((st) => {
+      const cid = st.livraison.clientId;
+      const fullClient = cid ? clientInfo.get(cid) : null;
+      if (fullClient?.email) s.add(st.livraison.id);
+    });
+    return s;
+  });
+
+  const apporteurEmailDe = (apporteurNom: string | null | undefined) => {
+    const name = (apporteurNom || "").trim().toLowerCase();
+    if (!name) return null;
+    const match = equipe.find(
+      (m) => m.role === "apporteur" && m.actif !== false && (m.nom || "").trim().toLowerCase() === name,
+    );
+    return match?.email || null;
+  };
+
+  const buildMail = (st: typeof stops[number]) => {
+    const cid = st.livraison.clientId;
+    const c = cid ? clientInfo.get(cid) : null;
+    const nbVelos = st.livraison.nbVelos || 0;
+    const debut = fmtHM(st.arriveeMin);
+    const fin = fmtHM(st.arriveeMin + FENETRE_HEURES * 60);
+    const subject = `Rappel livraison vélos cargo le ${dateObj ? dateObj.toLocaleDateString("fr-FR", { day: "numeric", month: "long" }) : ""} — fenêtre ${debut}-${fin}`;
+    const body = [
+      `Bonjour${c?.contact ? " " + c.contact : ""},`,
+      ``,
+      `Petit rappel : votre livraison de ${nbVelos} vélo${nbVelos > 1 ? "s" : ""} cargo est confirmée pour ${dateLabel}.`,
+      ``,
+      `Fenêtre de passage estimée : entre ${debut} et ${fin}.`,
+      `Adresse : ${c?.adresse || ""}${c?.codePostal ? ", " + c.codePostal : ""}${c?.ville ? " " + c.ville : ""}.`,
+      ``,
+      `Merci de prévoir une personne sur place pour la réception et la signature du procès-verbal de livraison.`,
+      `En cas d'imprévu (retard, fenêtre serrée, accès difficile), répondez à ce mail ou appelez-nous.`,
+      ``,
+      `Cordialement,`,
+      `L'équipe Artisans Verts Energy`,
+    ].join("\n");
+    const apEmail = apporteurEmailDe(c?.apporteur || null);
+    const ccParam = apEmail ? `&cc=${encodeURIComponent(apEmail)}` : "";
+    return {
+      to: c?.email || "",
+      cc: apEmail,
+      subject,
+      body,
+      url: `https://mail.google.com/mail/?authuser=${encodeURIComponent(FROM_EMAIL_RAPPEL)}&view=cm&fs=1&to=${encodeURIComponent(c?.email || "")}${ccParam}&su=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`,
+    };
+  };
+
+  const toggle = (id: string) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    setSelected(next);
+  };
+
+  const stopHasEmail = (st: typeof stops[number]) => {
+    const cid = st.livraison.clientId;
+    const c = cid ? clientInfo.get(cid) : null;
+    return !!c?.email;
+  };
+
+  const ouvrirTous = () => {
+    const aOuvrir = stops.filter((st) => selected.has(st.livraison.id) && stopHasEmail(st));
+    aOuvrir.forEach((st, idx) => {
+      const url = buildMail(st).url;
+      // léger délai entre chaque ouverture pour que Chrome n'en bloque pas
+      setTimeout(() => window.open(url, "_blank"), idx * 250);
+    });
+  };
+
+  const nbASelectionner = stops.filter((st) => selected.has(st.livraison.id) && stopHasEmail(st)).length;
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4">
+      <div className="bg-white rounded-xl p-6 w-full max-w-3xl max-h-[90vh] overflow-y-auto">
+        <div className="flex justify-between items-start mb-4">
+          <div>
+            <h2 className="text-lg font-semibold">📧 Rappels veille de livraison</h2>
+            <div className="text-sm text-gray-600">
+              {dateLabel} · départ dépôt {DEPART_DEPOT_HEURE}h00 · fenêtre client {FENETRE_HEURES}h · {monteurs} monteur{monteurs > 1 ? "s" : ""}
+            </div>
+            <div className="text-xs text-gray-500 mt-1">
+              De : <span className="font-mono">{FROM_EMAIL_RAPPEL}</span> · CC apporteur auto si rattaché
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+        </div>
+
+        <div className="space-y-2 mb-4">
+          {stops.map((st, i) => {
+            const cid = st.livraison.clientId;
+            const c = cid ? clientInfo.get(cid) : null;
+            const debut = fmtHM(st.arriveeMin);
+            const fin = fmtHM(st.arriveeMin + FENETRE_HEURES * 60);
+            const apEmail = apporteurEmailDe(c?.apporteur || null);
+            const checked = selected.has(st.livraison.id);
+            const sansEmail = !c?.email;
+            return (
+              <div
+                key={st.livraison.id}
+                className={`border rounded-lg p-3 flex items-start gap-3 ${sansEmail ? "bg-red-50 border-red-200" : checked ? "bg-blue-50 border-blue-200" : "bg-white"}`}
+              >
+                <input
+                  type="checkbox"
+                  checked={checked}
+                  disabled={sansEmail}
+                  onChange={() => toggle(st.livraison.id)}
+                  className="mt-1 h-4 w-4"
+                />
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-baseline gap-2 flex-wrap">
+                    <span className="font-mono text-xs text-gray-400">{i + 1}.</span>
+                    <span className="font-medium text-sm truncate">{c?.entreprise || st.livraison.client.entreprise}</span>
+                    <span className="text-xs text-blue-700 whitespace-nowrap">{debut}–{fin}</span>
+                    <span className="text-xs text-gray-400">· {st.livraison.nbVelos || 0}v</span>
+                  </div>
+                  <div className="text-xs text-gray-600 mt-0.5 truncate">
+                    {c?.email ? (
+                      <>→ {c.email}</>
+                    ) : (
+                      <span className="text-red-700">⚠ pas d&apos;email — à compléter sur la fiche client</span>
+                    )}
+                    {apEmail && <> · <span className="text-amber-700">CC : {apEmail}</span></>}
+                    {c?.apporteur && !apEmail && (
+                      <> · <span className="text-gray-400" title={`Pas de membre Équipe rôle apporteur "${c.apporteur}" avec email`}>apporteur &quot;{c.apporteur}&quot; non rattaché</span></>
+                    )}
+                  </div>
+                </div>
+                <a
+                  href={buildMail(st).url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className={`text-xs px-2 py-1 rounded ${sansEmail ? "bg-gray-200 text-gray-400 pointer-events-none" : "bg-gray-100 text-gray-700 hover:bg-gray-200"}`}
+                >
+                  Ouvrir
+                </a>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="border-t pt-3 flex items-center justify-between gap-3">
+          <div className="text-xs text-gray-500">
+            {nbASelectionner} mail{nbASelectionner > 1 ? "s" : ""} prêt{nbASelectionner > 1 ? "s" : ""} à ouvrir.
+            Si Chrome bloque, autorise les pop-ups pour ce site.
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={onClose}
+              className="px-3 py-2 text-sm bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200"
+            >
+              Fermer
+            </button>
+            <button
+              onClick={ouvrirTous}
+              disabled={nbASelectionner === 0}
+              className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            >
+              📧 Ouvrir {nbASelectionner} rappel{nbASelectionner > 1 ? "s" : ""}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
