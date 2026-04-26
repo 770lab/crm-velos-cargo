@@ -2763,17 +2763,46 @@ function ensureFlotteSheet() {
 
 function ensureDisponibilitesSheet() {
   var sh = SS.getSheetByName(DISPO_SHEET_NAME);
+  var fresh = false;
   if (!sh) {
     sh = SS.insertSheet(DISPO_SHEET_NAME);
     sh.getRange(1, 1, 1, DISPO_COLS.length).setValues([DISPO_COLS]);
     sh.setFrozenRows(1);
-    return sh;
+    fresh = true;
+  } else {
+    var lastCol = Math.max(1, sh.getLastColumn());
+    var headersExisting = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+    var missing = DISPO_COLS.filter(function(c) { return headersExisting.indexOf(c) < 0; });
+    if (missing.length) {
+      sh.getRange(1, headersExisting.length + 1, 1, missing.length).setValues([missing]);
+    }
   }
-  var lastCol = Math.max(1, sh.getLastColumn());
-  var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
-  var missing = DISPO_COLS.filter(function(c) { return headers.indexOf(c) < 0; });
-  if (missing.length) {
-    sh.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]);
+  // Force la colonne "date" en TEXTE pour éviter les décalages timezone que Sheets
+  // applique quand il auto-détecte une chaîne ISO comme un Date object.
+  var headersNow = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var iDate = headersNow.indexOf("date");
+  if (iDate >= 0) {
+    sh.getRange(1, iDate + 1, sh.getMaxRows(), 1).setNumberFormat("@");
+    // Migration : si des rows existent avec Date object dans la col date (avant le fix),
+    // les réécrire en texte yyyy-MM-dd basé sur le timezone du SHEET (la même que celle
+    // utilisée par Sheets pour interpréter le timestamp interne).
+    if (!fresh) {
+      var lastRow = sh.getLastRow();
+      if (lastRow > 1) {
+        var range = sh.getRange(2, iDate + 1, lastRow - 1, 1);
+        var values = range.getValues();
+        var tz = SS.getSpreadsheetTimeZone();
+        var changed = false;
+        for (var r = 0; r < values.length; r++) {
+          var v = values[r][0];
+          if (v instanceof Date) {
+            values[r][0] = Utilities.formatDate(v, tz, "yyyy-MM-dd");
+            changed = true;
+          }
+        }
+        if (changed) range.setValues(values);
+      }
+    }
   }
   return sh;
 }
@@ -2866,7 +2895,7 @@ function _dispoRowToObject(row, headers) {
   var o = {};
   headers.forEach(function(h, j) {
     var v = row[j];
-    if (v instanceof Date && h === "date") o[h] = Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM-dd");
+    if (v instanceof Date && h === "date") o[h] = Utilities.formatDate(v, SS.getSpreadsheetTimeZone(), "yyyy-MM-dd");
     else o[h] = v;
   });
   o.actif = (o.actif === true || o.actif === "TRUE");
@@ -2919,7 +2948,7 @@ function setDisponibilites(body) {
   var existing = {}; // key = type + "|" + ressourceId → row index (1-based) + actif
   for (var i = 1; i < data.length; i++) {
     var r = data[i];
-    if (String(r[iDate]) === date || (r[iDate] instanceof Date && Utilities.formatDate(r[iDate], Session.getScriptTimeZone(), "yyyy-MM-dd") === date)) {
+    if (String(r[iDate]) === date || (r[iDate] instanceof Date && Utilities.formatDate(r[iDate], SS.getSpreadsheetTimeZone(), "yyyy-MM-dd") === date)) {
       var key = r[iType] + "|" + r[iRessId];
       existing[key] = { row: i + 1, actif: (r[iActif] === true || r[iActif] === "TRUE") };
     }
@@ -2939,7 +2968,7 @@ function setDisponibilites(body) {
       } else {
         var newRow = headers.map(function(h) {
           if (h === "id") return Utilities.getUuid();
-          if (h === "date") return date;
+          if (h === "date") return "'" + date; // apostrophe force texte (anti timezone shift)
           if (h === "ressourceType") return type;
           if (h === "ressourceId") return rid;
           if (h === "actif") return "TRUE";
