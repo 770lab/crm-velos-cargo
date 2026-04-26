@@ -3329,6 +3329,15 @@ function unmarkVeloEtape(body) {
 // prête à être ré-attribuée à n'importe quel client avec un nouveau scan FNUCI.
 // (Le FNUCI est désormais vidé pour permettre de re-scanner après un test ou
 // une erreur d'attribution — sinon la ligne reste bloquée avec son FNUCI.)
+// "Désaffilier" = vide le FNUCI + les dates d'étape sur la ligne Velos, MAIS
+// garde le clientId. Le slot reste réservé pour ce client (la commande n'est
+// pas annulée), il redevient juste un slot vide en attente d'un nouveau FNUCI.
+//
+// Avant 2026-04-26 : on vidait aussi clientId → bug pratique : à chaque
+// désaffilier on perdait un slot pour le client → le préparateur ne pouvait
+// plus rescanner le 3e vélo après avoir désaffilié 1 fois (même si la
+// commande était de 3). Conformément à l'attente utilisateur, on garde le
+// slot pour ce client et on libère seulement le couple FNUCI+dates.
 function unsetVeloClient(body) {
   body = body || {};
   var meta = ensureVelosSchema();
@@ -3336,7 +3345,6 @@ function unsetVeloClient(body) {
   var headers = meta.headers;
   var iId = headers.indexOf("id");
   var iFnuci = headers.indexOf("fnuci");
-  var iClientId = headers.indexOf("clientId");
   var iTid = headers.indexOf("tourneeIdScan");
   var dateCols = ["datePreparation", "prepareParId", "dateChargement", "chargeParId", "dateLivraisonScan", "livreParId", "dateMontage", "monteParId", "photoMontageUrl"];
 
@@ -3353,7 +3361,8 @@ function unsetVeloClient(body) {
     if (!hit) continue;
 
     var fnuciAvant = String(row[iFnuci] || "").trim() || null;
-    if (iClientId >= 0) meta.sheet.getRange(i + 1, iClientId + 1).setValue("");
+    // Note : on NE TOUCHE PLUS à clientId. La ligne reste un slot de la
+    // commande de ce client, simplement remis à vide.
     if (iTid >= 0) meta.sheet.getRange(i + 1, iTid + 1).setValue("");
     if (iFnuci >= 0) meta.sheet.getRange(i + 1, iFnuci + 1).setValue("");
     dateCols.forEach(function(col) {
@@ -4624,7 +4633,13 @@ function extractFnuciFromImage(body) {
     }],
     generationConfig: {
       temperature: 0,
-      response_mime_type: "application/json"
+      response_mime_type: "application/json",
+      // OCR / lecture de code = aucune réflexion nécessaire. thinkingBudget: 0
+      // désactive complètement le "thinking" de Gemini 2.5 Flash et fait
+      // gagner 1-2s par appel. maxOutputTokens cap petit aussi : la réponse
+      // ne dépasse jamais ~50 tokens ({"fnucis":["BC...","BC..."]}).
+      thinkingConfig: { thinkingBudget: 0 },
+      maxOutputTokens: 256
     }
   };
 

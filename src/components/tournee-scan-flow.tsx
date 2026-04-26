@@ -242,7 +242,7 @@ function Inner({ mode }: { mode: ScanMode }) {
   // Utile quand un vélo retourne au dépôt et doit être réassigné ailleurs.
   const desaffilier = useCallback(async (veloId: string, fnuci: string | null) => {
     if (busy) return;
-    if (!confirm(`Désaffilier ce vélo de son client ?\n\nFNUCI : ${fnuci || "—"}\nID : ${veloId}\n\nLe vélo retourne au dépôt, toutes ses étapes (préparation, chargement, livraison, montage) seront effacées et il pourra être réassigné à un autre client.`)) return;
+    if (!confirm(`Désaffilier ce vélo ?\n\nFNUCI : ${fnuci || "—"}\nID : ${veloId}\n\nLe FNUCI sera effacé et toutes les étapes (préparation, chargement, livraison, montage) seront réinitialisées. Le slot reste sur la commande du client (qui pourra ré-affilier un nouveau FNUCI dessus).`)) return;
     setBusy(true);
     try {
       const r = await gasPost("unsetVeloClient", { veloId }) as { ok?: boolean; error?: string };

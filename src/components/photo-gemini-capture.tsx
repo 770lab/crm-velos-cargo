@@ -26,6 +26,38 @@ type ExtractResp =
     }
   | { error: string; rawText?: string; body?: string };
 
+// Wrapper autour de gasUpload qui :
+//   1. timeout au bout de TIMEOUT_MS (30s par défaut) — sinon une requête
+//      hung bloquerait la carte sur "🤖 Gemini analyse…" indéfiniment ;
+//   2. retry automatiquement 1× après ~1s si la 1re tentative timeout/fail.
+// Au-delà de 2 essais, l'erreur remonte → la carte passe en rouge avec son
+// bouton "↻ Réessayer" et l'utilisateur peut retenter manuellement.
+const TIMEOUT_MS = 30000;
+const RETRY_DELAY_MS = 1000;
+
+async function callExtractWithRetry(
+  body: Record<string, unknown>,
+): Promise<ExtractResp> {
+  let lastErr: unknown = null;
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    try {
+      const resp = await Promise.race([
+        gasUpload("extractFnuciFromImage", body) as Promise<ExtractResp>,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error(`Timeout après ${TIMEOUT_MS / 1000}s`)), TIMEOUT_MS),
+        ),
+      ]);
+      return resp;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+      }
+    }
+  }
+  throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
+}
+
 type BatchItem = {
   id: string;
   fileName: string;
@@ -247,14 +279,14 @@ export default function PhotoGeminiCapture({
         const item = items.find((it) => it.id === id);
         if (!item) return;
         try {
-          const resp = (await gasUpload("extractFnuciFromImage", {
+          const resp = await callExtractWithRetry({
             imageBase64: item.base64,
             mimeType: item.mimeType,
             tourneeId,
             userId,
             etape,
             forceClientId: forceClientId || undefined,
-          })) as ExtractResp;
+          });
           setItems((prev) =>
             prev.map((it) => (it.id === id ? { ...it, status: "done", resp } : it)),
           );
@@ -298,14 +330,14 @@ export default function PhotoGeminiCapture({
       ),
     );
     try {
-      const resp = (await gasUpload("extractFnuciFromImage", {
+      const resp = await callExtractWithRetry({
         imageBase64: item.base64,
         mimeType: item.mimeType,
         tourneeId,
         userId,
         etape,
         forceClientId: forceClientId || undefined,
-      })) as ExtractResp;
+      });
       setItems((prev) =>
         prev.map((it) => (it.id === item.id ? { ...it, status: "done", resp } : it)),
       );
