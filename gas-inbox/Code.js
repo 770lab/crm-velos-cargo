@@ -60,6 +60,8 @@ function doGet(e) {
         return _respond(relabelUnprocessed());
       case "retryFailed":
         return _respond(retryFailedThreads(e.parameter || {}));
+      case "extractContacts":
+        return _respond(extractContactsFromSignatures(e.parameter || {}));
       default:
         return _respondError("Action GET inconnue : " + action);
     }
@@ -664,4 +666,149 @@ function debugInbox() {
   } catch (e) { out.gmailError = String(e); Logger.log("gmailError: " + e); }
   Logger.log("=== DEBUG RESULT === " + JSON.stringify(out));
   return out;
+}
+
+// ─── Extraction contact via signature de mail ────────────────────────────────
+//
+// Parcourt les clients sans contact mais avec email, cherche dans Gmail les
+// derniers messages reçus DEPUIS cette adresse (donc rédigés par l'humain en
+// face), envoie le corps à Gemini avec consigne stricte "extrait nom prénom
+// depuis la signature, RIEN si tu hésites", et écrit le résultat dans la
+// sheet Clients.
+//
+// Usage : .../exec?action=extractContacts&batch=20[&dryRun=1]
+//   batch  : nombre max de clients traités par run (défaut 20, max 50 pour
+//            ne pas dépasser le timeout 6min de GAS)
+//   dryRun : si "1", n'écrit pas en sheet, retourne juste les propositions
+function extractContactsFromSignatures(payload) {
+  payload = payload || {};
+  var batch = Math.min(50, Math.max(1, Number(payload.batch) || 20));
+  var dryRun = String(payload.dryRun || "") === "1";
+
+  var ctx = _loadCrmContext();
+  var iEmail = ctx.clientsHeaders.indexOf("email");
+  var iContact = ctx.clientsHeaders.indexOf("contact");
+  if (iEmail < 0 || iContact < 0) return { error: "Colonnes email/contact introuvables" };
+
+  // Filtre : email présent + contact vide + pas déjà tenté lors de cette run
+  var candidats = ctx.clients.filter(function (c) {
+    return c.email && String(c.email).indexOf("@") > 0 && !String(c.contact || "").trim();
+  }).slice(0, batch);
+
+  if (candidats.length === 0) return { ok: true, message: "Plus aucun client sans contact à traiter.", processed: 0 };
+
+  var results = [];
+  for (var i = 0; i < candidats.length; i++) {
+    var c = candidats[i];
+    try {
+      var bodies = _gmailLastBodiesFrom(c.email, 3);
+      if (bodies.length === 0) {
+        results.push({ entreprise: c.entreprise, email: c.email, contact: null, raison: "aucun mail trouvé" });
+        continue;
+      }
+      var contactName = _geminiExtractContactFromSignature(bodies, c.email);
+      if (contactName) {
+        if (!dryRun) _updateClientField(c.rowIndex, iContact + 1, contactName);
+        results.push({ entreprise: c.entreprise, email: c.email, contact: contactName, raison: "ok" });
+      } else {
+        results.push({ entreprise: c.entreprise, email: c.email, contact: null, raison: "doute → rien" });
+      }
+    } catch (err) {
+      results.push({ entreprise: c.entreprise, email: c.email, contact: null, raison: "erreur : " + (err && err.message || err) });
+    }
+    Utilities.sleep(300); // anti-rate-limit Gemini free tier (15 RPM = 4s/req max, mais ça passe)
+  }
+
+  var trouves = results.filter(function (r) { return r.contact; }).length;
+  return {
+    ok: true,
+    processed: candidats.length,
+    trouves: trouves,
+    sansResultat: candidats.length - trouves,
+    dryRun: dryRun,
+    results: results,
+  };
+}
+
+// Récupère les corps texte des N derniers messages dont l'expéditeur est `email`.
+// On cherche FROM:email pour avoir les messages écrits par l'humain (pas nos
+// envois sortants), avec leurs signatures.
+function _gmailLastBodiesFrom(email, maxMessages) {
+  var query = "from:" + email;
+  var threads = GmailApp.search(query, 0, 5);
+  var bodies = [];
+  for (var t = 0; t < threads.length && bodies.length < maxMessages; t++) {
+    var msgs = threads[t].getMessages();
+    for (var m = msgs.length - 1; m >= 0 && bodies.length < maxMessages; m--) {
+      var fromHeader = String(msgs[m].getFrom() || "").toLowerCase();
+      if (fromHeader.indexOf(email.toLowerCase()) < 0) continue;
+      var body = msgs[m].getPlainBody() || "";
+      // On ne garde que la queue du message (où est typiquement la signature)
+      // pour économiser des tokens et concentrer Gemini sur la signature.
+      var tail = body.length > 1500 ? body.substring(body.length - 1500) : body;
+      bodies.push(tail);
+    }
+  }
+  return bodies;
+}
+
+function _geminiExtractContactFromSignature(bodies, email) {
+  var key = _getGeminiKey();
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/" + GEMINI_MODEL + ":generateContent?key=" + key;
+
+  var prompt =
+    "Tu extrais le NOM et PRÉNOM d'un humain depuis la signature de ses mails.\n" +
+    "Adresse email de la personne : " + email + "\n\n" +
+    "Voici les " + bodies.length + " dernier(s) mail(s) écrit(s) par cette personne. " +
+    "Cherche dans la SIGNATURE (généralement en bas, après 'Cordialement', 'Bien à vous', '--', etc.) " +
+    "le nom complet de l'humain qui signe.\n\n" +
+    "RÈGLES STRICTES :\n" +
+    "1. Renvoie EXACTEMENT le nom tel qu'il apparaît dans la signature, format \"Prénom NOM\".\n" +
+    "2. Si plusieurs mails donnent des noms différents → renvoie null (incohérence).\n" +
+    "3. Si la signature est juste un prénom (ex: 'Cordialement, Jean') → renvoie quand même \"Jean\" (le prénom seul).\n" +
+    "4. Si tu n'es PAS SÛR à 95%+, renvoie null. Préfère le NULL au faux positif.\n" +
+    "5. Ne renvoie PAS un nom de société, de produit, de cabinet, d'agence (ex: \"AXDIS\", \"Cabinet Dupont\" → null).\n" +
+    "6. Ne renvoie PAS un nom générique automatique (ex: \"Equipe Support\", \"Service client\" → null).\n" +
+    "7. Si la signature contient nom + fonction, garde juste le nom (ex: \"Jean Dupont, Directeur\" → \"Jean Dupont\").\n\n" +
+    "FORMAT JSON STRICT :\n" +
+    '{ "contact": "Prénom NOM" | null, "confiance": 0..100, "raison": "courte" }\n\n' +
+    "Mails (du plus récent au plus ancien) :\n\n";
+
+  bodies.forEach(function (b, i) {
+    prompt += "===== Mail " + (i + 1) + " =====\n" + b + "\n\n";
+  });
+
+  var body = {
+    contents: [{ role: "user", parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0,
+      responseMimeType: "application/json",
+      maxOutputTokens: 256,
+      thinkingConfig: { thinkingBudget: 0 },
+    },
+  };
+
+  var resp = UrlFetchApp.fetch(url, {
+    method: "post",
+    contentType: "application/json",
+    payload: JSON.stringify(body),
+    muteHttpExceptions: true,
+  });
+  if (resp.getResponseCode() >= 300) {
+    throw new Error("Gemini HTTP " + resp.getResponseCode() + ": " + resp.getContentText().substring(0, 200));
+  }
+  var data = JSON.parse(resp.getContentText());
+  var raw = data.candidates && data.candidates[0] && data.candidates[0].content && data.candidates[0].content.parts && data.candidates[0].content.parts[0] && data.candidates[0].content.parts[0].text;
+  if (!raw) return null;
+  var cleaned = raw.replace(/^\s*```(?:json)?\s*\n?/i, "").replace(/\n?\s*```\s*$/i, "").trim();
+  var parsed;
+  try { parsed = JSON.parse(cleaned); } catch (e) { return null; }
+  if (!parsed || !parsed.contact) return null;
+  // Garde-fou : si confiance < 80, on jette
+  if (typeof parsed.confiance === "number" && parsed.confiance < 80) return null;
+  var name = String(parsed.contact).trim();
+  // Filtres anti-faux-positifs basiques
+  if (name.length < 2 || name.length > 60) return null;
+  if (/^[\d\W]+$/.test(name)) return null;
+  return name;
 }
