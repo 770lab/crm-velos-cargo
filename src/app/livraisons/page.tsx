@@ -164,39 +164,6 @@ export default function LivraisonsPage() {
 
   const livraisonsSansDate = userLivraisons.filter((l) => !l.datePrevue);
 
-  // Ouverture conditionnelle d'une tournée : les rôles opérationnels
-  // (préparateur, chauffeur, monteur, chef d'équipe) ne peuvent rentrer dans
-  // le détail d'une tournée que le jour J ou la veille. Avant ça, ils voient
-  // bien la tournée sur le planning hebdo/mensuel mais ne peuvent pas
-  // l'ouvrir — pour ne pas qu'ils commencent à scanner / marquer une étape
-  // alors que la tournée n'est pas encore d'actualité.
-  const tryOpenTournee = (t: Tournee) => {
-    if (!currentUser) return;
-    const restrictedRoles: EquipeRole[] = ["preparateur", "chauffeur", "monteur", "chef"];
-    if (restrictedRoles.includes(currentUser.role)) {
-      if (!t.datePrevue) {
-        alert("Cette tournée n'a pas de date prévue. Adresse-toi à l'admin.");
-        return;
-      }
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-      const tomorrow = new Date(today);
-      tomorrow.setDate(tomorrow.getDate() + 1);
-      const dPrevue = new Date(t.datePrevue);
-      dPrevue.setHours(0, 0, 0, 0);
-      const isTodayOrTomorrow =
-        dPrevue.getTime() === today.getTime() || dPrevue.getTime() === tomorrow.getTime();
-      if (!isTodayOrTomorrow) {
-        const j = dPrevue.toLocaleDateString("fr-FR");
-        alert(
-          `Tu pourras ouvrir cette tournée le ${j} (ou la veille).\n\nPour l'instant, tu peux la voir dans le planning mais pas entrer dans le détail.`,
-        );
-        return;
-      }
-    }
-    setOpenTournee(t);
-  };
-
   return (
     <div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
@@ -254,13 +221,13 @@ export default function LivraisonsPage() {
       )}
 
       {view === "semaine" && (
-        <WeekView refDate={refDate} tourneesByDate={tourneesByDate} onOpen={tryOpenTournee} />
+        <WeekView refDate={refDate} tourneesByDate={tourneesByDate} onOpen={setOpenTournee} />
       )}
       {view === "mois" && (
-        <MonthView refDate={refDate} tourneesByDate={tourneesByDate} onOpen={tryOpenTournee} />
+        <MonthView refDate={refDate} tourneesByDate={tourneesByDate} onOpen={setOpenTournee} />
       )}
       {view === "liste" && (
-        <ListView tournees={tournees} onOpen={tryOpenTournee} />
+        <ListView tournees={tournees} onOpen={setOpenTournee} />
       )}
 
       {livraisonsSansDate.length > 0 && view !== "liste" && (
