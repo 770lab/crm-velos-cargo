@@ -35,24 +35,60 @@ export default function QrScanner({
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [lastShot, setLastShot] = useState<string | null>(null);
 
-  // Décode le QR sur un canvas redimensionné à maxDim au plus.
-  // jsQR est O(n²) sur la résolution — un iPhone shoot 4032×3024 (12MP) ce
-  // qui prendrait ~3s. On essaie d'abord à 1600px (~600ms), et seulement si
-  // ça rate on tente la pleine résolution. Ça couvre 95% des cas en <1s.
-  const decodeAtSize = (img: HTMLImageElement, maxDim: number) => {
-    const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight));
-    const w = Math.max(1, Math.floor(img.naturalWidth * scale));
-    const h = Math.max(1, Math.floor(img.naturalHeight * scale));
+  // Décode le QR sur une région de l'image dessinée dans un canvas.
+  // sx/sy/sw/sh = rectangle source (en coordonnées image native).
+  // outMax = taille max de la sortie (downsample pour perf jsQR — O(n²)).
+  // jsQR sur 1600px ≈ 600ms ; à pleine res 4032×3024 ≈ 3s.
+  const decodeRegion = (
+    img: HTMLImageElement,
+    sx: number,
+    sy: number,
+    sw: number,
+    sh: number,
+    outMax: number,
+  ) => {
+    const scale = Math.min(1, outMax / Math.max(sw, sh));
+    const w = Math.max(1, Math.floor(sw * scale));
+    const h = Math.max(1, Math.floor(sh * scale));
     const canvas = document.createElement("canvas");
     canvas.width = w;
     canvas.height = h;
     const ctx = canvas.getContext("2d", { willReadFrequently: true });
     if (!ctx) return null;
-    ctx.drawImage(img, 0, 0, w, h);
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, w, h);
     const imageData = ctx.getImageData(0, 0, w, h);
     return jsQR(imageData.data, imageData.width, imageData.height, {
       inversionAttempts: "attemptBoth",
     });
+  };
+
+  // Stratégie multi-passes : sur stickers BicyCode, le QR n'occupe que 5-15%
+  // de la photo (le code FNUCI texte prend la majorité du sticker). En
+  // décodant l'image entière au downsample, le QR se retrouve avec trop peu
+  // de pixels par module. Solution : essayer aussi des sous-régions à pleine
+  // résolution. Dans la sous-région, le QR pèse 2-4× plus, jsQR le trouve.
+  //
+  // Ordre : du plus probable au moins probable. On retourne dès qu'on trouve.
+  const tryAllPasses = (img: HTMLImageElement) => {
+    const W = img.naturalWidth;
+    const H = img.naturalHeight;
+    const passes: Array<[number, number, number, number, number]> = [
+      // 1. Image entière, downsample 1600px (rapide, marche si QR ≥ 15% frame)
+      [0, 0, W, H, 1600],
+      // 2. Moitié basse à pleine résolution (QR généralement bas du sticker)
+      [0, Math.floor(H * 0.4), W, Math.floor(H * 0.6), 2000],
+      // 3. Moitié haute à pleine résolution (sticker à l'envers)
+      [0, 0, W, Math.floor(H * 0.6), 2000],
+      // 4. Centre 60% à pleine résolution (sticker bien centré)
+      [Math.floor(W * 0.2), Math.floor(H * 0.2), Math.floor(W * 0.6), Math.floor(H * 0.6), 2000],
+      // 5. Dernier recours : pleine résolution complète (lent mais exhaustif)
+      [0, 0, W, H, Math.max(W, H)],
+    ];
+    for (const [sx, sy, sw, sh, outMax] of passes) {
+      const code = decodeRegion(img, sx, sy, sw, sh, outMax);
+      if (code && code.data) return code;
+    }
+    return null;
   };
 
   const handleFile = async (file: File) => {
@@ -74,9 +110,7 @@ export default function QrScanner({
         i.src = dataUrl;
       });
 
-      const code =
-        decodeAtSize(img, 1600) ??
-        decodeAtSize(img, Math.max(img.naturalWidth, img.naturalHeight));
+      const code = tryAllPasses(img);
 
       if (code && code.data) {
         setErrMsg(null);
@@ -84,7 +118,7 @@ export default function QrScanner({
         onScan(code.data.trim());
       } else {
         const msg =
-          "QR non détecté sur cette photo. Cadre le QR au centre, bien net, sans reflet, et réessaie.";
+          "QR non détecté. Approche-toi à ~15 cm — le QR doit remplir l'écran. Sinon, tape le code FNUCI manuellement (champ ci-dessous).";
         setErrMsg(msg);
         onError?.(msg);
       }
