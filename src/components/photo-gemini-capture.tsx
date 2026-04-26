@@ -21,7 +21,7 @@ type ExtractResp =
       ok: true;
       extracted: string[];
       invalid: string[];
-      results: Array<{ fnuci: string; result: unknown }>;
+      results: Array<{ fnuci: string; result: unknown; assigned?: unknown }>;
       rawGeminiText?: string;
     }
   | { error: string; rawText?: string; body?: string };
@@ -705,6 +705,11 @@ function ResultDetail({ item }: { item: BatchItem }) {
           | { ok?: true; alreadyDone?: boolean; clientName?: string | null }
           | { error: string; code?: string }
           | null;
+        const assigned = r.assigned as
+          | { ok?: true; alreadyAssigned?: boolean }
+          | { error: string; existingClientName?: string }
+          | null
+          | undefined;
         if (result && "ok" in result && result.ok) {
           return (
             <div key={i} className="font-mono text-[10px] text-green-800 truncate">
@@ -713,9 +718,20 @@ function ResultDetail({ item }: { item: BatchItem }) {
             </div>
           );
         }
+        // Si l'assignation a planté, c'est l'info la plus utile à afficher
+        // (FNUCI déjà chez X, slots saturés, etc.).
+        let errMsg: string | null = null;
+        if (assigned && "error" in assigned && assigned.error) {
+          errMsg = assigned.error;
+          if (assigned.existingClientName) {
+            errMsg += ` (chez ${assigned.existingClientName})`;
+          }
+        } else if (result && "error" in result) {
+          errMsg = result.code || result.error;
+        }
         return (
-          <div key={i} className="font-mono text-[10px] text-red-700 truncate">
-            {r.fnuci} — {(result && "error" in result && (result.code || result.error)) || "?"}
+          <div key={i} className="font-mono text-[10px] text-red-700 break-words">
+            {r.fnuci} — {errMsg || "?"}
           </div>
         );
       })}
