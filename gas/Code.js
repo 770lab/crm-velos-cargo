@@ -166,6 +166,9 @@ function handleRequest(e) {
         var bodyMVM = getBody();
         result = markVeloMonte(bodyMVM);
         break;
+      case "uploadMontagePhoto":
+        result = uploadMontagePhoto(getBody());
+        break;
       case "markVeloPrepare":
         result = markVeloPrepare(getBody());
         break;
@@ -1964,7 +1967,7 @@ function ensureVelosSchema() {
   if (!sheet) return { sheet: null, headers: [], annuleCol: -1 };
   var lastCol = sheet.getLastColumn();
   var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
-  var needed = ["annule", "fnuci", "photoVeloUrl", "photoFnuciUrl", "photoDate", "korpValide", "dateMontage", "monteParId", "photoMontageUrl", "datePreparation", "prepareParId", "dateChargement", "chargeParId", "dateLivraisonScan", "livreParId", "tourneeIdScan"];
+  var needed = ["annule", "fnuci", "photoVeloUrl", "photoFnuciUrl", "photoDate", "korpValide", "dateMontage", "monteParId", "photoMontageUrl", "datePreparation", "prepareParId", "dateChargement", "chargeParId", "dateLivraisonScan", "livreParId", "tourneeIdScan", "urlPhotoMontageEtiquette", "urlPhotoMontageQrVelo"];
   for (var k = 0; k < needed.length; k++) {
     if (headers.indexOf(needed[k]) === -1) {
       lastCol++;
@@ -2887,6 +2890,119 @@ function markVeloMonte(body) {
     };
   }
   return { error: "FNUCI inconnu — passe d'abord par Réception cartons", fnuci: clean };
+}
+
+// Upload d'une des 3 photos de montage (workflow par vélo) :
+//   slot = "etiquette" → photo de l'étiquette du carton (identification)   → urlPhotoMontageEtiquette
+//   slot = "qrvelo"   → photo du QR BicyCode collé sur le vélo (avant montage) → urlPhotoMontageQrVelo
+//   slot = "monte"    → photo du vélo monté (validation finale)            → photoMontageUrl
+//
+// Le frontend appelle d'abord extractFnuciFromImage (pour identifier/vérifier
+// le FNUCI sur les photos 1 et 2), puis uploadMontagePhoto pour stocker la
+// preuve. Quand les 3 colonnes sont remplies pour un vélo, on marque
+// automatiquement dateMontage + monteParId — pas besoin d'un appel séparé.
+function uploadMontagePhoto(body) {
+  body = body || {};
+  if (!body.fnuci) return { error: "fnuci requis" };
+  if (!body.slot) return { error: "slot requis (etiquette | qrvelo | monte)" };
+  if (!body.photoData) return { error: "photoData requis (base64)" };
+  var slot = String(body.slot).trim();
+  if (slot !== "etiquette" && slot !== "qrvelo" && slot !== "monte") {
+    return { error: "slot invalide (attendu : etiquette, qrvelo, monte)" };
+  }
+  var clean = String(body.fnuci).trim();
+  var monteurId = body.monteurId || null;
+  var mimeType = body.mimeType || "image/jpeg";
+
+  var meta = ensureVelosSchema();
+  if (!meta.sheet) return { error: "Feuille Velos introuvable" };
+  var headers = meta.headers;
+  var iId = headers.indexOf("id");
+  var iClientId = headers.indexOf("clientId");
+  var iFnuci = headers.indexOf("fnuci");
+  var iAnnule = headers.indexOf("annule");
+  var iDateMontage = headers.indexOf("dateMontage");
+  var iMonteParId = headers.indexOf("monteParId");
+  var iPhotoMonte = headers.indexOf("photoMontageUrl");
+  var iPhotoEtiquette = headers.indexOf("urlPhotoMontageEtiquette");
+  var iPhotoQrVelo = headers.indexOf("urlPhotoMontageQrVelo");
+  if (iPhotoMonte < 0 || iPhotoEtiquette < 0 || iPhotoQrVelo < 0) {
+    return { error: "Colonnes photoMontage* absentes (relance ensureVelosSchema)" };
+  }
+
+  var slotCol;
+  if (slot === "etiquette") slotCol = iPhotoEtiquette;
+  else if (slot === "qrvelo") slotCol = iPhotoQrVelo;
+  else slotCol = iPhotoMonte;
+
+  var data = meta.sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var f = String(row[iFnuci] || "").trim();
+    if (f !== clean) continue;
+    var isAnnule = iAnnule >= 0 && (row[iAnnule] === true || row[iAnnule] === "TRUE");
+    if (isAnnule) continue;
+
+    var veloId = row[iId];
+    var cid = String(row[iClientId] || "");
+
+    // Upload de la photo dans le Drive du client : <client>/Photos montage/<yyyy-MM-dd>/<fnuci>_<slot>_<HHmmss>.<ext>
+    var clientFolder = _getClientFolder(cid);
+    var photosRoot = getOrCreateFolder(clientFolder, "Photos montage");
+    var today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+    var dayFolder = getOrCreateFolder(photosRoot, today);
+    var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "HHmmss");
+    var ext = mimeType === "image/png" ? "png" : "jpg";
+    var fullName = clean + "_" + slot + "_" + stamp + "." + ext;
+    var decoded = Utilities.base64Decode(body.photoData);
+    var blob = Utilities.newBlob(decoded, mimeType, fullName);
+    var file = dayFolder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    var photoUrl = file.getUrl();
+
+    // Écriture de l'URL dans la colonne du slot.
+    meta.sheet.getRange(i + 1, slotCol + 1).setValue(photoUrl);
+
+    // Refresh de la ligne pour vérifier l'état des 3 slots après écriture.
+    var rowAfter = meta.sheet.getRange(i + 1, 1, 1, headers.length).getValues()[0];
+    var hasEtiquette = !!String(rowAfter[iPhotoEtiquette] || "").trim();
+    var hasQrVelo = !!String(rowAfter[iPhotoQrVelo] || "").trim();
+    var hasMonte = !!String(rowAfter[iPhotoMonte] || "").trim();
+    var allThree = hasEtiquette && hasQrVelo && hasMonte;
+
+    var existingDateMontage = rowAfter[iDateMontage];
+    var alreadyMonte = !!(existingDateMontage && String(existingDateMontage).trim());
+
+    var nowIso = new Date().toISOString();
+    // dateMontage déclenché UNIQUEMENT quand les 3 photos sont présentes.
+    // Ainsi on ne peut pas marquer un vélo "monté" tant que la preuve complète
+    // (étiquette + QR vélo + vélo monté) n'a pas été remontée.
+    if (allThree && !alreadyMonte) {
+      meta.sheet.getRange(i + 1, iDateMontage + 1).setValue(nowIso);
+      if (iMonteParId >= 0 && monteurId) {
+        meta.sheet.getRange(i + 1, iMonteParId + 1).setValue(String(monteurId));
+      }
+    }
+    SpreadsheetApp.flush();
+
+    return {
+      ok: true,
+      veloId: veloId,
+      fnuci: clean,
+      clientId: cid,
+      clientName: _getClientName(cid),
+      slot: slot,
+      photoUrl: photoUrl,
+      photos: {
+        etiquette: hasEtiquette,
+        qrvelo: hasQrVelo,
+        monte: hasMonte,
+      },
+      complete: allThree,
+      dateMontage: alreadyMonte ? String(existingDateMontage) : (allThree ? nowIso : null),
+    };
+  }
+  return { error: "FNUCI inconnu — passe d'abord par la préparation", fnuci: clean };
 }
 
 function _getClientName(clientId) {
