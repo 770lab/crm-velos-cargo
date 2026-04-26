@@ -69,21 +69,22 @@ export default function QrScanner({
           if (cancelled || !videoRef.current || !ctx) return;
           const video = videoRef.current;
           if (video.readyState >= video.HAVE_ENOUGH_DATA && video.videoWidth > 0) {
-            // Downsample à 800px max sur la plus grande dimension. jsQR est
-            // O(n²) sur la résolution donc 1920×1080 met ~200ms par frame —
-            // 800×450 met ~30ms et reste largement suffisant pour décoder
-            // un QR BicyCode (les modules font 8-15px à cette taille).
+            // Pas de downsample : on décode à la résolution native de la
+            // caméra (typiquement 1280×720 sur iPhone, parfois 1920×1080).
+            // Un QR BicyCode collé sur un cadre vélo et visé à 20 cm fait
+            // ~10-15 % de la largeur de l'image, soit ~150 px de côté à
+            // 1280 px — donc ~5 px/module pour un QR de 30 modules. C'est
+            // le seuil minimal de jsQR ; downsampler à 800 px tombait à
+            // ~3 px/module et le décodeur ne trouvait plus rien.
+            // Coût CPU : ~150 ms/frame en 1280×720 sur un iPhone récent,
+            // donc ~6 FPS effectifs — largement suffisant pour scanner.
             const vw = video.videoWidth;
             const vh = video.videoHeight;
-            const maxDim = 800;
-            const scale = Math.min(1, maxDim / Math.max(vw, vh));
-            canvas.width = Math.floor(vw * scale);
-            canvas.height = Math.floor(vh * scale);
-            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+            canvas.width = vw;
+            canvas.height = vh;
+            ctx.drawImage(video, 0, 0, vw, vh);
+            const imageData = ctx.getImageData(0, 0, vw, vh);
             const code = jsQR(imageData.data, imageData.width, imageData.height, {
-              // attemptBoth = essaie aussi les QR à couleurs inversées (rare
-              // mais pas coûteux quand pas de QR détecté en mode normal).
               inversionAttempts: "attemptBoth",
             });
             if (code && code.data) {
