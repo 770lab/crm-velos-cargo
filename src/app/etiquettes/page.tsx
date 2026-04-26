@@ -95,27 +95,43 @@ function EtiquettesPage() {
         {pages.map((pageItems, pi) => (
           <div key={pi} className="sheet mx-auto print:mx-0 my-3 print:my-0 shadow print:shadow-none">
             {pageItems.map(({ client, velo, index, total }) => {
+              // QR identique pour TOUTES les étiquettes d'un même client : on
+              // encode le clientId (= identifiant interne CRM, sert au suivi
+              // chargement/livraison/montage). Le BicyCode FNUCI est hors CRM
+              // après la préparation, on le garde juste comme info en petit.
+              const qrPayload = client.clientId;
+              const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(qrPayload)}`;
               const fnuci = velo.fnuci || velo.veloId;
-              const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=${encodeURIComponent(fnuci)}`;
               return (
                 <div key={velo.veloId} className="label">
                   <div style={{ fontSize: "9px", color: "#666", display: "flex", justifyContent: "space-between" }}>
                     <span>Tournée {tourneeId}{dateStr ? " · " + dateStr : ""}</span>
                     <span>{index}/{total}</span>
                   </div>
-                  <div style={{ display: "flex", gap: "0.35cm", marginTop: "0.2cm", flex: 1, minHeight: 0 }}>
+                  {/* Nom client énorme : c'est l'info la plus utile pour le
+                      chauffeur / monteur qui lit l'étiquette à distance. */}
+                  <div
+                    style={{
+                      fontWeight: 900,
+                      fontSize: "26px",
+                      lineHeight: 1.05,
+                      wordBreak: "break-word",
+                      marginTop: "0.15cm",
+                      letterSpacing: "-0.3px",
+                    }}
+                  >
+                    {client.entreprise}
+                  </div>
+                  <div style={{ display: "flex", gap: "0.35cm", marginTop: "0.2cm", flex: 1, minHeight: 0, alignItems: "center" }}>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={qrUrl} alt={fnuci} style={{ width: "3.2cm", height: "3.2cm", flexShrink: 0 }} />
-                    <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", flex: 1, minWidth: 0 }}>
-                      <div>
-                        <div style={{ fontWeight: 700, fontSize: "13px", lineHeight: 1.15, wordBreak: "break-word" }}>{client.entreprise}</div>
-                        <div style={{ fontSize: "10px", color: "#444", lineHeight: 1.25, marginTop: "0.1cm" }}>
-                          {client.adresse}<br />
-                          {client.codePostal} {client.ville}
-                        </div>
+                    <img src={qrUrl} alt={qrPayload} style={{ width: "3.4cm", height: "3.4cm", flexShrink: 0 }} />
+                    <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", flex: 1, minWidth: 0, height: "3.4cm" }}>
+                      <div style={{ fontSize: "11px", color: "#222", lineHeight: 1.3 }}>
+                        {client.adresse}<br />
+                        {client.codePostal} {client.ville}
                       </div>
-                      <div style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: "13px", fontWeight: 700, letterSpacing: "0.3px", marginTop: "0.15cm", wordBreak: "break-all" }}>
-                        {fnuci}
+                      <div style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: "9px", color: "#888", letterSpacing: "0.2px", wordBreak: "break-all" }}>
+                        ref. {fnuci}
                       </div>
                     </div>
                   </div>
