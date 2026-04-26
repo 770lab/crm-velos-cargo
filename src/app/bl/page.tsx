@@ -60,10 +60,14 @@ function BlPage() {
         @media print {
           .no-print { display: none !important; }
           html, body { margin: 0; padding: 0; background: #fff; width: 210mm; }
-          .dv-page { box-shadow: none !important; margin: 0 !important; page-break-after: always; page-break-inside: avoid; }
+          .dv-page { box-shadow: none !important; margin: 0 !important; page-break-after: always; }
           .dv-page:last-child { page-break-after: auto; }
           .dv-table thead tr { background: #3a7d44 !important; color: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
           .dv-table th { background: #3a7d44 !important; color: #fff !important; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+          /* Garder ces blocs ensemble : si trop bas, browser pousse sur la page suivante */
+          .dv-sign, .dv-page-footer { page-break-inside: avoid; }
+          /* La liste FNUCI peut s'étendre sur plusieurs pages */
+          .dv-fnuci-annexe { break-inside: auto; }
         }
         body { background: #dde3dd; }
 
@@ -131,6 +135,13 @@ function BlPage() {
         .dv-table .ul-title { text-decoration: underline; margin: 3px 0 1px; font-size: 8pt; }
         .dv-fnuci-list { margin-top: 4px; padding: 4px 6px; background: #f6f6f6; border: 1px dashed #bbb; border-radius: 2px; font-size: 7.5pt; line-height: 1.5; }
         .dv-fnuci-badge { display: inline-block; background: #fff3b0; border: 1px solid #d4b500; padding: 0 4px; border-radius: 2px; font-family: ui-monospace, Menlo, Consolas, monospace; font-size: 7.5pt; margin: 1px 2px; }
+
+        .dv-fnuci-annexe { margin: 8px 0 12px 0; border: 1px solid #ccc; padding: 8px 10px; }
+        .dv-fnuci-annexe-title { font-size: 9pt; font-weight: 700; margin-bottom: 6px; padding-bottom: 4px; border-bottom: 1px solid #e2e8f0; }
+        .dv-fnuci-grid { columns: 4; column-gap: 8mm; font-size: 8pt; line-height: 1.6; }
+        .dv-fnuci-grid .row { break-inside: avoid; padding: 1px 0; display: flex; align-items: baseline; gap: 4px; }
+        .dv-fnuci-grid .num { color: #666; font-size: 7.5pt; min-width: 16px; text-align: right; }
+        @media print { .dv-fnuci-grid { columns: 4; } }
 
         .dv-sign { border: 1px solid #ccc; display: flex; font-size: 8pt; margin: 8px 0; }
         .dv-sign-cell { flex: 1; padding: 10px 12px; min-height: 28mm; }
@@ -263,19 +274,8 @@ function BlPage() {
                       </td>
                       <td className="c">{nbVelos},00</td>
                       <td className="c">U</td>
-                      <td style={{ verticalAlign: "top", padding: "5px 6px" }}>
-                        {nbVelos > 0 ? (
-                          <div style={{ fontSize: "7.5pt", lineHeight: 1.45 }}>
-                            {c.velos.map((v, i) => (
-                              <div key={v.veloId} style={{ marginBottom: "1px" }}>
-                                <span style={{ color: "#666" }}>{i + 1}.</span>{" "}
-                                <span className="dv-fnuci-badge">{v.fnuci || "à scanner"}</span>
-                              </div>
-                            ))}
-                          </div>
-                        ) : (
-                          <span style={{ fontSize: "7.5pt", color: "#666" }}>—</span>
-                        )}
+                      <td className="c" style={{ fontSize: "7.5pt", color: "#555" }}>
+                        voir annexe<br />ci-dessous
                       </td>
                     </tr>
                     <tr>
@@ -288,6 +288,28 @@ function BlPage() {
                     </tr>
                   </tbody>
                 </table>
+
+                {/* ANNEXE — Numéros d'immatriculation FNUCI (1 par vélo). Multi-colonnes,
+                    s'étend sur plusieurs pages si la liste est longue. */}
+                <div className="dv-fnuci-annexe">
+                  <div className="dv-fnuci-annexe-title">
+                    Numéros d&apos;immatriculation (FNUCI) — {nbVelos} vélo{nbVelos > 1 ? "s" : ""} livré{nbVelos > 1 ? "s" : ""}
+                  </div>
+                  {nbVelos === 0 ? (
+                    <div style={{ fontSize: "8pt", color: "#666", fontStyle: "italic" }}>
+                      Aucun vélo affecté à cette livraison à ce jour.
+                    </div>
+                  ) : (
+                    <div className="dv-fnuci-grid">
+                      {c.velos.map((v, i) => (
+                        <div key={v.veloId} className="row">
+                          <span className="num">{i + 1}.</span>
+                          <span className="dv-fnuci-badge">{v.fnuci || "à scanner"}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
                 {/* SIGNATURES */}
                 <div className="dv-sign">
