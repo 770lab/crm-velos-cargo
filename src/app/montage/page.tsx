@@ -131,6 +131,15 @@ function ClientMontageView({
   monteurId: string;
 }) {
   const [data, setData] = useState<ClientPreparation | null>(null);
+  // Progression de la tournée entière — sert à calculer "client suivant à
+  // monter" quand le client courant est 3/3 terminé.
+  const [tourneeProg, setTourneeProg] = useState<{
+    clients: Array<{
+      clientId: string;
+      entreprise: string;
+      totals: { total: number; monte: number };
+    }>;
+  } | null>(null);
   // currentFnuci = vélo dont on est en train de prendre les photos.
   // null → on est entre 2 vélos (afficher bouton "📸 Démarrer un nouveau vélo")
   const [currentFnuci, setCurrentFnuci] = useState<string | null>(null);
@@ -145,7 +154,15 @@ function ClientMontageView({
   const reload = useCallback(async () => {
     const r = (await gasGet("getClientPreparation", { clientId })) as ClientPreparation;
     setData(r);
-  }, [clientId]);
+    // Recharge aussi la progression tournée pour MAJ "client suivant" en
+    // temps réel (au cas où un autre monteur a avancé pendant qu'on bossait).
+    const tp = (await gasGet("getTourneeProgression", { tourneeId })) as {
+      clients?: Array<{ clientId: string; entreprise: string; totals: { total: number; monte: number } }>;
+    };
+    if (tp && Array.isArray(tp.clients)) {
+      setTourneeProg({ clients: tp.clients });
+    }
+  }, [clientId, tourneeId]);
 
   useEffect(() => {
     reload();
@@ -471,14 +488,60 @@ function ClientMontageView({
           )}
         </div>
 
-        {totals.done === totals.total && totals.total > 0 && (
-          <div className="bg-emerald-50 border-2 border-emerald-500 rounded-xl p-4 text-center">
-            <div className="text-3xl mb-1">🎉</div>
-            <div className="text-emerald-900 font-bold">
-              Les {totals.total} vélos de {data.entreprise} sont montés.
+        {totals.done === totals.total && totals.total > 0 && (() => {
+          // Calcule le prochain client de la tournée à monter (idem flow
+          // chauffeur après "Marquer comme livré"). On parcourt les clients
+          // dans l'ordre du planning et on prend le 1er après le client
+          // courant qui n'est pas encore tout monté.
+          let nextClient: { clientId: string; entreprise: string } | null = null;
+          if (tourneeProg) {
+            const list = tourneeProg.clients;
+            const idx = list.findIndex((c) => c.clientId === clientId);
+            for (let i = idx + 1; i < list.length; i++) {
+              if (list[i].totals.monte < list[i].totals.total) {
+                nextClient = list[i];
+                break;
+              }
+            }
+            if (!nextClient && idx > 0) {
+              for (let i = 0; i < idx; i++) {
+                if (list[i].totals.monte < list[i].totals.total) {
+                  nextClient = list[i];
+                  break;
+                }
+              }
+            }
+          }
+          const nextUrl = nextClient
+            ? `/crm-velos-cargo/montage?tourneeId=${encodeURIComponent(tourneeId)}&clientId=${encodeURIComponent(nextClient.clientId)}`
+            : null;
+          return (
+            <div className="bg-emerald-50 border-2 border-emerald-500 rounded-xl p-4 text-center">
+              <div className="text-3xl mb-1">🎉</div>
+              <div className="text-emerald-900 font-bold">
+                Les {totals.total} vélos de {data.entreprise} sont montés.
+              </div>
+              {nextUrl && nextClient ? (
+                <a
+                  href={nextUrl}
+                  className="block mt-3 bg-blue-600 text-white rounded-lg py-3 text-sm font-semibold hover:bg-blue-700"
+                >
+                  → Client suivant : {nextClient.entreprise}
+                </a>
+              ) : (
+                <div className="mt-3 text-emerald-900 text-sm font-medium">
+                  🏁 Tournée terminée — tous les vélos sont montés.
+                </div>
+              )}
+              <a
+                href="/crm-velos-cargo/livraisons"
+                className="block mt-2 text-xs text-emerald-700 underline"
+              >
+                ← Retour au planning
+              </a>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </div>
     </div>
   );
