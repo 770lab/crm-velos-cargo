@@ -67,6 +67,36 @@ export default function MontagePage() {
     setStep("scan");
   };
 
+  const undoLastMontage = async () => {
+    if (!result || !("ok" in result) || !result.ok) return;
+    if (!confirm(`Annuler le montage du vélo ${result.fnuci} ?`)) return;
+    try {
+      const r = (await gasPost("unmarkVeloEtape", { veloId: result.veloId, etape: "montage" })) as { ok?: boolean; error?: string };
+      if (r.error) {
+        alert("Erreur : " + r.error);
+        return;
+      }
+      reset();
+    } catch (e) {
+      alert("Erreur : " + String(e));
+    }
+  };
+
+  const undoMontageByFnuci = async (fnuci: string) => {
+    if (!fnuci.trim()) return;
+    if (!confirm(`Annuler le montage du vélo ${fnuci} ?`)) return;
+    try {
+      const r = (await gasPost("unmarkVeloEtape", { fnuci: fnuci.trim(), etape: "montage" })) as { ok?: boolean; error?: string; veloId?: string };
+      if (r.error) {
+        alert("Erreur : " + r.error);
+        return;
+      }
+      alert(`Montage annulé pour ${fnuci}`);
+    } catch (e) {
+      alert("Erreur : " + String(e));
+    }
+  };
+
   return (
     <div className="min-h-screen bg-gray-50 p-3 md:p-6">
       <div className="max-w-md mx-auto">
@@ -100,6 +130,33 @@ export default function MontagePage() {
               />
               <button type="submit" className="px-3 py-2 bg-gray-700 text-white rounded-lg text-sm">OK</button>
             </form>
+
+            <details className="mt-2">
+              <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-700">↺ Annuler le montage d&apos;un vélo</summary>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  const v = (e.currentTarget.elements.namedItem("undoFnuci") as HTMLInputElement)?.value?.trim();
+                  if (v) {
+                    undoMontageByFnuci(v);
+                    (e.currentTarget.elements.namedItem("undoFnuci") as HTMLInputElement).value = "";
+                  }
+                }}
+                className="flex gap-2 mt-2"
+              >
+                <input
+                  name="undoFnuci"
+                  className="flex-1 border rounded-lg px-3 py-2 text-sm"
+                  placeholder="FNUCI à dé-monter"
+                />
+                <button type="submit" className="px-3 py-2 bg-orange-100 text-orange-800 rounded-lg text-sm hover:bg-orange-200">
+                  ↺ Annuler
+                </button>
+              </form>
+              <p className="text-[10px] text-gray-500 mt-1">
+                Le vélo redeviendra &quot;non monté&quot; (utile en cas de test ou de retour).
+              </p>
+            </details>
           </div>
         )}
 
@@ -171,6 +228,12 @@ export default function MontagePage() {
               className="w-full bg-blue-600 text-white rounded-lg py-3 font-medium"
             >
               🔧 Vélo suivant
+            </button>
+            <button
+              onClick={undoLastMontage}
+              className="w-full bg-orange-100 text-orange-800 rounded-lg py-2 font-medium text-sm hover:bg-orange-200"
+            >
+              ↺ Annuler ce montage (test ou erreur)
             </button>
           </div>
         )}
