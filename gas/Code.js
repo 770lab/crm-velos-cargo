@@ -175,6 +175,12 @@ function handleRequest(e) {
       case "markVeloLivreScan":
         result = markVeloLivreScan(getBody());
         break;
+      case "unmarkVeloEtape":
+        result = unmarkVeloEtape(getBody());
+        break;
+      case "unsetVeloClient":
+        result = unsetVeloClient(getBody());
+        break;
       case "getTourneeProgression":
         result = getTourneeProgression(e.parameter.tourneeId);
         break;
@@ -3099,6 +3105,94 @@ function markVeloCharge(body) {
 function markVeloLivreScan(body) {
   body = body || {};
   return _markVeloEtape(body.fnuci, body.tourneeId, body.userId || null, "livraisonScan");
+}
+
+// Annule le scan d'une étape sur un vélo (vide la colonne date + user).
+// etape : "preparation" | "chargement" | "livraisonScan" | "montage"
+// Body : { fnuci OU veloId, etape }
+function unmarkVeloEtape(body) {
+  body = body || {};
+  var etape = body.etape;
+  var dateCol, userCol;
+  if (etape === "preparation") { dateCol = "datePreparation"; userCol = "prepareParId"; }
+  else if (etape === "chargement") { dateCol = "dateChargement"; userCol = "chargeParId"; }
+  else if (etape === "livraisonScan") { dateCol = "dateLivraisonScan"; userCol = "livreParId"; }
+  else if (etape === "montage") { dateCol = "dateMontage"; userCol = "monteParId"; }
+  else return { error: "etape invalide: " + etape };
+
+  var meta = ensureVelosSchema();
+  if (!meta.sheet) return { error: "Feuille Velos introuvable" };
+  var headers = meta.headers;
+  var iId = headers.indexOf("id");
+  var iFnuci = headers.indexOf("fnuci");
+  var iDate = headers.indexOf(dateCol);
+  var iUser = headers.indexOf(userCol);
+  if (iDate < 0) return { error: "Colonne " + dateCol + " absente" };
+
+  var matchById = body.veloId ? String(body.veloId) : null;
+  var matchByFnuci = body.fnuci ? String(body.fnuci).trim() : null;
+  if (!matchById && !matchByFnuci) return { error: "fnuci ou veloId requis" };
+
+  var data = meta.sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var hit = false;
+    if (matchById && String(row[iId]) === matchById) hit = true;
+    else if (matchByFnuci && String(row[iFnuci] || "").trim() === matchByFnuci) hit = true;
+    if (!hit) continue;
+
+    meta.sheet.getRange(i + 1, iDate + 1).setValue("");
+    if (iUser >= 0) meta.sheet.getRange(i + 1, iUser + 1).setValue("");
+    SpreadsheetApp.flush();
+    return {
+      ok: true,
+      etape: etape,
+      veloId: row[iId],
+      fnuci: String(row[iFnuci] || "").trim() || null,
+    };
+  }
+  return { error: "Vélo introuvable" };
+}
+
+// Désaffilie un vélo de son client : vide clientId + toutes les dates d'étape +
+// le tourneeIdScan. Le FNUCI reste sur le vélo, il pourra être réassigné ailleurs.
+function unsetVeloClient(body) {
+  body = body || {};
+  var meta = ensureVelosSchema();
+  if (!meta.sheet) return { error: "Feuille Velos introuvable" };
+  var headers = meta.headers;
+  var iId = headers.indexOf("id");
+  var iFnuci = headers.indexOf("fnuci");
+  var iClientId = headers.indexOf("clientId");
+  var iTid = headers.indexOf("tourneeIdScan");
+  var dateCols = ["datePreparation", "prepareParId", "dateChargement", "chargeParId", "dateLivraisonScan", "livreParId", "dateMontage", "monteParId", "photoMontageUrl"];
+
+  var matchById = body.veloId ? String(body.veloId) : null;
+  var matchByFnuci = body.fnuci ? String(body.fnuci).trim() : null;
+  if (!matchById && !matchByFnuci) return { error: "fnuci ou veloId requis" };
+
+  var data = meta.sheet.getDataRange().getValues();
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var hit = false;
+    if (matchById && String(row[iId]) === matchById) hit = true;
+    else if (matchByFnuci && String(row[iFnuci] || "").trim() === matchByFnuci) hit = true;
+    if (!hit) continue;
+
+    if (iClientId >= 0) meta.sheet.getRange(i + 1, iClientId + 1).setValue("");
+    if (iTid >= 0) meta.sheet.getRange(i + 1, iTid + 1).setValue("");
+    dateCols.forEach(function(col) {
+      var c = headers.indexOf(col);
+      if (c >= 0) meta.sheet.getRange(i + 1, c + 1).setValue("");
+    });
+    SpreadsheetApp.flush();
+    return {
+      ok: true,
+      veloId: row[iId],
+      fnuci: String(row[iFnuci] || "").trim() || null,
+    };
+  }
+  return { error: "Vélo introuvable" };
 }
 
 function _getClientFolder(clientId) {

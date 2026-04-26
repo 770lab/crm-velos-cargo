@@ -13,7 +13,9 @@ const MODE_CONFIG: Record<ScanMode, {
   title: string;
   emoji: string;
   totalsKey: "prepare" | "charge" | "livre";
+  doneKey: "datePreparation" | "dateChargement" | "dateLivraisonScan";
   endpoint: "markVeloPrepare" | "markVeloCharge" | "markVeloLivreScan";
+  unmarkEtape: "preparation" | "chargement" | "livraisonScan";
   storageKey: string;
   nextLink: { label: string; href: (tid: string) => string } | null;
 }> = {
@@ -21,7 +23,9 @@ const MODE_CONFIG: Record<ScanMode, {
     title: "Préparation",
     emoji: "📦",
     totalsKey: "prepare",
+    doneKey: "datePreparation",
     endpoint: "markVeloPrepare",
+    unmarkEtape: "preparation",
     storageKey: "scan:preparateurId",
     nextLink: { label: "🚚 Passer au chargement →", href: (tid) => `/chargement?tourneeId=${encodeURIComponent(tid)}` },
   },
@@ -29,7 +33,9 @@ const MODE_CONFIG: Record<ScanMode, {
     title: "Chargement",
     emoji: "🚚",
     totalsKey: "charge",
+    doneKey: "dateChargement",
     endpoint: "markVeloCharge",
+    unmarkEtape: "chargement",
     storageKey: "scan:chauffeurId",
     nextLink: { label: "📍 Passer à la livraison →", href: (tid) => `/livraison?tourneeId=${encodeURIComponent(tid)}` },
   },
@@ -37,7 +43,9 @@ const MODE_CONFIG: Record<ScanMode, {
     title: "Livraison",
     emoji: "📍",
     totalsKey: "livre",
+    doneKey: "dateLivraisonScan",
     endpoint: "markVeloLivreScan",
+    unmarkEtape: "livraisonScan",
     storageKey: "scan:livreurId",
     nextLink: null,
   },
@@ -186,6 +194,59 @@ function Inner({ mode }: { mode: ScanMode }) {
     }
   }, [busy, cfg.endpoint, tourneeId, userId, loadProgression, mode]);
 
+  // Annule un scan (vide la date + user de l'étape pour ce vélo).
+  const undoScan = useCallback(async (veloId: string, fnuci: string | null) => {
+    if (busy) return;
+    if (!confirm(`Annuler le scan de ${cfg.title.toLowerCase()} pour ce vélo ?\n\n${fnuci || veloId}`)) return;
+    setBusy(true);
+    try {
+      const r = await gasPost("unmarkVeloEtape", { veloId, etape: cfg.unmarkEtape }) as { ok?: boolean; error?: string };
+      if (r.error) {
+        beep(false);
+        const evt: ScanEvent = { fnuci: fnuci || veloId, status: "error", msg: "Annulation : " + r.error, at: Date.now() };
+        setHistory((h) => [evt, ...h].slice(0, 10));
+      } else {
+        beep(true);
+        const evt: ScanEvent = { fnuci: fnuci || veloId, status: "ok", msg: "↺ Scan annulé", at: Date.now() };
+        setHistory((h) => [evt, ...h].slice(0, 10));
+      }
+      await loadProgression();
+    } catch (e) {
+      beep(false);
+      const evt: ScanEvent = { fnuci: fnuci || veloId, status: "error", msg: String(e), at: Date.now() };
+      setHistory((h) => [evt, ...h].slice(0, 10));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, cfg.title, cfg.unmarkEtape, loadProgression]);
+
+  // Désaffilie complètement un vélo (vide clientId + toutes les dates d'étape).
+  // Utile quand un vélo retourne au dépôt et doit être réassigné ailleurs.
+  const desaffilier = useCallback(async (veloId: string, fnuci: string | null) => {
+    if (busy) return;
+    if (!confirm(`Désaffilier ce vélo de son client ?\n\nFNUCI : ${fnuci || "—"}\nID : ${veloId}\n\nLe vélo retourne au dépôt, toutes ses étapes (préparation, chargement, livraison, montage) seront effacées et il pourra être réassigné à un autre client.`)) return;
+    setBusy(true);
+    try {
+      const r = await gasPost("unsetVeloClient", { veloId }) as { ok?: boolean; error?: string };
+      if (r.error) {
+        beep(false);
+        const evt: ScanEvent = { fnuci: fnuci || veloId, status: "error", msg: "Désaffiliation : " + r.error, at: Date.now() };
+        setHistory((h) => [evt, ...h].slice(0, 10));
+      } else {
+        beep(true);
+        const evt: ScanEvent = { fnuci: fnuci || veloId, status: "ok", msg: "↺ Vélo désaffilié", at: Date.now() };
+        setHistory((h) => [evt, ...h].slice(0, 10));
+      }
+      await loadProgression();
+    } catch (e) {
+      beep(false);
+      const evt: ScanEvent = { fnuci: fnuci || veloId, status: "error", msg: String(e), at: Date.now() };
+      setHistory((h) => [evt, ...h].slice(0, 10));
+    } finally {
+      setBusy(false);
+    }
+  }, [busy, loadProgression]);
+
   // Assigne le FNUCI en attente à un client de la tournée puis valide la préparation.
   const assignAndPrepare = useCallback(async (clientId: string) => {
     if (!pendingFnuci) return;
@@ -243,11 +304,16 @@ function Inner({ mode }: { mode: ScanMode }) {
 
   const prog = progression && !("error" in progression) ? progression : null;
   const focusClient = focusClientId && prog ? prog.clients.find((c) => c.clientId === focusClientId) : null;
-  // Si focusClientId est passé en URL : on compte uniquement les vélos de ce client.
+  // Si focusClientId est passé en URL : on compte uniquement les vélos de ce client
+  // pour la barre de progression, mais "Passer à l'étape suivante" reste basé
+  // sur la tournée entière (sinon on saute à la livraison alors qu'il reste
+  // d'autres clients à charger).
   const totals = focusClient ? focusClient.totals : prog?.totals;
   const counter = totals ? totals[cfg.totalsKey] : 0;
   const total = totals?.total || 0;
   const allDone = total > 0 && counter >= total;
+  const tourneeTotals = prog?.totals;
+  const tourneeAllDone = !!tourneeTotals && tourneeTotals.total > 0 && tourneeTotals[cfg.totalsKey] >= tourneeTotals.total;
 
   return (
     <div className="min-h-screen bg-gray-50 p-3 md:p-6">
@@ -388,6 +454,56 @@ function Inner({ mode }: { mode: ScanMode }) {
               </div>
             )}
 
+            {(() => {
+              const clientsToShow = focusClient ? [focusClient] : prog.clients;
+              const scannedVelos: { v: Velo; clientName: string }[] = [];
+              clientsToShow.forEach((c) => {
+                c.velos.forEach((v) => {
+                  if (v[cfg.doneKey]) scannedVelos.push({ v, clientName: c.entreprise });
+                });
+              });
+              if (scannedVelos.length === 0) return null;
+              return (
+                <div className="bg-white rounded-xl shadow p-3 mb-3">
+                  <div className="text-xs text-gray-500 mb-2">
+                    Vélos déjà {cfg.title.toLowerCase()}és ({scannedVelos.length}) — clique pour annuler le scan
+                  </div>
+                  <div className="space-y-1.5 max-h-72 overflow-y-auto">
+                    {scannedVelos.map(({ v, clientName }) => (
+                      <div key={v.veloId} className="border rounded-lg p-2 flex items-center justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-xs font-mono truncate">{v.fnuci || v.veloId}</div>
+                          {!focusClient && (
+                            <div className="text-[10px] text-gray-500 truncate">{clientName}</div>
+                          )}
+                        </div>
+                        <div className="flex gap-1 shrink-0">
+                          <button
+                            onClick={() => undoScan(v.veloId, v.fnuci)}
+                            disabled={busy}
+                            className="text-[11px] px-2 py-1 rounded bg-orange-100 text-orange-800 hover:bg-orange-200 disabled:opacity-50"
+                            title={`Annuler ${cfg.title}`}
+                          >
+                            ↺ Annuler
+                          </button>
+                          {mode === "preparation" && (
+                            <button
+                              onClick={() => desaffilier(v.veloId, v.fnuci)}
+                              disabled={busy}
+                              className="text-[11px] px-2 py-1 rounded bg-red-100 text-red-800 hover:bg-red-200 disabled:opacity-50"
+                              title="Retirer du client (retour dépôt)"
+                            >
+                              ✕ Désaffilier
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()}
+
             {mode === "preparation" && (() => {
               const cid = focusClientId ? `&clientId=${encodeURIComponent(focusClientId)}` : "";
               return (
@@ -410,13 +526,26 @@ function Inner({ mode }: { mode: ScanMode }) {
               );
             })()}
 
-            {allDone && cfg.nextLink && (
+            {tourneeAllDone && cfg.nextLink && (
               <a
                 href={`/crm-velos-cargo${cfg.nextLink.href(tourneeId)}`}
                 className="block w-full bg-green-600 text-white rounded-lg py-3 font-medium text-center"
               >
                 {cfg.nextLink.label}
               </a>
+            )}
+            {allDone && !tourneeAllDone && cfg.nextLink && tourneeTotals && (
+              <div className="bg-yellow-50 border border-yellow-200 text-yellow-900 text-sm rounded-lg p-3 text-center">
+                ✅ Ce client est terminé. Encore {tourneeTotals.total - tourneeTotals[cfg.totalsKey]} vélo{tourneeTotals.total - tourneeTotals[cfg.totalsKey] > 1 ? "s" : ""} à {cfg.title.toLowerCase()} sur la tournée avant de passer à l&apos;étape suivante.
+                <div className="mt-2">
+                  <a
+                    href={`/crm-velos-cargo/${mode}?tourneeId=${encodeURIComponent(tourneeId)}`}
+                    className="text-xs text-blue-600 underline"
+                  >
+                    Voir la tournée entière →
+                  </a>
+                </div>
+              </div>
             )}
           </>
         )}
