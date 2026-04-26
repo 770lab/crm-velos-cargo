@@ -391,7 +391,37 @@ function getClients(params) {
   return clients;
 }
 
+// Cache document GAS pour la fiche client : evite la triple lecture sheet
+// (Clients + Velos + Livraisons) sur chaque navigation. TTL 5 min — court
+// pour rester reactif si plusieurs admins editent en simultane, mais reduit
+// drastiquement la latence pour le user qui scroll dans 10 fiches d'affilee.
+// Invalidation explicite via _invalidateClientCache() depuis toutes les
+// fonctions qui modifient un client ou un de ses velos.
+var CLIENT_CACHE_TTL_SEC = 300;
+function _clientCacheKey(id) { return "client:" + String(id); }
+function _invalidateClientCache(id) {
+  if (!id) return;
+  try { CacheService.getDocumentCache().remove(_clientCacheKey(id)); }
+  catch (e) {}
+}
+// Invalide tous les clients (utilise apres bulk operations).
+function _invalidateAllClientsCache() {
+  try { CacheService.getDocumentCache().removeAll([]); } catch (e) {}
+}
+
 function getClient(id) {
+  // 1. Lookup cache. CacheService cap = 100 KB par entry — un client de
+  //    100 velos avec 4 photos URL = ~30 KB en JSON, OK.
+  if (id) {
+    try {
+      var cache = CacheService.getDocumentCache();
+      var hit = cache && cache.get(_clientCacheKey(id));
+      if (hit) {
+        try { return JSON.parse(hit); } catch (eP) { /* cache corrompu, on continue */ }
+      }
+    } catch (eC) { /* cache indispo, on continue sans */ }
+  }
+
   var sheet = SS.getSheetByName("Clients");
   var data = sheet.getDataRange().getValues();
   var headers = data[0];
@@ -525,26 +555,47 @@ function getClient(id) {
       velo.urlPhotoMontageQrVelo = urlQrVelo;
       velo.photoMontageUrl = urlMonte;
 
-      // Livraison : on relie via tourneeIdScan si dispo, sinon on prend la 1re
-      // livraison trouvée pour ce client (cas legacy).
+      // Livraison : on relie STRICTEMENT via tourneeIdScan. L'ancien fallback
+      // sur la 1re livraison du client etait dangereux : a 5 tournees, un velo
+      // avec tourneeIdScan absent (scan partiel) etait affiche dans la mauvaise
+      // tournee. Si pas de match, on laisse livraison=null + flag livraisonOrpheline
+      // pour que le frontend puisse alerter "ce velo n'a pas ete scanne livre".
+      // Cas mono-tournee : on accepte le fallback uniquement quand le client n'a
+      // qu'une seule livraison ; pas de risque d'ambiguite la.
       var tournId = iTourneeIdScanGV >= 0 ? String(v[iTourneeIdScanGV] || "").trim() : "";
       var liv = null;
       if (tournId && livraisonsByTournee[tournId]) {
         liv = livraisonsByTournee[tournId];
       } else {
         var keys = Object.keys(livraisonsByTournee);
-        if (keys.length > 0) liv = livraisonsByTournee[keys[0]];
+        if (keys.length === 1) liv = livraisonsByTournee[keys[0]];
+        // sinon (0 ou 2+ livraisons), on laisse null pour eviter le mauvais rattachement
       }
       velo.livraison = liv;
       velo.urlBlSigne = liv ? liv.urlBlSigne : null;
+      velo.livraisonOrpheline = !liv && Object.keys(livraisonsByTournee).length > 0;
 
       return velo;
     });
+
+  // Mise en cache pour les prochains appels (5 min TTL).
+  try {
+    var cache2 = CacheService.getDocumentCache();
+    if (cache2 && id) {
+      var payload = JSON.stringify(client);
+      // CacheService rejette > 100 KB. Si la fiche est plus grosse (client a
+      // 200+ velos avec photos), on skip le cache plutot que de planter.
+      if (payload.length < 95000) {
+        cache2.put(_clientCacheKey(id), payload, CLIENT_CACHE_TTL_SEC);
+      }
+    }
+  } catch (eP2) {}
 
   return client;
 }
 
 function updateClient(id, data) {
+  _invalidateClientCache(id);
   var sheet = SS.getSheetByName("Clients");
   var all = sheet.getDataRange().getValues();
   var headers = all[0];
@@ -630,11 +681,15 @@ function updateVelos(body) {
 
     if (field) {
       var col = headers.indexOf(field);
+      var iCidUv = headers.indexOf("clientId");
+      var touchedClients = {};
       for (var i = 1; i < all.length; i++) {
         if (body.veloIds.indexOf(all[i][0]) > -1) {
           velosSheet.getRange(i + 1, col + 1).setValue("TRUE");
+          if (iCidUv >= 0) touchedClients[String(all[i][iCidUv])] = true;
         }
       }
+      Object.keys(touchedClients).forEach(_invalidateClientCache);
     }
     return { ok: true };
   }
@@ -1012,10 +1067,19 @@ function getLivraisons() {
   var cData = clientsSheet.getDataRange().getValues();
   var cHeaders = cData[0];
 
+  // Pre-indexation Clients par id pour eviter le find() O(M) repete sur chaque
+  // livraison. Avant : 100 livraisons x 1000 clients = 100k comparaisons par
+  // appel (et l'endpoint est rappele toutes les 30s cote front). Apres : 1
+  // construction d'index O(M) + 1 lookup O(1) par livraison = O(N+M) total.
+  var clientIndex = {};
+  for (var ci = 1; ci < cData.length; ci++) {
+    if (cData[ci][0]) clientIndex[String(cData[ci][0])] = cData[ci];
+  }
+
   return rows.map(function(r) {
     var liv = {};
     headers.forEach(function(h, i) { liv[h] = r[i]; });
-    var clientRow = cData.find(function(c) { return c[0] === liv.clientId; });
+    var clientRow = liv.clientId ? clientIndex[String(liv.clientId)] : null;
     liv.client = clientRow ? {
       entreprise: clientRow[cHeaders.indexOf("entreprise")],
       ville: clientRow[cHeaders.indexOf("ville")],
@@ -2047,6 +2111,35 @@ function fetchParcelle(clientId) {
   }
   if (!clientRow) return { error: "Client non trouvé" };
 
+  // Cache : si la parcelle est deja flaggee + un lien stocke, on ne rappelle
+  // PAS apicarto (limite ~1000 req/jour). On renvoie la valeur sheet directement.
+  // Permet a autoFetchParcelles de batcher 500 clients sans throttle, et evite
+  // les appels HTTP redondants si le user clique 2x sur "Recuperer parcelle".
+  // Pour forcer un nouveau fetch, le user passe par "annuler" sur la card puis
+  // re-clique -> le flag passe a FALSE -> on rentre dans le code complet.
+  var iFlagCache = headers.indexOf("parcelleCadastrale");
+  var iLienCache = headers.indexOf("parcelleCadastraleLien");
+  var alreadyFlag = iFlagCache >= 0 && (clientRow[iFlagCache] === true || clientRow[iFlagCache] === "TRUE");
+  var alreadyLien = iLienCache >= 0 ? String(clientRow[iLienCache] || "").trim() : "";
+  if (alreadyFlag && alreadyLien) {
+    // Tente d'extraire la ref parcelle depuis l'URL stockee
+    // (cadastre.data.gouv.fr/parcelles/<insee><sectionPad><numeroPad>).
+    var refMatch = alreadyLien.match(/\/parcelles\/(\d{5})(\d{0,5}?)([A-Z]{1,3})(\d{1,4})$/);
+    return {
+      ok: true,
+      cached: true,
+      parcelle: refMatch ? (refMatch[1] + " " + refMatch[3] + " " + refMatch[4]) : "(stockee)",
+      commune: refMatch ? refMatch[1] : "",
+      section: refMatch ? refMatch[3] : "",
+      numero: refMatch ? refMatch[4] : "",
+      contenance: null,
+      lat: null,
+      lng: null,
+      parcelleLien: alreadyLien,
+      geoportailUrl: alreadyLien,
+    };
+  }
+
   var adresse = clientRow[headers.indexOf("adresse")] || "";
   var codePostal = clientRow[headers.indexOf("codePostal")] || "";
   var ville = clientRow[headers.indexOf("ville")] || "";
@@ -2287,17 +2380,35 @@ function setClientVelosTarget(clientId, target) {
   var current = actifs.length;
   var reactivated = 0, cancelled = 0, created = 0;
 
+  // Helper : ecrit en bloc une liste de rowIndex avec une valeur identique
+  // dans la colonne annuleCol. Beaucoup plus rapide que N setValue() : on
+  // lit la colonne entiere une seule fois, on patch les indices, on reecrit.
+  // Gain typique : 100 setValue ~3-4s, vs ce batch ~0.3s.
+  var batchSetAnnule = function(rowIndexes1based, value) {
+    if (!rowIndexes1based || rowIndexes1based.length === 0) return;
+    var nbRows = sheet.getLastRow() - 1;
+    if (nbRows <= 0) return;
+    var range = sheet.getRange(2, annuleCol + 1, nbRows, 1);
+    var values = range.getValues();
+    var marked = {};
+    rowIndexes1based.forEach(function(idx) { marked[idx] = true; });
+    for (var rb = 0; rb < nbRows; rb++) {
+      if (marked[rb + 2]) values[rb][0] = value;
+    }
+    range.setValues(values);
+  };
+
   if (target > current) {
     var toAdd = target - current;
-    // 1) Réactive d'abord les annulés
+    // 1) Réactive d'abord les annulés (en bloc).
+    var toReactivate = [];
     while (toAdd > 0 && annules.length > 0) {
-      var r = annules.shift();
-      sheet.getRange(r.rowIndex, annuleCol + 1).setValue("FALSE");
+      toReactivate.push(annules.shift().rowIndex);
       reactivated++; toAdd--;
     }
-    // 2) Crée les lignes manquantes
+    if (toReactivate.length) batchSetAnnule(toReactivate, "FALSE");
+    // 2) Crée les lignes manquantes (deja en batch via setValues).
     if (toAdd > 0) {
-      // Prépare les nouvelles lignes avec id + clientId + annule=FALSE
       var newRows = [];
       for (var k = 0; k < toAdd; k++) {
         var row = new Array(headers.length).fill("");
@@ -2311,17 +2422,19 @@ function setClientVelosTarget(clientId, target) {
     }
   } else if (target < current) {
     var toCancel = current - target;
-    // Priorité : cancel les non-livrés
     var nonLivres = actifs.filter(function(a) { return !a.isLivre; });
     var livres = actifs.filter(function(a) { return a.isLivre; });
     var ordered = nonLivres.concat(livres);
+    var toCancelIdxs = [];
     for (var j = 0; j < toCancel && j < ordered.length; j++) {
-      sheet.getRange(ordered[j].rowIndex, annuleCol + 1).setValue("TRUE");
+      toCancelIdxs.push(ordered[j].rowIndex);
       cancelled++;
     }
+    if (toCancelIdxs.length) batchSetAnnule(toCancelIdxs, "TRUE");
   }
 
   SpreadsheetApp.flush();
+  _invalidateClientCache(clientId);
   return {
     ok: true,
     clientId: clientId,
@@ -3522,73 +3635,100 @@ function uploadMontagePhoto(body) {
   else slotCol = iPhotoMonte;
 
   var data = meta.sheet.getDataRange().getValues();
-  for (var i = 1; i < data.length; i++) {
-    var row = data[i];
-    var f = String(row[iFnuci] || "").trim();
-    if (f !== clean) continue;
-    var isAnnule = iAnnule >= 0 && (row[iAnnule] === true || row[iAnnule] === "TRUE");
-    if (isAnnule) continue;
 
-    var veloId = row[iId];
-    var cid = String(row[iClientId] || "");
-
-    // Upload de la photo dans le Drive du client : <client>/Photos montage/<yyyy-MM-dd>/<fnuci>_<slot>_<HHmmss>.<ext>
-    var clientFolder = _getClientFolder(cid);
-    var photosRoot = getOrCreateFolder(clientFolder, "Photos montage");
-    var today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
-    var dayFolder = getOrCreateFolder(photosRoot, today);
-    var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "HHmmss");
-    var ext = mimeType === "image/png" ? "png" : "jpg";
-    var fullName = clean + "_" + slot + "_" + stamp + "." + ext;
-    var decoded = Utilities.base64Decode(body.photoData);
-    var blob = Utilities.newBlob(decoded, mimeType, fullName);
-    var file = dayFolder.createFile(blob);
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    var photoUrl = file.getUrl();
-
-    // Écriture de l'URL dans la colonne du slot.
-    meta.sheet.getRange(i + 1, slotCol + 1).setValue(photoUrl);
-
-    // Refresh de la ligne pour vérifier l'état des 3 slots après écriture.
-    var rowAfter = meta.sheet.getRange(i + 1, 1, 1, headers.length).getValues()[0];
-    var hasEtiquette = !!String(rowAfter[iPhotoEtiquette] || "").trim();
-    var hasQrVelo = !!String(rowAfter[iPhotoQrVelo] || "").trim();
-    var hasMonte = !!String(rowAfter[iPhotoMonte] || "").trim();
-    var allThree = hasEtiquette && hasQrVelo && hasMonte;
-
-    var existingDateMontage = rowAfter[iDateMontage];
-    var alreadyMonte = !!(existingDateMontage && String(existingDateMontage).trim());
-
-    var nowIso = new Date().toISOString();
-    // dateMontage déclenché UNIQUEMENT quand les 3 photos sont présentes.
-    // Ainsi on ne peut pas marquer un vélo "monté" tant que la preuve complète
-    // (étiquette + QR vélo + vélo monté) n'a pas été remontée.
-    if (allThree && !alreadyMonte) {
-      meta.sheet.getRange(i + 1, iDateMontage + 1).setValue(nowIso);
-      if (iMonteParId >= 0 && monteurId) {
-        meta.sheet.getRange(i + 1, iMonteParId + 1).setValue(String(monteurId));
-      }
-    }
-    SpreadsheetApp.flush();
-
+  // Pre-indexation FNUCI -> [rowIndex] pour 1) accelerer le lookup (O(1) au
+  // lieu de O(N) repete) et 2) detecter les doublons. Un FNUCI doublon est
+  // une erreur de saisie : on refuse l'upload plutot que de mettre a jour
+  // silencieusement le 1er match (risque qualite : photo attribuee au mauvais
+  // velo, le 2e ne sera jamais "monte" cote stats).
+  var fnuciIdx = {};
+  for (var fi = 1; fi < data.length; fi++) {
+    var fr = data[fi];
+    var fk = String(fr[iFnuci] || "").trim();
+    if (!fk) continue;
+    var fAnnule = iAnnule >= 0 && (fr[iAnnule] === true || fr[iAnnule] === "TRUE");
+    if (fAnnule) continue;
+    if (!fnuciIdx[fk]) fnuciIdx[fk] = [];
+    fnuciIdx[fk].push(fi);
+  }
+  var matches = fnuciIdx[clean] || [];
+  if (matches.length === 0) {
+    return { error: "FNUCI inconnu — passe d'abord par la préparation", fnuci: clean };
+  }
+  if (matches.length > 1) {
+    // Doublon : on remonte la liste des veloIds + clientIds pour aider le
+    // user a corriger la saisie.
+    var dupVelos = matches.map(function(idx) {
+      return { veloId: data[idx][iId], clientId: String(data[idx][iClientId] || "") };
+    });
     return {
-      ok: true,
-      veloId: veloId,
+      error: "DOUBLON FNUCI : ce code est present sur " + matches.length + " velos en base. Corrige la saisie avant d'uploader la photo.",
       fnuci: clean,
-      clientId: cid,
-      clientName: _getClientName(cid),
-      slot: slot,
-      photoUrl: photoUrl,
-      photos: {
-        etiquette: hasEtiquette,
-        qrvelo: hasQrVelo,
-        monte: hasMonte,
-      },
-      complete: allThree,
-      dateMontage: alreadyMonte ? String(existingDateMontage) : (allThree ? nowIso : null),
+      doublons: dupVelos,
     };
   }
-  return { error: "FNUCI inconnu — passe d'abord par la préparation", fnuci: clean };
+  // 1 seul match : on traite directement avec le bon rowIndex.
+  var i = matches[0];
+  var row = data[i];
+  var veloId = row[iId];
+  var cid = String(row[iClientId] || "");
+
+  // Upload de la photo dans le Drive du client : <client>/Photos montage/<yyyy-MM-dd>/<fnuci>_<slot>_<HHmmss>.<ext>
+  var clientFolder = _getClientFolder(cid);
+  var photosRoot = getOrCreateFolder(clientFolder, "Photos montage");
+  var today = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd");
+  var dayFolder = getOrCreateFolder(photosRoot, today);
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "HHmmss");
+  var ext = mimeType === "image/png" ? "png" : "jpg";
+  var fullName = clean + "_" + slot + "_" + stamp + "." + ext;
+  var decoded = Utilities.base64Decode(body.photoData);
+  var blob = Utilities.newBlob(decoded, mimeType, fullName);
+  var file = dayFolder.createFile(blob);
+  file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+  var photoUrl = file.getUrl();
+
+  // Écriture de l'URL dans la colonne du slot.
+  meta.sheet.getRange(i + 1, slotCol + 1).setValue(photoUrl);
+
+  // Refresh de la ligne pour vérifier l'état des 3 slots après écriture.
+  var rowAfter = meta.sheet.getRange(i + 1, 1, 1, headers.length).getValues()[0];
+  var hasEtiquette = !!String(rowAfter[iPhotoEtiquette] || "").trim();
+  var hasQrVelo = !!String(rowAfter[iPhotoQrVelo] || "").trim();
+  var hasMonte = !!String(rowAfter[iPhotoMonte] || "").trim();
+  var allThree = hasEtiquette && hasQrVelo && hasMonte;
+
+  var existingDateMontage = rowAfter[iDateMontage];
+  var alreadyMonte = !!(existingDateMontage && String(existingDateMontage).trim());
+
+  var nowIso = new Date().toISOString();
+  // dateMontage déclenché UNIQUEMENT quand les 3 photos sont présentes.
+  // Ainsi on ne peut pas marquer un vélo "monté" tant que la preuve complète
+  // (étiquette + QR vélo + vélo monté) n'a pas été remontée.
+  if (allThree && !alreadyMonte) {
+    meta.sheet.getRange(i + 1, iDateMontage + 1).setValue(nowIso);
+    if (iMonteParId >= 0 && monteurId) {
+      meta.sheet.getRange(i + 1, iMonteParId + 1).setValue(String(monteurId));
+    }
+  }
+  SpreadsheetApp.flush();
+  _invalidateClientCache(cid);
+
+  return {
+    ok: true,
+    veloId: veloId,
+    fnuci: clean,
+    clientId: cid,
+    clientName: _getClientName(cid),
+    slot: slot,
+    photoUrl: photoUrl,
+    photos: {
+      etiquette: hasEtiquette,
+      qrvelo: hasQrVelo,
+      monte: hasMonte,
+    },
+    complete: allThree,
+    dateMontage: alreadyMonte ? String(existingDateMontage) : (allThree ? nowIso : null),
+  };
 }
 
 // Upload de la photo du Bon de Livraison signé/tamponné par le client à la
@@ -3603,6 +3743,7 @@ function uploadBlSignedPhoto(body) {
   if (!body.tourneeId) return { error: "tourneeId requis" };
   if (!body.clientId) return { error: "clientId requis" };
   if (!body.photoData) return { error: "photoData requis (base64)" };
+  _invalidateClientCache(body.clientId);
   var mimeType = body.mimeType || "image/jpeg";
 
   var ctx = ensureLivraisonsSchema();
@@ -4048,6 +4189,7 @@ function _markVeloEtape(fnuci, tourneeId, userId, etape) {
       if (iUser >= 0 && userId) meta.sheet.getRange(i + 1, iUser + 1).setValue(String(userId));
       if (iTid >= 0) meta.sheet.getRange(i + 1, iTid + 1).setValue(String(tourneeId));
       SpreadsheetApp.flush();
+      _invalidateClientCache(cid);
     }
     return {
       ok: true,

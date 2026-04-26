@@ -104,6 +104,11 @@ function ClientDetailPage() {
   const [client, setClient] = useState<ClientDetail | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState<string | null>(null);
+  // Pagination simple du tableau Velos pour eviter de rendre 100+ lignes DOM
+  // a la fois (scroll laggy a 50+). Defaut : 50 premieres ; bouton "Tout
+  // afficher" pour passer en mode complet quand le user a vraiment besoin.
+  const [showAllVelos, setShowAllVelos] = useState(false);
+  const VELOS_PAGE_SIZE = 50;
 
   const load = useCallback(() => {
     gasGet("getClient", { id }).then(setClient);
@@ -404,7 +409,7 @@ function ClientDetailPage() {
             </tr>
           </thead>
           <tbody className="divide-y">
-            {client.velos.map((v) => (
+            {(showAllVelos ? client.velos : client.velos.slice(0, VELOS_PAGE_SIZE)).map((v) => (
               <tr key={v.id} className="hover:bg-gray-50">
                 <td className="px-4 py-2">
                   <input
@@ -475,6 +480,25 @@ function ClientDetailPage() {
             ))}
           </tbody>
         </table>
+        {client.velos.length > VELOS_PAGE_SIZE && (
+          <div className="px-4 py-3 border-t bg-gray-50 text-center">
+            {!showAllVelos ? (
+              <button
+                onClick={() => setShowAllVelos(true)}
+                className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+              >
+                Afficher les {client.velos.length - VELOS_PAGE_SIZE} vélos restants ({client.velos.length} au total)
+              </button>
+            ) : (
+              <button
+                onClick={() => setShowAllVelos(false)}
+                className="text-sm text-gray-500 hover:text-gray-700"
+              >
+                Réduire (afficher seulement les {VELOS_PAGE_SIZE} premiers)
+              </button>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
