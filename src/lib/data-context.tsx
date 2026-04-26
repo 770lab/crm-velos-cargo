@@ -115,14 +115,28 @@ interface EquipeMember {
   createdAt?: string | null;
 }
 
+type CamionType = "gros" | "moyen" | "petit" | "retrait";
+
+interface Camion {
+  id: string;
+  nom: string;
+  type: CamionType;
+  capaciteVelos: number;
+  peutEntrerParis: boolean;
+  actif: boolean;
+  notes: string | null;
+  createdAt?: string | null;
+}
+
 interface DataState {
   stats: Stats | null;
   clients: ClientRow[];
   carte: ClientPoint[];
   livraisons: LivraisonRow[];
   equipe: EquipeMember[];
+  flotte: Camion[];
   loading: boolean;
-  refresh: (key?: "stats" | "clients" | "carte" | "livraisons" | "equipe") => Promise<void>;
+  refresh: (key?: "stats" | "clients" | "carte" | "livraisons" | "equipe" | "flotte") => Promise<void>;
 }
 
 const DataContext = createContext<DataState>({
@@ -131,6 +145,7 @@ const DataContext = createContext<DataState>({
   carte: [],
   livraisons: [],
   equipe: [],
+  flotte: [],
   loading: true,
   refresh: async () => {},
 });
@@ -139,7 +154,7 @@ export function useData() {
   return useContext(DataContext);
 }
 
-export { type Stats, type ClientRow, type ClientPoint, type LivraisonRow, type EquipeMember, type EquipeRole };
+export { type Stats, type ClientRow, type ClientPoint, type LivraisonRow, type EquipeMember, type EquipeRole, type Camion, type CamionType };
 
 export function DataProvider({ children }: { children: ReactNode }) {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -147,26 +162,29 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [carte, setCarte] = useState<ClientPoint[]>([]);
   const [livraisons, setLivraisons] = useState<LivraisonRow[]>([]);
   const [equipe, setEquipe] = useState<EquipeMember[]>([]);
+  const [flotte, setFlotte] = useState<Camion[]>([]);
   const [loading, setLoading] = useState(true);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [s, c, ca, l, e] = await Promise.all([
+    const [s, c, ca, l, e, f] = await Promise.all([
       gasGet("getStats"),
       gasGet("getClients"),
       gasGet("getCarte"),
       gasGet("getLivraisons"),
       gasGet("listEquipe").catch(() => ({ items: [] })),
+      gasGet("listFlotte").catch(() => ({ items: [] })),
     ]);
     setStats(s);
     setClients(c);
     setCarte(ca);
     setLivraisons(l);
     setEquipe(Array.isArray(e?.items) ? e.items : []);
+    setFlotte(Array.isArray(f?.items) ? f.items : []);
     setLoading(false);
   }, []);
 
-  const refresh = useCallback(async (key?: "stats" | "clients" | "carte" | "livraisons" | "equipe") => {
+  const refresh = useCallback(async (key?: "stats" | "clients" | "carte" | "livraisons" | "equipe" | "flotte") => {
     if (!key) {
       await loadAll();
       return;
@@ -179,6 +197,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
       equipe: async () => {
         const e = await gasGet("listEquipe").catch(() => ({ items: [] }));
         setEquipe(Array.isArray(e?.items) ? e.items : []);
+      },
+      flotte: async () => {
+        const f = await gasGet("listFlotte").catch(() => ({ items: [] }));
+        setFlotte(Array.isArray(f?.items) ? f.items : []);
       },
     };
     await fetchers[key]();
@@ -210,7 +232,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <DataContext.Provider value={{ stats, clients, carte, livraisons, equipe, loading, refresh }}>
+    <DataContext.Provider value={{ stats, clients, carte, livraisons, equipe, flotte, loading, refresh }}>
       {children}
     </DataContext.Provider>
   );

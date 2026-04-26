@@ -5,6 +5,7 @@ import { gasGet, gasPost } from "@/lib/gas";
 import { useData, type LivraisonRow } from "@/lib/data-context";
 import DateLoadPicker, { type DayLoad } from "@/components/date-load-picker";
 import AddClientModal from "@/components/add-client-modal";
+import DayPlannerModal from "@/components/day-planner-modal";
 
 type View = "semaine" | "mois" | "liste";
 
@@ -25,6 +26,7 @@ export default function LivraisonsPage() {
   const [openTournee, setOpenTournee] = useState<Tournee | null>(null);
   const [search, setSearch] = useState("");
   const [showAddClient, setShowAddClient] = useState(false);
+  const [showPlanner, setShowPlanner] = useState(false);
 
   useEffect(() => {
     refresh("livraisons");
@@ -120,6 +122,13 @@ export default function LivraisonsPage() {
         </div>
         <div className="flex items-center gap-2">
           <button
+            onClick={() => setShowPlanner(true)}
+            className="px-3 py-1.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm font-medium whitespace-nowrap"
+            title="Annonce les ressources du jour et laisse Gemini proposer la ventilation optimale"
+          >
+            🪄 Planifier le jour
+          </button>
+          <button
             onClick={() => setShowAddClient(true)}
             className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium whitespace-nowrap"
           >
@@ -181,6 +190,16 @@ export default function LivraisonsPage() {
           onClose={() => {
             setShowAddClient(false);
             refresh("clients");
+            refresh("carte");
+          }}
+        />
+      )}
+      {showPlanner && (
+        <DayPlannerModal
+          initialDate={refDate.toISOString().slice(0, 10)}
+          onClose={() => setShowPlanner(false)}
+          onApplied={() => {
+            refresh("livraisons");
             refresh("carte");
           }}
         />

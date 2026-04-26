@@ -151,6 +151,28 @@ function handleRequest(e) {
         var bodyMVL = getBody();
         result = markVeloLivre(bodyMVL);
         break;
+      case "listFlotte":
+        result = listFlotte(e.parameter);
+        break;
+      case "upsertCamion":
+        result = upsertCamion(getBody());
+        break;
+      case "archiveCamion":
+        result = archiveCamion(e.parameter.id);
+        break;
+      case "listDisponibilites":
+        result = listDisponibilites(e.parameter);
+        break;
+      case "setDisponibilites":
+        result = setDisponibilites(getBody());
+        break;
+      case "proposeTournee":
+        var bodyPT = getBody();
+        result = proposeTournee({
+          date: bodyPT.date || e.parameter.date,
+          mode: bodyPT.mode || e.parameter.mode || "fillGaps"
+        });
+        break;
       default:
         result = { error: "Action inconnue: " + action };
     }
@@ -2696,4 +2718,552 @@ function getTourneeExecution(tourneeId) {
       monteurs: monteurs
     }
   };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FLOTTE (camions) + DISPONIBILITES (qui/quoi est dispo quel jour)
+// + proposeTournee (Gemini ventile les clients dans les camions du jour)
+// ─────────────────────────────────────────────────────────────────────────────
+
+var FLOTTE_SHEET_NAME = "Flotte";
+var FLOTTE_COLS = ["id", "nom", "type", "capaciteVelos", "peutEntrerParis", "actif", "notes", "createdAt"];
+var FLOTTE_TYPES = ["gros", "moyen", "petit", "retrait"];
+var FLOTTE_SEED = [
+  { nom: "Gros",          type: "gros",    capaciteVelos: 132, peutEntrerParis: false },
+  { nom: "Moyen",         type: "moyen",   capaciteVelos: 54,  peutEntrerParis: true  },
+  { nom: "Petit",         type: "petit",   capaciteVelos: 20,  peutEntrerParis: true  },
+  { nom: "Retrait client", type: "retrait", capaciteVelos: 0,  peutEntrerParis: true  }
+];
+
+var DISPO_SHEET_NAME = "Disponibilites";
+var DISPO_COLS = ["id", "date", "ressourceType", "ressourceId", "actif", "notes", "createdAt"];
+var DISPO_TYPES = ["camion", "chauffeur", "chef", "monteur"];
+
+function ensureFlotteSheet() {
+  var sh = SS.getSheetByName(FLOTTE_SHEET_NAME);
+  if (!sh) {
+    sh = SS.insertSheet(FLOTTE_SHEET_NAME);
+    sh.getRange(1, 1, 1, FLOTTE_COLS.length).setValues([FLOTTE_COLS]);
+    sh.setFrozenRows(1);
+    // Seed avec les 4 camions de référence
+    for (var i = 0; i < FLOTTE_SEED.length; i++) {
+      var s = FLOTTE_SEED[i];
+      sh.appendRow([Utilities.getUuid(), s.nom, s.type, s.capaciteVelos, s.peutEntrerParis ? "TRUE" : "FALSE", "TRUE", "", new Date().toISOString()]);
+    }
+    return sh;
+  }
+  var lastCol = Math.max(1, sh.getLastColumn());
+  var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  var missing = FLOTTE_COLS.filter(function(c) { return headers.indexOf(c) < 0; });
+  if (missing.length) {
+    sh.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]);
+  }
+  return sh;
+}
+
+function ensureDisponibilitesSheet() {
+  var sh = SS.getSheetByName(DISPO_SHEET_NAME);
+  if (!sh) {
+    sh = SS.insertSheet(DISPO_SHEET_NAME);
+    sh.getRange(1, 1, 1, DISPO_COLS.length).setValues([DISPO_COLS]);
+    sh.setFrozenRows(1);
+    return sh;
+  }
+  var lastCol = Math.max(1, sh.getLastColumn());
+  var headers = sh.getRange(1, 1, 1, lastCol).getValues()[0];
+  var missing = DISPO_COLS.filter(function(c) { return headers.indexOf(c) < 0; });
+  if (missing.length) {
+    sh.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]);
+  }
+  return sh;
+}
+
+function _flotteRowToObject(row, headers) {
+  var o = {};
+  headers.forEach(function(h, j) { o[h] = row[j]; });
+  o.actif = (o.actif === true || o.actif === "TRUE");
+  o.peutEntrerParis = (o.peutEntrerParis === true || o.peutEntrerParis === "TRUE");
+  o.capaciteVelos = Number(o.capaciteVelos) || 0;
+  return o;
+}
+
+function listFlotte(params) {
+  var sh = ensureFlotteSheet();
+  var data = sh.getDataRange().getValues();
+  if (data.length < 2) return { items: [] };
+  var headers = data[0];
+  var includeInactifs = params && (params.includeInactifs === "true" || params.includeInactifs === true);
+  var items = [];
+  for (var i = 1; i < data.length; i++) {
+    var o = _flotteRowToObject(data[i], headers);
+    if (!includeInactifs && !o.actif) continue;
+    items.push(o);
+  }
+  items.sort(function(a, b) { return (b.capaciteVelos || 0) - (a.capaciteVelos || 0); });
+  return { items: items };
+}
+
+function upsertCamion(body) {
+  if (!body || !body.nom) return { error: "Nom requis" };
+  if (body.type && FLOTTE_TYPES.indexOf(body.type) < 0) return { error: "Type invalide (" + FLOTTE_TYPES.join("/") + ")" };
+  var sh = ensureFlotteSheet();
+  var data = sh.getDataRange().getValues();
+  var headers = data[0];
+  var idCol = headers.indexOf("id");
+
+  if (body.id) {
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][idCol]) === String(body.id)) {
+        FLOTTE_COLS.forEach(function(col) {
+          if (col === "id" || col === "createdAt") return;
+          if (body[col] === undefined) return;
+          var c = headers.indexOf(col);
+          if (c < 0) return;
+          var val = body[col];
+          if (col === "actif" || col === "peutEntrerParis") val = (val === true || val === "true" || val === "TRUE") ? "TRUE" : "FALSE";
+          if (col === "capaciteVelos") val = Number(val) || 0;
+          sh.getRange(i + 1, c + 1).setValue(val);
+        });
+        SpreadsheetApp.flush();
+        return { ok: true, id: body.id, updated: true };
+      }
+    }
+    return { error: "Camion introuvable: " + body.id };
+  }
+
+  var id = Utilities.getUuid();
+  var row = headers.map(function(h) {
+    if (h === "id") return id;
+    if (h === "createdAt") return new Date().toISOString();
+    if (h === "actif") return body.actif === false ? "FALSE" : "TRUE";
+    if (h === "peutEntrerParis") return (body.peutEntrerParis === true || body.peutEntrerParis === "true" || body.peutEntrerParis === "TRUE") ? "TRUE" : "FALSE";
+    if (h === "capaciteVelos") return Number(body.capaciteVelos) || 0;
+    return body[h] != null ? body[h] : "";
+  });
+  sh.appendRow(row);
+  SpreadsheetApp.flush();
+  return { ok: true, id: id, created: true };
+}
+
+function archiveCamion(id) {
+  if (!id) return { error: "id requis" };
+  var sh = ensureFlotteSheet();
+  var data = sh.getDataRange().getValues();
+  var headers = data[0];
+  var idCol = headers.indexOf("id");
+  var actifCol = headers.indexOf("actif");
+  for (var i = 1; i < data.length; i++) {
+    if (String(data[i][idCol]) === String(id)) {
+      if (actifCol >= 0) sh.getRange(i + 1, actifCol + 1).setValue("FALSE");
+      SpreadsheetApp.flush();
+      return { ok: true, id: id };
+    }
+  }
+  return { error: "Camion introuvable: " + id };
+}
+
+function _dispoRowToObject(row, headers) {
+  var o = {};
+  headers.forEach(function(h, j) {
+    var v = row[j];
+    if (v instanceof Date && h === "date") o[h] = Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM-dd");
+    else o[h] = v;
+  });
+  o.actif = (o.actif === true || o.actif === "TRUE");
+  return o;
+}
+
+function listDisponibilites(params) {
+  var sh = ensureDisponibilitesSheet();
+  var data = sh.getDataRange().getValues();
+  if (data.length < 2) return { items: [] };
+  var headers = data[0];
+  var dateFilter = params && params.date ? String(params.date) : null;
+  var typeFilter = params && params.ressourceType ? String(params.ressourceType) : null;
+  var items = [];
+  for (var i = 1; i < data.length; i++) {
+    var o = _dispoRowToObject(data[i], headers);
+    if (!o.actif) continue;
+    if (dateFilter && String(o.date) !== dateFilter) continue;
+    if (typeFilter && o.ressourceType !== typeFilter) continue;
+    items.push(o);
+  }
+  return { items: items };
+}
+
+// Body : { date: "YYYY-MM-DD", camionIds: [...], chauffeurIds: [...], chefIds: [...], monteurIds: [...] }
+// Remplace l'état du jour : tout ce qui n'est pas dans la liste est archivé,
+// tout ce qui est dans la liste mais pas en sheet est créé.
+function setDisponibilites(body) {
+  if (!body || !body.date) return { error: "date requise (YYYY-MM-DD)" };
+  var date = String(body.date);
+  var desired = {
+    camion:    Array.isArray(body.camionIds)    ? body.camionIds    : [],
+    chauffeur: Array.isArray(body.chauffeurIds) ? body.chauffeurIds : [],
+    chef:      Array.isArray(body.chefIds)      ? body.chefIds      : [],
+    monteur:   Array.isArray(body.monteurIds)   ? body.monteurIds   : []
+  };
+
+  var sh = ensureDisponibilitesSheet();
+  var data = sh.getDataRange().getValues();
+  var headers = data[0];
+  var iId = headers.indexOf("id");
+  var iDate = headers.indexOf("date");
+  var iType = headers.indexOf("ressourceType");
+  var iRessId = headers.indexOf("ressourceId");
+  var iActif = headers.indexOf("actif");
+  var iNotes = headers.indexOf("notes");
+  var iCreated = headers.indexOf("createdAt");
+
+  // Construit l'index existant pour cette date
+  var existing = {}; // key = type + "|" + ressourceId → row index (1-based) + actif
+  for (var i = 1; i < data.length; i++) {
+    var r = data[i];
+    if (String(r[iDate]) === date || (r[iDate] instanceof Date && Utilities.formatDate(r[iDate], Session.getScriptTimeZone(), "yyyy-MM-dd") === date)) {
+      var key = r[iType] + "|" + r[iRessId];
+      existing[key] = { row: i + 1, actif: (r[iActif] === true || r[iActif] === "TRUE") };
+    }
+  }
+
+  var added = 0, reactivated = 0, archived = 0;
+  // Phase 1 : ajouter ou réactiver les ressources voulues
+  Object.keys(desired).forEach(function(type) {
+    desired[type].forEach(function(rid) {
+      if (!rid) return;
+      var key = type + "|" + rid;
+      if (existing[key]) {
+        if (!existing[key].actif) {
+          sh.getRange(existing[key].row, iActif + 1).setValue("TRUE");
+          reactivated++;
+        }
+      } else {
+        var newRow = headers.map(function(h) {
+          if (h === "id") return Utilities.getUuid();
+          if (h === "date") return date;
+          if (h === "ressourceType") return type;
+          if (h === "ressourceId") return rid;
+          if (h === "actif") return "TRUE";
+          if (h === "createdAt") return new Date().toISOString();
+          return "";
+        });
+        sh.appendRow(newRow);
+        added++;
+      }
+    });
+  });
+
+  // Phase 2 : archiver tout ce qui existe en sheet pour cette date mais pas demandé
+  Object.keys(existing).forEach(function(key) {
+    var parts = key.split("|");
+    var type = parts[0];
+    var rid = parts[1];
+    if (!existing[key].actif) return; // déjà archivé
+    var stillWanted = (desired[type] || []).indexOf(rid) >= 0;
+    if (!stillWanted) {
+      sh.getRange(existing[key].row, iActif + 1).setValue("FALSE");
+      archived++;
+    }
+  });
+
+  SpreadsheetApp.flush();
+  return { ok: true, date: date, added: added, reactivated: reactivated, archived: archived };
+}
+
+// ─── Capacité du jour : calcule ce qui est dispo + déjà affecté ─────────────
+function _capaciteDuJour(date) {
+  var dispos = listDisponibilites({ date: date }).items;
+  var flotte = listFlotte({}).items;
+  var equipe = listEquipe({}).items;
+
+  var camionIds = dispos.filter(function(d) { return d.ressourceType === "camion"; }).map(function(d) { return d.ressourceId; });
+  var chauffeurIds = dispos.filter(function(d) { return d.ressourceType === "chauffeur"; }).map(function(d) { return d.ressourceId; });
+  var chefIds = dispos.filter(function(d) { return d.ressourceType === "chef"; }).map(function(d) { return d.ressourceId; });
+  var monteurIds = dispos.filter(function(d) { return d.ressourceType === "monteur"; }).map(function(d) { return d.ressourceId; });
+
+  var camions = flotte.filter(function(c) { return camionIds.indexOf(c.id) >= 0; });
+  var chauffeurs = equipe.filter(function(m) { return m.role === "chauffeur" && chauffeurIds.indexOf(m.id) >= 0; });
+  var chefs = equipe.filter(function(m) { return m.role === "chef" && chefIds.indexOf(m.id) >= 0; });
+  var monteurs = equipe.filter(function(m) { return m.role === "monteur" && monteurIds.indexOf(m.id) >= 0; });
+
+  return {
+    camions: camions,
+    chauffeurs: chauffeurs,
+    chefs: chefs,
+    monteurs: monteurs,
+    capaciteTotaleVelos: camions.reduce(function(s, c) { return s + (c.capaciteVelos || 0); }, 0)
+  };
+}
+
+// Identifie si un client est intra-Paris (codePostal commence par 75 + 75001..75020)
+function _estParis(client) {
+  var cp = String(client.codePostal || "").trim();
+  return /^750\d{2}$/.test(cp) && Number(cp) >= 75001 && Number(cp) <= 75020;
+}
+
+// Retourne les clients pas encore affectés à une tournée pour la date
+function _clientsLivrablesPourDate(date) {
+  var allClients = getClients({}); // existant
+  var clientsParId = {};
+  for (var i = 0; i < allClients.length; i++) clientsParId[allClients[i].id] = allClients[i];
+
+  var livrSheet = SS.getSheetByName("Livraisons");
+  if (!livrSheet) return { affectes: {}, dispo: [] };
+  var lvData = livrSheet.getDataRange().getValues();
+  if (lvData.length < 2) return { affectes: {}, dispo: Object.keys(clientsParId).map(function(id) { return clientsParId[id]; }).filter(_clientLivrable) };
+
+  var lvHeaders = lvData[0];
+  var iLvClientId = lvHeaders.indexOf("clientId");
+  var iLvDate = lvHeaders.indexOf("date");
+  var iLvStatus = lvHeaders.indexOf("statut");
+  var iLvNbVelos = lvHeaders.indexOf("nbVelos");
+  var iLvTourneeId = lvHeaders.indexOf("tourneeId");
+
+  var affectesParTournee = {}; // tourneeId → [{clientId, nbVelos, ...}]
+  var clientIdsAffectesPourCetteDate = {};
+
+  for (var li = 1; li < lvData.length; li++) {
+    var lvRow = lvData[li];
+    var statut = String(lvRow[iLvStatus] || "").toLowerCase();
+    if (statut === "annulee" || statut === "annulée" || statut === "livrée" || statut === "livree") continue;
+    var lvDate = lvRow[iLvDate];
+    var lvDateStr = lvDate instanceof Date ? Utilities.formatDate(lvDate, Session.getScriptTimeZone(), "yyyy-MM-dd") : String(lvDate);
+    if (lvDateStr !== date) continue;
+
+    var cid = String(lvRow[iLvClientId]);
+    var tid = String(lvRow[iLvTourneeId] || "");
+    var nb = Number(lvRow[iLvNbVelos]) || 0;
+    if (!affectesParTournee[tid]) affectesParTournee[tid] = [];
+    affectesParTournee[tid].push({ clientId: cid, nbVelos: nb, client: clientsParId[cid] || null });
+    clientIdsAffectesPourCetteDate[cid] = true;
+  }
+
+  var dispo = [];
+  for (var cid2 in clientsParId) {
+    if (clientIdsAffectesPourCetteDate[cid2]) continue;
+    if (_clientLivrable(clientsParId[cid2])) dispo.push(clientsParId[cid2]);
+  }
+  return { affectes: affectesParTournee, dispo: dispo };
+}
+
+function _clientLivrable(c) {
+  if (!c) return false;
+  var nbCmd = Number(c.nbVelosCommandes || 0);
+  var nbLivre = Number(c.nbVelosLivres || 0);
+  if (nbCmd <= 0) return false;
+  if (nbLivre >= nbCmd) return false;
+  if (c.latitude == null || c.longitude == null) return false;
+  return true;
+}
+
+// Distance Haversine entre deux lat/lng en km
+function _distanceKm(lat1, lng1, lat2, lng2) {
+  if (lat1 == null || lng1 == null || lat2 == null || lng2 == null) return 9999;
+  var R = 6371;
+  var dLat = (lat2 - lat1) * Math.PI / 180;
+  var dLng = (lng2 - lng1) * Math.PI / 180;
+  var a = Math.sin(dLat / 2) * Math.sin(dLat / 2) +
+          Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+          Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  var c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  return R * c;
+}
+
+// AXDIS PRO - Le Blanc-Mesnil
+var DEPOT_LAT = 48.9356;
+var DEPOT_LNG = 2.4636;
+
+// Endpoint principal : appelle Gemini pour proposer ou compléter la tournée
+// payload = { date: "YYYY-MM-DD", mode: "fillGaps" | "fromScratch" }
+function proposeTournee(payload) {
+  if (!payload || !payload.date) return { error: "date requise" };
+  var date = payload.date;
+  var mode = payload.mode || "fillGaps";
+
+  var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
+  if (!apiKey) return { error: "GEMINI_API_KEY manquante dans Script Properties" };
+
+  var capa = _capaciteDuJour(date);
+  if (capa.camions.length === 0) return { error: "Aucun camion déclaré disponible pour le " + date + ". Renseigne les dispos du jour." };
+
+  var ctx = _clientsLivrablesPourDate(date);
+
+  // Capacité restante par camion (tournée existante = somme nbVelos affectés à cette tournée)
+  // Note : on ne sait pas encore quel tourneeId correspond à quel camion. Si l'user a déjà
+  // assigné un camion à une tournée, on lit ça. Sinon on traite chaque tournée comme ouverte.
+  var camionsAvecRestant = capa.camions.map(function(c) {
+    return {
+      id: c.id,
+      nom: c.nom,
+      type: c.type,
+      capaciteVelos: c.capaciteVelos,
+      peutEntrerParis: c.peutEntrerParis,
+      restant: c.capaciteVelos
+    };
+  });
+
+  // Calcul affectation existante : pour fillGaps, on déduit le déjà affecté
+  var totalAffecte = 0;
+  Object.keys(ctx.affectes).forEach(function(tid) {
+    ctx.affectes[tid].forEach(function(a) { totalAffecte += a.nbVelos; });
+  });
+
+  // Enrichit les clients avec distance dépôt
+  var clientsEnrichis = ctx.dispo.map(function(c) {
+    return {
+      id: c.id,
+      entreprise: c.entreprise,
+      ville: c.ville,
+      codePostal: c.codePostal,
+      nbVelosRestants: Math.max(0, Number(c.nbVelosCommandes || 0) - Number(c.nbVelosLivres || 0)),
+      estParis: _estParis(c),
+      distanceKmDepot: Math.round(_distanceKm(DEPOT_LAT, DEPOT_LNG, c.latitude, c.longitude) * 10) / 10,
+      apporteur: c.apporteur || null
+    };
+  }).filter(function(c) { return c.nbVelosRestants > 0; });
+
+  if (clientsEnrichis.length === 0) {
+    return { ok: true, date: date, message: "Aucun client à livrer pour ce jour (déjà tout affecté ou rien à faire).", proposition: { tournees: [] } };
+  }
+
+  // Tri par distance dépôt croissante (input sorted pour Gemini)
+  clientsEnrichis.sort(function(a, b) { return a.distanceKmDepot - b.distanceKmDepot; });
+
+  var prompt = _buildProposeTourneePrompt(date, camionsAvecRestant, clientsEnrichis, ctx.affectes, mode, capa);
+
+  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
+  var requestPayload = {
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0.1,
+      maxOutputTokens: 8192,
+      responseMimeType: "application/json"
+    }
+  };
+
+  var retryDelays = [0, 2000, 5000];
+  var lastCode = null, lastBody = "";
+  for (var attempt = 0; attempt < retryDelays.length; attempt++) {
+    if (retryDelays[attempt] > 0) Utilities.sleep(retryDelays[attempt]);
+    try {
+      var res = UrlFetchApp.fetch(url, {
+        method: "post",
+        contentType: "application/json",
+        payload: JSON.stringify(requestPayload),
+        muteHttpExceptions: true
+      });
+      lastCode = res.getResponseCode();
+      if (lastCode === 200) {
+        var data = JSON.parse(res.getContentText());
+        var parts = (((data.candidates || [])[0] || {}).content || {}).parts;
+        if (!parts || !parts[0] || !parts[0].text) return { error: "Réponse Gemini vide" };
+        var raw = parts[0].text;
+        try {
+          var parsed = JSON.parse(raw);
+          return {
+            ok: true,
+            date: date,
+            mode: mode,
+            capacite: {
+              camions: camionsAvecRestant,
+              chauffeurs: capa.chauffeurs.length,
+              chefs: capa.chefs.length,
+              monteurs: capa.monteurs.length,
+              capaciteTotaleVelos: capa.capaciteTotaleVelos,
+              dejaAffecte: totalAffecte
+            },
+            clientsCandidats: clientsEnrichis.length,
+            proposition: parsed
+          };
+        } catch (parseErr) {
+          return { error: "Réponse Gemini non-JSON", raw: raw.slice(0, 500) };
+        }
+      }
+      lastBody = res.getContentText();
+      if (lastCode !== 503 && lastCode !== 429 && lastCode !== 500) break;
+    } catch (err) {
+      return { error: "Exception Gemini : " + err.message };
+    }
+  }
+  return { error: "Gemini HTTP " + lastCode, body: lastBody.slice(0, 300) };
+}
+
+function _buildProposeTourneePrompt(date, camions, clients, affectesExistants, mode, capa) {
+  var camionsStr = camions.map(function(c) {
+    var noteRetrait = c.type === "retrait" ? ", RETRAIT CLIENT (le client vient chercher avec son propre véhicule, pas besoin de chauffeur côté nous, mais besoin monteurs+chef pour préparer/assembler avant remise)" : "";
+    var capStr = c.type === "retrait" && c.capaciteVelos === 0
+      ? "capacité non plafonnée (à toi de mettre un volume raisonnable selon les monteurs dispo)"
+      : "capacité " + c.capaciteVelos + " vélos";
+    return "- " + c.nom + " (id=" + c.id + ", type=" + c.type + ", " + capStr + ", " + (c.peutEntrerParis ? "PEUT entrer Paris" : "NE PEUT PAS entrer Paris (>3.5T)") + noteRetrait + ")";
+  }).join("\n");
+
+  var equipeStr = "ÉQUIPE DISPONIBLE CE JOUR :\n" +
+    "- Chauffeurs : " + (capa.chauffeurs.map(function(m) { return m.nom; }).join(", ") || "aucun") + "\n" +
+    "- Chefs d'équipe : " + (capa.chefs.map(function(m) { return m.nom; }).join(", ") || "aucun") + "\n" +
+    "- Monteurs : " + (capa.monteurs.map(function(m) { return m.nom; }).join(", ") || "aucun");
+
+  var clientsStr = clients.map(function(c) {
+    return "- " + c.entreprise + " (id=" + c.id + ", " + c.codePostal + " " + c.ville + ", " + c.nbVelosRestants + " vélos restants, " + c.distanceKmDepot + "km dépôt" + (c.estParis ? ", PARIS intra-muros" : "") + ")";
+  }).join("\n");
+
+  var affectesStr = "Aucune affectation existante.";
+  var affectesIds = Object.keys(affectesExistants);
+  if (affectesIds.length > 0) {
+    affectesStr = "Tournées déjà partiellement remplies (à compléter sans modifier l'existant) :\n";
+    affectesIds.forEach(function(tid) {
+      var lignes = affectesExistants[tid];
+      var totalT = lignes.reduce(function(s, l) { return s + l.nbVelos; }, 0);
+      affectesStr += "- Tournée " + tid + " : " + lignes.length + " arrêt(s), " + totalT + " vélos\n";
+      lignes.forEach(function(l) {
+        affectesStr += "    · " + (l.client ? l.client.entreprise : l.clientId) + " (" + l.nbVelos + "v)\n";
+      });
+    });
+  }
+
+  var modeInstr = mode === "fromScratch"
+    ? "Mode FROM SCRATCH : ignore les tournées existantes et propose une ventilation complète à partir de zéro."
+    : "Mode FILL GAPS : si des tournées existent déjà (cf bloc 'Tournées déjà partiellement remplies'), NE LES MODIFIE PAS. Propose seulement des AJOUTS de clients dans ces tournées si la capacité du camion le permet, ou de nouvelles tournées avec les camions encore non utilisés.";
+
+  return [
+    "Tu es un planificateur de tournées de livraison de vélos cargo.",
+    "DÉPÔT DE DÉPART : AXDIS PRO, 2 Rue des Frères Lumière, 93150 Le Blanc-Mesnil (lat " + DEPOT_LAT + ", lng " + DEPOT_LNG + ").",
+    "DATE DE LIVRAISON : " + date,
+    "",
+    "RESSOURCES DISPONIBLES — CAMIONS :",
+    camionsStr,
+    "",
+    equipeStr,
+    "",
+    affectesStr,
+    "",
+    "CLIENTS À LIVRER (triés par distance dépôt croissante) :",
+    clientsStr,
+    "",
+    "CONTRAINTES STRICTES :",
+    "1. Un camion 'NE PEUT PAS entrer Paris' (>3.5T) ne peut PAS livrer un client marqué 'PARIS intra-muros'. Affecte ces clients uniquement aux camions qui PEUVENT entrer Paris.",
+    "2. La somme des vélos d'une tournée ≤ capacité du camion (capaciteVelos). NE DÉPASSE JAMAIS la capacité.",
+    "3. " + modeInstr,
+    "4. Boucle Paris en priorité (vide les arrondissements 75001-75020 d'abord avec les petits camions, libère les chauffeurs vite).",
+    "5. Pour chaque tournée, ordonne les clients du PLUS PROCHE au PLUS LOIN du dépôt.",
+    "6. Maximise le nombre TOTAL de vélos livrés ce jour, mais SANS sacrifier la cohérence géographique : ne mélange pas un client de Bordeaux avec un client de Lille.",
+    "7. Si un client a + de vélos restants que la capacité, c'est OK de ne livrer qu'une partie (le reste = livraison ultérieure).",
+    "",
+    "FORMAT DE RÉPONSE (JSON STRICT, rien d'autre) :",
+    "{",
+    "  \"tournees\": [",
+    "    {",
+    "      \"camionId\": \"...\",",
+    "      \"camionNom\": \"...\",",
+    "      \"totalVelos\": N,",
+    "      \"arrets\": [",
+    "        { \"clientId\": \"...\", \"entreprise\": \"...\", \"nbVelos\": N, \"distanceKmDepot\": N, \"motif\": \"raison courte\" }",
+    "      ],",
+    "      \"motifGlobal\": \"pourquoi cette ventilation pour ce camion\"",
+    "    }",
+    "  ],",
+    "  \"clientsNonAffectes\": [",
+    "    { \"clientId\": \"...\", \"entreprise\": \"...\", \"nbVelos\": N, \"raison\": \"trop loin / pas de camion adapté / capacité saturée\" }",
+    "  ],",
+    "  \"resume\": \"phrase courte expliquant la stratégie globale\"",
+    "}"
+  ].join("\n");
 }
