@@ -24,7 +24,10 @@ const STAGE_ACCESS: Record<EquipeRole, ReadonlySet<StageKey>> = {
   admin: new Set<StageKey>(["prepare", "charge", "livre", "monte"]),
   preparateur: new Set<StageKey>(["prepare", "charge"]),
   chef: new Set<StageKey>(["charge", "livre", "monte"]),
-  chauffeur: new Set<StageKey>(["charge", "livre", "monte"]),
+  // Chauffeur = charge + livre uniquement. Si un même humain doit aussi
+  // monter, on lui crée une 2e entrée dans /equipe avec role=monteur
+  // (pas de double-rôle sur un seul compte, par design).
+  chauffeur: new Set<StageKey>(["charge", "livre"]),
   monteur: new Set<StageKey>(["monte"]),
   apporteur: new Set<StageKey>([]),
 };
