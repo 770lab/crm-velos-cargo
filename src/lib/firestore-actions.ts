@@ -815,11 +815,137 @@ export async function runFirestoreGet(
 ): Promise<unknown> {
   switch (action) {
     case "getClient": {
+      // Reproduit la shape GAS getClient (gas/Code.js:424) attendue par
+      // /clients/detail : on aplatit docs.X / docLinks.X / docDates.X stockés
+      // en sous-objets côté Firestore vers les champs flat (devisSignee,
+      // devisLien, dateEngagement…) consommés par l'UI, et on hydrate
+      // velos[] (avec photos montage + livraison rattachée + urlBlSigne).
+      // Sans ce mapping la fiche client était vide post-migration.
       const id = params.id;
       if (!id) throw new Error("id requis");
       const snap = await getDoc(doc(db, "clients", id));
       if (!snap.exists()) return { error: "Client introuvable" };
-      return { id: snap.id, ...snap.data() };
+      const c = snap.data() as Record<string, unknown>;
+
+      const isoOrNull = (x: unknown): string | null => {
+        if (!x) return null;
+        if (x instanceof Date) return x.toISOString();
+        const t = x as { toDate?: () => Date };
+        if (t?.toDate) return t.toDate().toISOString();
+        const s = String(x).trim();
+        return s || null;
+      };
+      const asUrl = (x: unknown): string | null => {
+        const s = String(x || "").trim();
+        return s || null;
+      };
+
+      const docs = (c.docs as Record<string, unknown>) || {};
+      const docLinks = (c.docLinks as Record<string, unknown>) || {};
+      const docDates = (c.docDates as Record<string, unknown>) || {};
+      // ?? privilégie l'éventuel champ flat hérité (ancienne shape GAS) sinon
+      // tombe sur le sous-objet Firestore actuel.
+      const flat = {
+        devisSignee: (c.devisSignee as boolean) ?? !!docs.devisSignee,
+        kbisRecu: (c.kbisRecu as boolean) ?? !!docs.kbisRecu,
+        attestationRecue: (c.attestationRecue as boolean) ?? !!docs.attestationRecue,
+        signatureOk: (c.signatureOk as boolean) ?? !!docs.signatureOk,
+        inscriptionBicycle: (c.inscriptionBicycle as boolean) ?? !!docs.inscriptionBicycle,
+        parcelleCadastrale: (c.parcelleCadastrale as boolean) ?? !!docs.parcelleCadastrale,
+        effectifMentionne: (c.effectifMentionne as boolean) ?? !!docs.effectifMentionne,
+        devisLien: (c.devisLien as string | null) ?? (docLinks.devis as string | null) ?? null,
+        kbisLien: (c.kbisLien as string | null) ?? (docLinks.kbis as string | null) ?? null,
+        attestationLien:
+          (c.attestationLien as string | null) ?? (docLinks.attestation as string | null) ?? null,
+        signatureLien:
+          (c.signatureLien as string | null) ?? (docLinks.signature as string | null) ?? null,
+        bicycleLien:
+          (c.bicycleLien as string | null) ?? (docLinks.bicycle as string | null) ?? null,
+        parcelleCadastraleLien:
+          (c.parcelleCadastraleLien as string | null) ??
+          (docLinks.parcelleCadastrale as string | null) ??
+          null,
+        kbisDate: (c.kbisDate as string | null) ?? (docDates.kbis as string | null) ?? null,
+        dateEngagement:
+          (c.dateEngagement as string | null) ?? (docDates.engagement as string | null) ?? null,
+        liasseFiscaleDate:
+          (c.liasseFiscaleDate as string | null) ??
+          (docDates.liasseFiscale as string | null) ??
+          null,
+      };
+
+      // Livraisons indexées par tourneeId pour rattacher chaque vélo à SA
+      // livraison (et son urlBlSigne). Multi-tournées : on rattache via
+      // tourneeIdScan ; mono-tournée : fallback sur la seule livraison.
+      const livSnap = await getDocs(
+        query(collection(db, "livraisons"), where("clientId", "==", id)),
+      );
+      type Liv = {
+        id: string;
+        tourneeId: string;
+        statut: string;
+        datePrevue: string | null;
+        dateEffective: string | null;
+        urlBlSigne: string | null;
+      };
+      const livraisonsByTournee: Record<string, Liv> = {};
+      for (const ld of livSnap.docs) {
+        const l = ld.data() as Record<string, unknown>;
+        const tId = String(l.tourneeId || "");
+        livraisonsByTournee[tId] = {
+          id: ld.id,
+          tourneeId: tId,
+          statut: String(l.statut || "planifiee"),
+          datePrevue: isoOrNull(l.datePrevue),
+          dateEffective: isoOrNull(l.dateEffective),
+          urlBlSigne: asUrl(l.urlBlSigne),
+        };
+      }
+      const livKeys = Object.keys(livraisonsByTournee);
+
+      const vSnap = await getDocs(
+        query(collection(db, "velos"), where("clientId", "==", id)),
+      );
+      const velos = vSnap.docs
+        .filter((d) => !(d.data() as { annule?: boolean }).annule)
+        .map((d) => {
+          const v = d.data() as Record<string, unknown>;
+          const fnuci = String(v.fnuci || "").trim() || null;
+          const urlEtiquette = asUrl(v.urlPhotoMontageEtiquette);
+          const urlQrVelo = asUrl(v.urlPhotoMontageQrVelo);
+          const urlMonte = asUrl(v.photoMontageUrl);
+          const hasDateMontage = !!v.dateMontage;
+          const hasDateLivScan = !!v.dateLivraisonScan;
+
+          // tourneeIdScan d'abord (champ historique GAS), puis tourneeId si
+          // posé par le scan livraison côté Firestore. Sinon fallback "1 seule
+          // livraison" pour les clients mono-tournée (cas le plus courant).
+          const tournId = String(v.tourneeIdScan || v.tourneeId || "").trim();
+          let liv: Liv | null = null;
+          if (tournId && livraisonsByTournee[tournId]) liv = livraisonsByTournee[tournId];
+          else if (livKeys.length === 1) liv = livraisonsByTournee[livKeys[0]];
+
+          return {
+            id: d.id,
+            reference: fnuci,
+            qrCode: fnuci,
+            certificatRecu: !!v.certificatRecu || !!fnuci,
+            certificatNumero: (v.certificatNumero as string | null) || null,
+            photoQrPrise: !!v.photoQrPrise || !!urlQrVelo || hasDateMontage,
+            facturable: !!v.facturable,
+            facture: !!v.facture,
+            monte: hasDateMontage,
+            livre: hasDateLivScan,
+            urlPhotoMontageEtiquette: urlEtiquette,
+            urlPhotoMontageQrVelo: urlQrVelo,
+            photoMontageUrl: urlMonte,
+            livraison: liv,
+            urlBlSigne: liv ? liv.urlBlSigne : null,
+            livraisonOrpheline: !liv && livKeys.length > 0,
+          };
+        });
+
+      return { id: snap.id, ...c, ...flat, velos };
     }
     case "getTourneeProgression": {
       const tourneeId = params.tourneeId;
