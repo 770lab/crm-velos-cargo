@@ -360,8 +360,8 @@ function ClientMontageView({
         </div>
 
         <div className="bg-white rounded-xl shadow p-3 mb-3">
-          <div className="text-xs text-gray-500 mb-1">Client en montage</div>
-          <div className="font-bold text-base">{data.entreprise}</div>
+          <div className="text-[11px] uppercase tracking-wide text-gray-500 mb-1">Client en montage</div>
+          <div className="font-bold text-xl sm:text-lg leading-tight break-words">{data.entreprise}</div>
           <div className="mt-2 flex items-baseline justify-between">
             <div className="text-2xl font-bold">
               {totals.done}{" "}

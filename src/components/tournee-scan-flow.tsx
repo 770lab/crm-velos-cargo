@@ -361,9 +361,10 @@ function Inner({ mode }: { mode: ScanMode }) {
               <span>{prog.clients.length} client{prog.clients.length > 1 ? "s" : ""}</span>
             </div>
             {focusClient && (
-              <div className="bg-orange-50 border border-orange-200 rounded p-2 mb-2 text-xs">
-                <div className="font-semibold text-orange-900">🎯 Focus client : {focusClient.entreprise}</div>
-                <div className="text-orange-700">{focusClient.codePostal} {focusClient.ville}</div>
+              <div className="bg-orange-50 border border-orange-200 rounded p-3 mb-2">
+                <div className="text-[11px] uppercase tracking-wide text-orange-700 font-medium">🎯 Client en cours</div>
+                <div className="font-bold text-xl sm:text-lg text-orange-900 leading-tight mt-0.5 break-words">{focusClient.entreprise}</div>
+                <div className="text-sm text-orange-700 mt-0.5">{focusClient.codePostal} {focusClient.ville}</div>
               </div>
             )}
             <div className="flex items-baseline justify-between mb-2">

@@ -1622,19 +1622,19 @@ function TourneeModal({
                   onChange={() => toggleSelect(l.id)}
                   className="shrink-0"
                 />
-                <span className="w-7 h-7 rounded-full bg-green-600 text-white text-sm flex items-center justify-center font-medium shrink-0">
+                <span className="w-9 h-9 sm:w-7 sm:h-7 rounded-full bg-green-600 text-white text-base sm:text-sm flex items-center justify-center font-semibold shrink-0">
                   {i + 1}
                 </span>
                 <div className="flex-1 min-w-0">
-                  <div className="font-medium truncate">{l.client.entreprise}</div>
-                  <div className="text-xs text-gray-500 truncate">
+                  <div className="font-bold text-lg sm:text-base sm:font-medium leading-tight break-words">{l.client.entreprise}</div>
+                  <div className="text-xs text-gray-500 sm:truncate mt-0.5">
                     {[l.client.adresse, l.client.ville, l.client.codePostal].filter(Boolean).join(", ") || "—"}
                   </div>
                   {l.client.telephone && (
                     <div className="text-xs text-gray-400">{l.client.telephone}</div>
                   )}
                   {l.clientId && clientInfo.get(l.clientId)?.apporteur && (
-                    <div className="text-[10px] text-orange-600 font-medium mt-0.5">
+                    <div className="text-[11px] sm:text-[10px] text-orange-600 font-medium mt-0.5">
                       Apporteur : {clientInfo.get(l.clientId)!.apporteur}
                     </div>
                   )}
@@ -1716,12 +1716,12 @@ function TourneeModal({
                               target="_blank"
                               rel="noopener noreferrer"
                               onClick={(e) => e.stopPropagation()}
-                              className={`text-[10px] px-2 py-0.5 rounded-full border ${cls} hover:opacity-80 cursor-pointer`}
+                              className={`text-sm sm:text-[10px] px-3 py-1.5 sm:px-2 sm:py-0.5 rounded-full border ${cls} hover:opacity-80 cursor-pointer font-medium`}
                             >{content}</a>
                           ) : (
                             <span
                               key={s.key}
-                              className={`text-[10px] px-2 py-0.5 rounded-full border ${cls} ${!isAllowedForRole ? "opacity-50 cursor-not-allowed" : ""}`}
+                              className={`text-sm sm:text-[10px] px-3 py-1.5 sm:px-2 sm:py-0.5 rounded-full border ${cls} font-medium ${!isAllowedForRole ? "opacity-50 cursor-not-allowed" : ""}`}
                               title={!isAllowedForRole ? "Action réservée à un autre rôle" : undefined}
                             >{content}</span>
                           );
