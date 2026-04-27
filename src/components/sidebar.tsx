@@ -35,7 +35,6 @@ const NAV_BY_ROLE: Record<EquipeRole, NavItem[]> = {
   ],
   preparateur: [
     { href: "/livraisons", label: "Livraisons", icon: "🚚" },
-    { href: "/clients", label: "Clients", icon: "🏢" },
   ],
   chef: [
     { href: "/livraisons", label: "Livraisons", icon: "🚚" },
