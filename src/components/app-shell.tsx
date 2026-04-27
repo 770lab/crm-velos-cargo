@@ -3,6 +3,7 @@
 import { AuthGate } from "./auth-gate";
 import { AuthGateFirebase } from "./auth-gate-firebase";
 import { Sidebar } from "./sidebar";
+import { VersionChecker } from "./version-checker";
 import { DataProvider } from "@/lib/data-context";
 import { FirebaseDataProvider } from "@/lib/data-context-firebase";
 
@@ -15,6 +16,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <Gate>
       <Provider>
+        <VersionChecker />
         <Sidebar />
         {/* min-w-0 + overflow-x-hidden : indispensable sur mobile, sinon un
             descendant trop large (table, grid 7 colonnes, card avec texte
