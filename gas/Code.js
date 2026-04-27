@@ -5472,7 +5472,11 @@ function proposeTournee(payload) {
 
   var prompt = _buildProposeTourneePrompt(date, camionsAvecRestant, clientsEnrichis, ctx.affectes, mode, capa);
 
-  var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
+  // Modèles testés en cascade sur 503 : si gemini-2.5-flash est saturé, on
+  // bascule sur gemini-2.0-flash (moins de charge, plus stable) avant
+  // d'abandonner. Compromis qualité/dispo : 2.0 est suffisant pour le
+  // problème de ventilation (logique métier déjà cadrée par le prompt).
+  var modelsToTry = ["gemini-2.5-flash", "gemini-2.0-flash"];
   var requestPayload = {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: {
@@ -5492,8 +5496,15 @@ function proposeTournee(payload) {
     }
   };
 
-  var retryDelays = [0, 2000, 5000];
-  var lastCode = null, lastBody = "";
+  // 5 tentatives échelonnées sur ~56s (vs 3 essais sur 7s avant) pour passer
+  // au travers des pics de charge transients de Gemini (HTTP 503 UNAVAILABLE).
+  var retryDelays = [0, 3000, 8000, 15000, 30000];
+  var lastCode = null, lastBody = "", lastModel = null;
+  outerLoop:
+  for (var mIdx = 0; mIdx < modelsToTry.length; mIdx++) {
+    var currentModel = modelsToTry[mIdx];
+    var url = "https://generativelanguage.googleapis.com/v1beta/models/" + currentModel + ":generateContent?key=" + apiKey;
+    lastModel = currentModel;
   for (var attempt = 0; attempt < retryDelays.length; attempt++) {
     if (retryDelays[attempt] > 0) Utilities.sleep(retryDelays[attempt]);
     try {
@@ -5589,12 +5600,15 @@ function proposeTournee(payload) {
         }
       }
       lastBody = res.getContentText();
-      if (lastCode !== 503 && lastCode !== 429 && lastCode !== 500) break;
+      if (lastCode !== 503 && lastCode !== 429 && lastCode !== 500) break outerLoop;
     } catch (err) {
       return { error: "Exception Gemini : " + err.message };
     }
   }
-  return { error: "Gemini HTTP " + lastCode, body: lastBody.slice(0, 300) };
+  // Si on est ici, les 5 tentatives sur ce modèle ont échoué en 503/429/500.
+  // On bascule sur le modèle suivant (ex: 2.5-flash → 2.0-flash).
+  }
+  return { error: "Gemini HTTP " + lastCode + " (model " + lastModel + ")", body: lastBody.slice(0, 300) };
 }
 
 // Garde-fou serveur : règles métier strictes appliquées à la sortie Gemini.
