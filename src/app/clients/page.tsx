@@ -106,6 +106,18 @@ export default function ClientsPage() {
       return false;
     }
     return true;
+  }).sort((a, b) => {
+    // Tri : date de livraison la plus proche en haut, puis clients sans
+    // date programmée, par ordre alpha en fallback.
+    const da = nextDeliveryByClient.get(a.id);
+    const db = nextDeliveryByClient.get(b.id);
+    if (da && db) {
+      const ta = new Date(da.date).getTime();
+      const tb = new Date(db.date).getTime();
+      if (ta !== tb) return ta - tb;
+    } else if (da) return -1;
+    else if (db) return 1;
+    return a.entreprise.localeCompare(b.entreprise);
   });
 
   const exportCSV = () => {
