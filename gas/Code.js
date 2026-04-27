@@ -125,6 +125,9 @@ function handleRequest(e) {
       case "getFinancesSummary":
         result = getFinancesSummary(e.parameter);
         break;
+      case "auditEffectifs":
+        result = auditEffectifs(e.parameter);
+        break;
       case "upsertMembre":
         result = upsertMembre(getBody());
         break;
@@ -1495,18 +1498,30 @@ function detectDocTypeByName(fileName) {
 }
 
 function buildClassifyPrompt() {
-  return "Tu classes un document administratif français d'une entreprise dans le cadre d'un dossier CEE vélos cargo. " +
-    "Réponds UNIQUEMENT par un seul label parmi : DEVIS, KBIS, ATTESTATION_URSSAF, DSN, BICYCLE, SIGNATURE, PARCELLE, AUTRE. " +
-    "Règles : " +
-    "- DEVIS = un devis commercial (émis ou signé). " +
-    "- KBIS = tout justificatif officiel d'immatriculation : extrait Kbis, RCS, K (EI), avis SIRENE, fiche INSEE, extrait D1, certificat d'immatriculation. " +
+  // Reponse en JSON strict pour pouvoir extraire un effectif quand le doc est
+  // une attestation URSSAF ou une DSN. L'effectif sert ensuite a comparer
+  // avec nbVelosCommandes du client (regle CEE : 1 velo max par salarie).
+  return "Tu classes un document administratif français d'une entreprise (dossier CEE vélos cargo). " +
+    "Réponds UNIQUEMENT en JSON strict (rien avant, rien après) avec ce schéma : " +
+    '{"label": "<LABEL>", "effectif": <N|null>}. ' +
+    "Le champ 'label' DOIT être l'un de : DEVIS, KBIS, ATTESTATION_URSSAF, DSN, BICYCLE, SIGNATURE, PARCELLE, AUTRE. " +
+    "Le champ 'effectif' DOIT être : " +
+    "  - un entier (nombre total de salariés / ETP) si label=ATTESTATION_URSSAF ou DSN et que le document mentionne un effectif clair ; " +
+    "  - null sinon. " +
+    "Règles d'extraction effectif (DSN/URSSAF) : " +
+    "  - prends le NOMBRE TOTAL de salariés actifs (CDI+CDD inclus, intermittents si listés). " +
+    "  - si tu vois 'effectif moyen', 'effectif au', 'salariés', 'ETP', prends ce nombre. " +
+    "  - ignore les nombres annexes (cotisations, montants en euros, dates). " +
+    "  - en cas de doute, mets null. " +
+    "Règles label : " +
+    "- DEVIS = devis commercial (émis ou signé). " +
+    "- KBIS = justificatif d'immatriculation (Kbis, RCS, K (EI), SIRENE, INSEE, D1, certificat). " +
     "- ATTESTATION_URSSAF = attestation de vigilance URSSAF ou paiement cotisations. " +
-    "- DSN = Déclaration Sociale Nominative (effectif salariés), liasse fiscale, registre du personnel. " +
-    "- BICYCLE = document d'inscription à la plateforme Bicycle ou certificat d'identification vélo. " +
+    "- DSN = Déclaration Sociale Nominative, liasse fiscale, registre du personnel. " +
+    "- BICYCLE = inscription Bicycle ou certificat d'identification vélo. " +
     "- SIGNATURE = contrat signé électroniquement. " +
-    "- PARCELLE = parcelle cadastrale ou document Géoportail du lieu de livraison. " +
-    "- AUTRE = tout le reste. " +
-    "Aucun autre texte dans ta réponse.";
+    "- PARCELLE = parcelle cadastrale ou document Géoportail. " +
+    "- AUTRE = tout le reste.";
 }
 
 function classifyWithGemini(file) {
@@ -1536,6 +1551,9 @@ function classifyWithGemini(file) {
   var base64 = Utilities.base64Encode(blob.getBytes());
   var prompt = buildClassifyPrompt();
 
+  // Force la sortie JSON pour pouvoir extraire {label, effectif} sans parsing
+  // textuel approximatif. responseMimeType="application/json" est supporte par
+  // gemini-2.5-flash et garantit du JSON valide en sortie.
   var payload = {
     contents: [{
       parts: [
@@ -1543,7 +1561,12 @@ function classifyWithGemini(file) {
         { inline_data: { mime_type: mimeType, data: base64 } }
       ]
     }],
-    generationConfig: { temperature: 0, maxOutputTokens: 20, thinkingConfig: { thinkingBudget: 0 } }
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 80,
+      responseMimeType: "application/json",
+      thinkingConfig: { thinkingBudget: 0 },
+    },
   };
 
   var url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=" + apiKey;
@@ -1565,21 +1588,37 @@ function classifyWithGemini(file) {
       if (lastCode === 200) {
         var data = JSON.parse(res.getContentText());
         var text = (((data.candidates || [])[0] || {}).content || {}).parts;
-        if (!text || !text[0]) return { label: null, reason: "labelOther", rawLabel: "" };
-        var label = String(text[0].text || "").trim().toUpperCase().replace(/[^A-Z_]/g, "");
-        if (DOC_TYPE_TO_FIELDS[label]) return { label: label, reason: "ok" };
-        return { label: null, reason: "labelOther", rawLabel: label };
+        if (!text || !text[0]) return { label: null, reason: "labelOther", rawLabel: "", effectif: null };
+        var raw = String(text[0].text || "").trim();
+        // Parse JSON {label, effectif}. Si Gemini repond en texte simple
+        // (vieux modele ou bug), on retombe sur l'ancien comportement.
+        var parsed = null;
+        try { parsed = JSON.parse(raw); } catch (eP) { parsed = null; }
+        if (parsed && parsed.label) {
+          var label = String(parsed.label || "").trim().toUpperCase().replace(/[^A-Z_]/g, "");
+          var effectif = null;
+          if (parsed.effectif != null && parsed.effectif !== "") {
+            var eN = Number(parsed.effectif);
+            if (isFinite(eN) && eN >= 0 && eN < 100000) effectif = Math.round(eN);
+          }
+          if (DOC_TYPE_TO_FIELDS[label]) return { label: label, reason: "ok", effectif: effectif };
+          return { label: null, reason: "labelOther", rawLabel: label, effectif: effectif };
+        }
+        // Fallback : ancienne reponse texte brut.
+        var labelLegacy = raw.toUpperCase().replace(/[^A-Z_]/g, "");
+        if (DOC_TYPE_TO_FIELDS[labelLegacy]) return { label: labelLegacy, reason: "ok", effectif: null };
+        return { label: null, reason: "labelOther", rawLabel: labelLegacy, effectif: null };
       }
       lastBody = res.getContentText();
       // Retry uniquement sur codes transitoires Google
       if (lastCode !== 503 && lastCode !== 429 && lastCode !== 500) break;
     } catch (err) {
       Logger.log("classifyWithGemini : exception sur " + file.getName() + " : " + err.message);
-      return { label: null, reason: "exception" };
+      return { label: null, reason: "exception", effectif: null };
     }
   }
   Logger.log("classifyWithGemini : HTTP " + lastCode + " (après retry) sur " + file.getName() + " : " + lastBody.slice(0, 200));
-  return { label: null, reason: "httpError", httpCode: lastCode };
+  return { label: null, reason: "httpError", httpCode: lastCode, effectif: null };
 }
 
 // A lancer depuis l'editeur Apps Script pour diagnostiquer pourquoi un fichier
@@ -2443,6 +2482,125 @@ function setClientVelosTarget(clientId, target) {
     reactivated: reactivated,
     cancelled: cancelled,
     created: created
+  };
+}
+
+// Croise les verifications (DSN / ATTESTATION_URSSAF / LIASSE) avec les fiches
+// clients pour detecter les incoherences entre effectif declare et nb de velos
+// commandes. Sert a auditer apres coup les dossiers ou Gemini a vu un effectif
+// different de ce qui a ete saisi a la creation client.
+//
+// Pourquoi : l'inbox script fait deja Math.max(actuel, effectif) automatiquement.
+// Du coup quand effectif < nbVelosCommandes (saisie commerciale optimiste), le
+// CRM ne corrige rien : la fiche garde le chiffre commercial alors que le
+// dossier CEE plafonne au nombre reel de salaries. Cet audit liste TOUS les
+// ecarts pour que l'admin tranche dossier par dossier.
+//
+// Renvoie : { incoherences: [{clientId, entreprise, nbVelosCommandes, effectifMax,
+//   effectifSource, ecart, verifIds, sample}], total }
+function auditEffectifs(params) {
+  var sh = SS.getSheetByName(VERIF_SHEET_NAME);
+  if (!sh) return { incoherences: [], total: 0, error: "Feuille VerificationsPending introuvable" };
+  var data = sh.getDataRange().getValues();
+  if (data.length < 2) return { incoherences: [], total: 0 };
+  var headers = data[0];
+  var iId = headers.indexOf("id");
+  var iCid = headers.indexOf("clientId");
+  var iEnt = headers.indexOf("entreprise");
+  var iDoc = headers.indexOf("docType");
+  var iEff = headers.indexOf("effectifDetected");
+  var iStat = headers.indexOf("status");
+  var iRecv = headers.indexOf("receivedAt");
+
+  // Type de docs qui portent un effectif fiable. ATTESTATION_URSSAF est moins
+  // fiable (souvent juste une mention "a jour" sans nombre), DSN/LIASSE sont
+  // les plus fiables.
+  var DOCS_AVEC_EFFECTIF = { "DSN": true, "LIASSE": true, "ATTESTATION_URSSAF": true, "URSSAF": true, "ATTESTATION": true };
+
+  // Pour chaque client, on retient l'effectif MAX detecte (le plus genereux,
+  // pour eviter de trop reduire si une vieille DSN a un chiffre obsolete) +
+  // la liste des verifIds qui l'ont confirme.
+  var byClient = {};
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var cid = String(row[iCid] || "");
+    if (!cid) continue;
+    var docType = String(row[iDoc] || "").toUpperCase();
+    if (!DOCS_AVEC_EFFECTIF[docType]) continue;
+    var effRaw = row[iEff];
+    if (effRaw === "" || effRaw == null) continue;
+    var eff = Number(effRaw);
+    if (!isFinite(eff) || eff < 0 || eff > 10000) continue;
+
+    if (!byClient[cid]) {
+      byClient[cid] = {
+        clientId: cid,
+        entreprise: String(row[iEnt] || ""),
+        effectifMax: eff,
+        effectifSource: docType,
+        verifIds: [String(row[iId] || "")],
+        nbDocs: 1,
+      };
+    } else {
+      byClient[cid].nbDocs++;
+      byClient[cid].verifIds.push(String(row[iId] || ""));
+      if (eff > byClient[cid].effectifMax) {
+        byClient[cid].effectifMax = eff;
+        byClient[cid].effectifSource = docType;
+      }
+    }
+  }
+
+  // Charge nbVelosCommandes des clients pour comparer.
+  var clientSheet = SS.getSheetByName("Clients");
+  if (!clientSheet) return { incoherences: [], total: 0, error: "Feuille Clients introuvable" };
+  var cData = clientSheet.getDataRange().getValues();
+  var cHeaders = cData[0];
+  var iCidC = cHeaders.indexOf("id");
+  var iEntC = cHeaders.indexOf("entreprise");
+  var iNbC = cHeaders.indexOf("nbVelosCommandes");
+  var clientByid = {};
+  for (var ci = 1; ci < cData.length; ci++) {
+    var ccid = String(cData[ci][iCidC] || "");
+    if (ccid) {
+      clientByid[ccid] = {
+        nbVelosCommandes: Number(cData[ci][iNbC] || 0),
+        entreprise: String(cData[ci][iEntC] || ""),
+      };
+    }
+  }
+
+  // Construit la liste des incoherences (effectif != nbVelosCommandes).
+  var incoherences = [];
+  Object.keys(byClient).forEach(function(cid) {
+    var b = byClient[cid];
+    var c = clientByid[cid];
+    if (!c) return; // verif orpheline (client supprime ?), on saute
+    var ecart = c.nbVelosCommandes - b.effectifMax;
+    if (ecart === 0) return; // tout est coherent
+    incoherences.push({
+      clientId: cid,
+      entreprise: c.entreprise || b.entreprise,
+      nbVelosCommandes: c.nbVelosCommandes,
+      effectifMax: b.effectifMax,
+      effectifSource: b.effectifSource,
+      ecart: ecart, // positif = trop de velos commandes ; negatif = pas assez
+      nbDocs: b.nbDocs,
+      verifIds: b.verifIds,
+      // Suggestion : 1 velo / salarie (regle CEE), donc target = effectifMax.
+      suggestedTarget: b.effectifMax,
+      sens: ecart > 0 ? "trop_velos" : "pas_assez_velos",
+    });
+  });
+
+  // Tri par ecart absolu desc (les plus gros decalages d'abord).
+  incoherences.sort(function(a, b) { return Math.abs(b.ecart) - Math.abs(a.ecart); });
+
+  return {
+    ok: true,
+    total: incoherences.length,
+    incoherences: incoherences,
+    nbClientsAvecEffectifDetecte: Object.keys(byClient).length,
   };
 }
 

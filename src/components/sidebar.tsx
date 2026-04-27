@@ -22,6 +22,7 @@ const NAV_BY_ROLE: Record<EquipeRole, NavItem[]> = {
     { href: "/equipe", label: "Équipe", icon: "👷" },
     { href: "/finances", label: "Finances", icon: "💶" },
     { href: "/verifications", label: "À vérifier", icon: "🔎", badge: true },
+    { href: "/audit-effectifs", label: "Audit effectifs", icon: "🧑‍💼" },
   ],
   admin: [
     { href: "/", label: "Tableau de bord", icon: "📊" },
@@ -30,6 +31,7 @@ const NAV_BY_ROLE: Record<EquipeRole, NavItem[]> = {
     { href: "/livraisons", label: "Livraisons", icon: "🚚" },
     { href: "/equipe", label: "Équipe", icon: "👷" },
     { href: "/verifications", label: "À vérifier", icon: "🔎", badge: true },
+    { href: "/audit-effectifs", label: "Audit effectifs", icon: "🧑‍💼" },
   ],
   preparateur: [
     { href: "/livraisons", label: "Livraisons", icon: "🚚" },
