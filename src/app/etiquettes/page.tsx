@@ -34,7 +34,15 @@ function EtiquettesPage() {
   if (!data) return <div className="p-6 text-sm text-gray-500">Chargement…</div>;
   if ("error" in data) return <div className="p-6 text-red-600">{data.error}</div>;
 
-  const clients = focusClientId ? data.clients.filter((c) => c.clientId === focusClientId) : data.clients;
+  // Numérotation par ordre de chargement camion (LIFO) : on inverse la liste
+  // des clients car le dernier livré est le premier chargé (au fond du
+  // camion). Ex tournée 1→9 livraisons : étiquette 1 = client 9 (Anadolu,
+  // chargé en premier), étiquette N = client 1 (Organisation Carrée, chargé
+  // en dernier, à l'avant du camion = premier livré).
+  // En vue focus client unique, l'ordre des clients n'a pas d'importance.
+  const clients = focusClientId
+    ? data.clients.filter((c) => c.clientId === focusClientId)
+    : [...data.clients].reverse();
   const items: { client: Client; velo: Velo; index: number; total: number }[] = [];
   let total = 0;
   clients.forEach((c) => { total += c.velos.length; });
