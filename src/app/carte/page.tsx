@@ -235,7 +235,7 @@ export default function CartePage() {
             </label>
             <div className="flex gap-1">
               {([
-                { key: "gros", label: "Gros", cap: "132 v." },
+                { key: "gros", label: "Gros", cap: "165 v." },
                 { key: "moyen", label: "Moyen", cap: "54 v." },
                 { key: "camionnette", label: "Camion.", cap: "20 v." },
                 { key: "retrait", label: "Retrait", cap: "client" },

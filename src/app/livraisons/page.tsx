@@ -925,13 +925,15 @@ function modePalette(mode: string | null) {
 }
 
 const MODE_LABELS: Record<string, string> = {
-  gros: "Gros camion (132)",
+  gros: "Gros camion (165)",
   moyen: "Moyen (54)",
   camionnette: "Camionnette (20)",
   retrait: "Retrait client",
 };
 
-const CAPACITES: Record<string, number> = { gros: 132, moyen: 54, camionnette: 20 };
+// Capacité Gros camion FB444MH (Iveco Eurocargo 19T) : caisse utile 850×248 cm,
+// optimum 5×3 = 15 palettes 160×80 cm, × 11 vélos/palette = 165 vélos.
+const CAPACITES: Record<string, number> = { gros: 165, moyen: 54, camionnette: 20 };
 const SEUIL_2EME_TOURNEE = 10;
 
 const MODE_SHORT_LABELS: Record<string, string> = {
