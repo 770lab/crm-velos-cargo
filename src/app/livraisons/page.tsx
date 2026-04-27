@@ -123,7 +123,21 @@ export default function LivraisonsPage() {
     return livraisons.filter((l) => livraisonMatchesUser(l, currentUser.id, currentUser.role));
   }, [livraisons, currentUser]);
 
-  const tournees = useMemo(() => groupByTournee(userLivraisons), [userLivraisons]);
+  const tournees = useMemo(() => {
+    const list = groupByTournee(userLivraisons);
+    // Numérotation globale chronologique : Tournée 1 = la plus ancienne, 2 =
+    // la suivante, etc. Si on ajoute / supprime une tournée, les numéros se
+    // décalent automatiquement pour rester contigus 1, 2, 3, ...
+    [...list]
+      .sort((a, b) => {
+        const da = a.datePrevue ? new Date(a.datePrevue).getTime() : Number.POSITIVE_INFINITY;
+        const db = b.datePrevue ? new Date(b.datePrevue).getTime() : Number.POSITIVE_INFINITY;
+        if (da !== db) return da - db;
+        return String(a.tourneeId || "").localeCompare(String(b.tourneeId || ""));
+      })
+      .forEach((t, i) => { t.numero = i + 1; });
+    return list;
+  }, [userLivraisons]);
 
   const loadByDate = useMemo(() => {
     const map = new Map<string, { velos: number; tournees: Set<string>; modes: Set<string> }>();
@@ -209,18 +223,7 @@ export default function LivraisonsPage() {
   // un monteur en vue Jour veut savoir combien de velos il a a monter aujourd'hui,
   // pas sur tout le mois.
   const windowedTournees = useMemo(() => {
-    if (view === "liste") {
-      // En vue liste on numérote sur l'ensemble du résultat (date asc).
-      [...filteredTournees]
-        .sort((a, b) => {
-          const da = a.datePrevue ? new Date(a.datePrevue).getTime() : Number.POSITIVE_INFINITY;
-          const db = b.datePrevue ? new Date(b.datePrevue).getTime() : Number.POSITIVE_INFINITY;
-          if (da !== db) return da - db;
-          return String(a.tourneeId || "").localeCompare(String(b.tourneeId || ""));
-        })
-        .forEach((t, i) => { t.numero = i + 1; });
-      return filteredTournees;
-    }
+    if (view === "liste") return filteredTournees;
     const start = new Date(refDate);
     start.setHours(0, 0, 0, 0);
     const end = new Date(start);
@@ -240,24 +243,11 @@ export default function LivraisonsPage() {
       end.setTime(start.getTime());
       end.setMonth(end.getMonth() + 1);
     }
-    const inWindow = filteredTournees.filter((t) => {
+    return filteredTournees.filter((t) => {
       if (!t.datePrevue) return false;
       const d = new Date(t.datePrevue);
       return d >= start && d < end;
     });
-    // Numérotation séquentielle scopée à la fenêtre visible : ordre
-    // chronologique (date puis tourneeId). Mer 29 = Tournée 1, Jeu 30 = 2,
-    // etc. Évite d'avoir plusieurs "Tournée 1" et donne un sens
-    // "qu'est-ce qui se passe cette semaine" au numéro.
-    [...inWindow]
-      .sort((a, b) => {
-        const da = new Date(a.datePrevue!).getTime();
-        const db = new Date(b.datePrevue!).getTime();
-        if (da !== db) return da - db;
-        return String(a.tourneeId || "").localeCompare(String(b.tourneeId || ""));
-      })
-      .forEach((t, i) => { t.numero = i + 1; });
-    return inWindow;
   }, [filteredTournees, view, refDate]);
 
   // Nb de velos a monter / livrer dans la fenetre, pour le compteur d'objectifs.
