@@ -223,7 +223,32 @@ function BlPage() {
           </span>
         </div>
         <button
-          onClick={() => window.print()}
+          onClick={async () => {
+            const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+            if (!isMobile) {
+              window.print();
+              return;
+            }
+            // iOS Safari : window.print() rate sur les BL multi-pages → PDF
+            // client via html2pdf.js, fichier téléchargé puis ouvert dans le
+            // viewer PDF natif (Imprimer / Partager / Airdrop).
+            const html2pdf = (await import("html2pdf.js")).default;
+            const pages = document.querySelectorAll(".dv-page");
+            if (!pages.length) return;
+            const wrapper = document.createElement("div");
+            pages.forEach((p) => wrapper.appendChild(p.cloneNode(true)));
+            const refLabel = clients[0] ? blRef(clients[0]) : tourneeId;
+            await html2pdf()
+              .from(wrapper)
+              .set({
+                filename: `BL-${refLabel}.pdf`,
+                margin: 0,
+                image: { type: "jpeg", quality: 0.95 },
+                html2canvas: { scale: 2, useCORS: true },
+                jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+              })
+              .save();
+          }}
           className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
         >
           🖨️ Imprimer
@@ -306,10 +331,6 @@ function BlPage() {
                           <tr style={{ borderTop: "1.5px solid #333", borderBottom: "1px solid #333" }}>
                             <td className="ttc">Total remis</td>
                             <td className="r ttc">{nbVelos}</td>
-                          </tr>
-                          <tr style={{ borderTop: "2px solid #333" }}>
-                            <td style={{ padding: "3px 0" }}><strong style={{ fontSize: "9pt" }}>Date</strong></td>
-                            <td className="r rap" style={{ padding: "3px 0" }}>{dateStr}</td>
                           </tr>
                         </tbody>
                       </table>
@@ -434,23 +455,6 @@ function BlPage() {
                       </div>
                     </div>
                   </div>
-
-                  {/* Rappel des FNUCI réceptionnés */}
-                  {nbVelos > 0 && (
-                    <div className="dv-fnuci-annexe">
-                      <div className="dv-fnuci-annexe-title">
-                        Numéros d&apos;immatriculation (FNUCI) réceptionnés — {nbVelos} vélo{nbVelos > 1 ? "s" : ""}
-                      </div>
-                      <div className="dv-fnuci-grid">
-                        {c.velos.map((v, i) => (
-                          <div key={v.veloId} className="row">
-                            <span className="num">{i + 1}.</span>
-                            <span className="dv-fnuci-badge">{v.fnuci || "à scanner"}</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
 
                   {/* TERMES ET CONDITIONS DE RÉCEPTION
                       Bloc présenté comme un tableau-section (entête vert,
