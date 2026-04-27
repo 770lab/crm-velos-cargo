@@ -64,6 +64,8 @@ function doGet(e) {
         return _respond(extractContactsFromSignatures(e.parameter || {}));
       case "reanalyzeByDocType":
         return _respond(reanalyzeByDocType(e.parameter || {}));
+      case "cancelReanalyze":
+        return _respond(cancelReanalyze(e.parameter || {}));
       default:
         return _respondError("Action GET inconnue : " + action);
     }
@@ -301,6 +303,64 @@ function reanalyzeByDocType(payload) {
     }
   }
 
+  return stats;
+}
+
+// Annule un batch de ré-analyse en cours : pour toutes les verifs taguées
+// "to-reanalyze [tag]" et encore en status=rejected, retire le label
+// crm-a-traiter du thread, remet le label crm-traite, et restaure
+// status=processed sur la verif. Évite que le trigger continue à mouliner
+// les PDFs et sature la bande passante GAS.
+function cancelReanalyze(payload) {
+  var tag = (payload && payload.tag) ? String(payload.tag) : "to-reanalyze";
+  var sh = _ensureVerifSheet();
+  var data = sh.getDataRange().getValues();
+  if (data.length < 2) return { reverted: 0 };
+
+  var headers = data[0];
+  var col = {
+    status: headers.indexOf("status"),
+    messageId: headers.indexOf("messageId"),
+    notes: headers.indexOf("notes")
+  };
+  if (col.messageId < 0 || col.status < 0 || col.notes < 0) {
+    return { error: "VerificationsPending: colonnes manquantes" };
+  }
+
+  var labelTo = _getOrCreateLabel(LABEL_TO_PROCESS);
+  var labelOk = _getOrCreateLabel(LABEL_PROCESSED);
+  var stats = { matched: 0, reverted: 0, threadsRestored: 0, errors: [] };
+  var seenThreads = {};
+
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var notes = String(row[col.notes] || "");
+    if (notes.indexOf(tag) < 0) continue;
+    var status = String(row[col.status] || "").toLowerCase();
+    if (status !== "rejected") continue;
+    stats.matched++;
+
+    sh.getRange(i + 1, col.status + 1).setValue("processed");
+    var newNotes = notes.replace(new RegExp("\\s*\\|?\\s*" + tag + "[^|]*", "g"), "").trim();
+    sh.getRange(i + 1, col.notes + 1).setValue(newNotes || "cancelled-reanalyze " + new Date().toISOString().slice(0, 10));
+    stats.reverted++;
+
+    var messageId = row[col.messageId];
+    if (!messageId) continue;
+    try {
+      var msg = GmailApp.getMessageById(String(messageId));
+      var thread = msg.getThread();
+      var threadId = thread.getId();
+      if (!seenThreads[threadId]) {
+        try { thread.removeLabel(labelTo); } catch (e) {}
+        thread.addLabel(labelOk);
+        seenThreads[threadId] = true;
+        stats.threadsRestored++;
+      }
+    } catch (err) {
+      stats.errors.push({ messageId: String(messageId), error: String(err) });
+    }
+  }
   return stats;
 }
 
