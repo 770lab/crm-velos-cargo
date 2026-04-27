@@ -4,6 +4,7 @@ import { Suspense, useEffect, useState, useCallback } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { gasGet, gasPost, gasUpload } from "@/lib/gas";
+import { useCurrentUser } from "@/lib/current-user";
 
 export default function ClientDetailWrapper() {
   return (
@@ -105,6 +106,7 @@ function ClientDetailPage() {
   const searchParams = useSearchParams();
   const id = searchParams.get("id") || "";
   const router = useRouter();
+  const currentUser = useCurrentUser();
   const [client, setClient] = useState<ClientDetail | null>(null);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState<string | null>(null);
@@ -144,6 +146,24 @@ function ClientDetailPage() {
 
   if (!client) {
     return <div className="text-gray-400 p-8">Chargement...</div>;
+  }
+
+  // Garde RBAC apporteur : un apporteur ne doit pas accéder à un client qui
+  // n'est pas le sien (même via URL directe). Comparaison case-insensitive
+  // sur le nom (cohérent avec le filtre de la liste /clients).
+  if (currentUser?.role === "apporteur") {
+    const me = (currentUser.nom || "").trim().toLowerCase();
+    const owner = (client.apporteur || "").trim().toLowerCase();
+    if (!me || me !== owner) {
+      return (
+        <div className="p-8 text-sm">
+          <div className="bg-amber-50 border border-amber-200 text-amber-900 rounded p-4">
+            ⛔ Ce dossier ne fait pas partie de tes clients.
+          </div>
+          <Link href="/clients" className="inline-block mt-3 text-blue-600 hover:underline">← Mes clients</Link>
+        </div>
+      );
+    }
   }
 
   const velosLivres = client.velos.filter((v) => v.photoQrPrise).length;

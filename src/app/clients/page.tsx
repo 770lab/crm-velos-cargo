@@ -4,6 +4,7 @@ import { useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { gasGet, gasPost, gasUpload } from "@/lib/gas";
 import { useData, type ClientRow } from "@/lib/data-context";
+import { useCurrentUser } from "@/lib/current-user";
 import MultiDepSelect from "@/components/multi-dep-select";
 import AddClientModal from "@/components/add-client-modal";
 
@@ -13,6 +14,7 @@ const ALL_DOC_FIELDS: DocType[] = [
 
 export default function ClientsPage() {
   const { clients: allClients, livraisons, loading, refresh } = useData();
+  const currentUser = useCurrentUser();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState("all");
   const [mailClient, setMailClient] = useState<ClientRow | null>(null);
@@ -63,6 +65,15 @@ export default function ClientsPage() {
 
   const clients = useMemo(() => {
     let result = allClients;
+    // Filtre RBAC apporteur : un apporteur ne voit QUE ses propres clients
+    // (jointure case-insensitive sur le nom — le champ `apporteur` du client
+    // est saisi à la main, donc on tolère les variations de casse).
+    if (currentUser?.role === "apporteur") {
+      const me = (currentUser.nom || "").trim().toLowerCase();
+      result = me
+        ? result.filter((c) => (c.apporteur || "").trim().toLowerCase() === me)
+        : [];
+    }
     if (search) {
       const q = search.toLowerCase();
       result = result.filter(

@@ -56,10 +56,21 @@ interface Tournee {
 }
 
 // Une livraison appartient au user si celui-ci y est affecté selon son rôle.
-// Admin voit tout, apporteur ne voit aucune livraison (commercial pur).
-function livraisonMatchesUser(l: LivraisonRow, userId: string, role: EquipeRole): boolean {
+// Admin/superadmin voit tout. Apporteur voit les livraisons des clients qu'il
+// a apportés (jointure via clientApporteur === userName).
+function livraisonMatchesUser(
+  l: LivraisonRow,
+  userId: string,
+  role: EquipeRole,
+  userName?: string,
+  clientApporteur?: string | null,
+): boolean {
   if (role === "admin" || role === "superadmin") return true;
-  if (role === "apporteur") return false;
+  if (role === "apporteur") {
+    // Filtre commercial : un apporteur ne voit QUE ses propres dossiers
+    // (commissions sensibles cf. memory crm_velos_cargo_apporteurs).
+    return !!(userName && clientApporteur && clientApporteur === userName);
+  }
   switch (role) {
     case "chauffeur":
       return l.chauffeurId === userId;
@@ -122,10 +133,20 @@ export default function LivraisonsPage() {
   // Filtrage des livraisons par utilisateur : chacun ne voit que ses dossiers.
   // Pendant l'hydratation (currentUser undefined), on n'affiche rien pour éviter
   // un flash où d'autres dossiers seraient brièvement visibles.
+  // Pour le rôle apporteur, on a besoin de l'apporteur du client (pas dans
+  // LivraisonRow) → jointure via la carte clients.
+  const apporteurByClientId = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const c of carte) m.set(c.id, c.apporteur);
+    return m;
+  }, [carte]);
   const userLivraisons = useMemo(() => {
     if (!currentUser) return [] as LivraisonRow[];
-    return livraisons.filter((l) => livraisonMatchesUser(l, currentUser.id, currentUser.role));
-  }, [livraisons, currentUser]);
+    return livraisons.filter((l) => {
+      const apporteur = l.clientId ? apporteurByClientId.get(l.clientId) ?? null : null;
+      return livraisonMatchesUser(l, currentUser.id, currentUser.role, currentUser.nom, apporteur);
+    });
+  }, [livraisons, currentUser, apporteurByClientId]);
 
   const tournees = useMemo(() => {
     const list = groupByTournee(userLivraisons);

@@ -92,7 +92,35 @@ function EtiquettesPage() {
           <span className="font-bold">🏷️ Étiquettes</span>
           <span className="text-gray-500 ml-2">Tournée {tourneeId} · {total} étiquettes · {pages.length} planche{pages.length > 1 ? "s" : ""} A4 (6/feuille)</span>
         </div>
-        <button onClick={() => window.print()} className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700">
+        <button
+          onClick={async () => {
+            const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+            if (!isMobile) {
+              window.print();
+              return;
+            }
+            // Mobile (iOS Safari notamment) : window.print() est souvent no-op
+            // sur les pages d'impression complexes. On génère le PDF côté
+            // client via html2pdf.js → fichier téléchargé → s'ouvre dans le
+            // viewer PDF natif iOS qui propose Imprimer / Partager / Airdrop.
+            const html2pdf = (await import("html2pdf.js")).default;
+            const sheets = document.querySelectorAll(".sheet");
+            if (!sheets.length) return;
+            const wrapper = document.createElement("div");
+            sheets.forEach((s) => wrapper.appendChild(s.cloneNode(true)));
+            await html2pdf()
+              .from(wrapper)
+              .set({
+                filename: `etiquettes-${tourneeId}.pdf`,
+                margin: 0,
+                image: { type: "jpeg", quality: 0.95 },
+                html2canvas: { scale: 2, useCORS: true },
+                jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+              })
+              .save();
+          }}
+          className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+        >
           🖨️ Imprimer
         </button>
       </div>
