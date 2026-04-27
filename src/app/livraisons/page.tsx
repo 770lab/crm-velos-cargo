@@ -1059,18 +1059,6 @@ function TourneeModal({
     return () => { alive = false; };
   }, [tournee.tourneeId]);
 
-  useEffect(() => {
-    if (!tournee.tourneeId) return;
-    const init = tournee.nbMonteurs > 0
-      ? tournee.nbMonteurs
-      : (monteurIdsAssignes.length > 0 ? monteurIdsAssignes.length : MONTEURS_PAR_EQUIPE);
-    if (monteurs === init) return;
-    const t = setTimeout(() => {
-      gasPost("assignTournee", { tourneeId: tournee.tourneeId, nbMonteurs: monteurs })
-        .then(() => onChanged());
-    }, 800);
-    return () => clearTimeout(t);
-  }, [monteurs, tournee.tourneeId, tournee.nbMonteurs, onChanged]);
 
   const alreadyInTour = useMemo(
     () => new Set(tournee.livraisons.map((l) => l.clientId).filter((x): x is string => !!x)),
@@ -1452,20 +1440,6 @@ function TourneeModal({
             </div>
           </div>
 
-          <div className="flex items-center gap-3 pt-2 border-t border-blue-200">
-            <label className="text-sm text-blue-800 whitespace-nowrap">Mon effectif :</label>
-            <input
-              type="number"
-              min={1}
-              max={20}
-              value={monteurs}
-              onChange={(e) => setMonteurs(Math.max(1, parseInt(e.target.value) || 1))}
-              className="w-16 px-2 py-1 text-sm border border-blue-300 rounded-lg text-center bg-white"
-            />
-            <span className="text-sm text-blue-800">monteur{monteurs > 1 ? "s" : ""}</span>
-            <span className="text-xs text-blue-500 ml-auto">Recommandé : {monteursNecessaires}</span>
-          </div>
-
           <div className={`text-sm font-medium rounded-lg px-3 py-2 ${faisableEnUnJour ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
             {faisableEnUnJour ? (
               <>Faisable en 1 jour — {fmtDuree(totalJourneeEffectif)} avec {monteurs} monteur{monteurs > 1 ? "s" : ""} · Capacité : {velosAvecEffectif} vélos</>
@@ -1565,6 +1539,7 @@ function TourneeModal({
             initialMonteurIds={tournee.livraisons[0]?.monteurIds || []}
             initialPreparateurIds={tournee.livraisons[0]?.preparateurIds || []}
             onSaved={onChanged}
+            onMonteurCountChange={setMonteurs}
           />
         )}
 
@@ -2105,6 +2080,7 @@ function EquipeAssignBlock({
   initialMonteurIds,
   initialPreparateurIds,
   onSaved,
+  onMonteurCountChange,
 }: {
   tourneeId: string;
   isRetrait: boolean;
@@ -2113,6 +2089,7 @@ function EquipeAssignBlock({
   initialMonteurIds: string[];
   initialPreparateurIds: string[];
   onSaved: () => void;
+  onMonteurCountChange?: (count: number) => void;
 }) {
   const { equipe } = useData();
   const [chauffeurId, setChauffeurId] = useState<string>(initialChauffeurId || "");
@@ -2162,7 +2139,11 @@ function EquipeAssignBlock({
   };
 
   const toggleMonteur = (id: string) => {
-    setMonteurIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+    setMonteurIds((prev) => {
+      const next = prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id];
+      onMonteurCountChange?.(Math.max(1, next.length));
+      return next;
+    });
   };
 
   const togglePreparateur = (id: string) => {
