@@ -256,6 +256,7 @@ export default function ClientsPage() {
                 />
               </th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Entreprise</th>
+              <th className="text-left px-4 py-3 font-medium text-gray-600">Apporteur</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Ville</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Dép.</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Vélos</th>
@@ -297,6 +298,13 @@ export default function ClientsPage() {
                   </Link>
                   {c.contact && (
                     <div className="text-xs text-gray-400">{c.contact}</div>
+                  )}
+                </td>
+                <td className="px-4 py-3 text-gray-600 text-xs">
+                  {c.apporteur ? (
+                    <span className="text-orange-700 font-medium">{c.apporteur}</span>
+                  ) : (
+                    <span className="text-gray-300">—</span>
                   )}
                 </td>
                 <td className="px-4 py-3 text-gray-600">{c.ville || "-"}</td>
@@ -355,7 +363,7 @@ export default function ClientsPage() {
             ))}
             {filteredClients.length === 0 && (
               <tr>
-                <td colSpan={14} className="px-4 py-12 text-center text-gray-400">
+                <td colSpan={15} className="px-4 py-12 text-center text-gray-400">
                   {clients.length === 0
                     ? (loading ? "Chargement..." : "Aucun client. Importez votre tableau ou ajoutez un client.")
                     : "Aucun client trouvé pour ces filtres."}
