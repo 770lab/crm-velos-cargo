@@ -1772,8 +1772,6 @@ function TourneeModal({
                             <a
                               key={s.key}
                               href={s.href!}
-                              target="_blank"
-                              rel="noopener noreferrer"
                               onClick={(e) => e.stopPropagation()}
                               className={`text-sm sm:text-[10px] px-3 py-1.5 sm:px-2 sm:py-0.5 rounded-full border ${cls} hover:opacity-80 cursor-pointer font-medium`}
                             >{content}</a>
