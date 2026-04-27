@@ -47,14 +47,25 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Vélos : update ouvert au staff terrain pour le marquage d'étapes
+    // (préparation, chargement, livraison, montage) + photos montage.
+    // Pas de rule create/delete au staff : ces vélos sont créés à l'avance
+    // par admin (à partir des commandes), jamais par les opérationnels sur
+    // le terrain. Si on durcit plus tard, valider que seuls les champs
+    // attendus changent (datePreparation, dateChargement, etc.).
     match /velos/{id} {
       allow read: if isStaff();
-      allow write: if isAdmin();
+      allow update: if isStaff();
+      allow create, delete: if isAdmin();
     }
 
+    // Livraisons : update ouvert au staff terrain pour passer le statut à
+    // "livree", poser dateEffective et l'urlBlSigne. Création / suppression
+    // reste admin (planning J-N).
     match /livraisons/{id} {
       allow read: if isStaff();
-      allow write: if isAdmin();
+      allow update: if isStaff();
+      allow create, delete: if isAdmin();
     }
 
     match /tournees/{id} {
