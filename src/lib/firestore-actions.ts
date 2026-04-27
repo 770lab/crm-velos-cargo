@@ -669,30 +669,111 @@ export async function runFirestoreAction(
     }
 
     case "uploadMontagePhoto": {
-      const livraisonId = getString(body, "livraisonId") || "no-livraison";
-      const veloId = getString(body, "veloId");
-      const stage = getString(body, "stage") || "monte";
+      // Miroir fidèle de la fonction GAS uploadMontagePhoto : résout le vélo
+      // par FNUCI, écrit la photo dans le bon slot (urlPhotoMontageEtiquette /
+      // urlPhotoMontageQrVelo / photoMontageUrl), et ne pose dateMontage
+      // QUE quand les 3 slots sont remplis (preuve complète du montage).
+      const fnuci = getRequired(body, "fnuci").toUpperCase();
+      const slot = getRequired(body, "slot");
       const photoData = getRequired(body, "photoData");
-      const fileName = `${veloId || "global"}-${stage}-${Date.now()}.jpg`;
+      const monteurId = getString(body, "monteurId");
+
+      if (slot !== "etiquette" && slot !== "qrvelo" && slot !== "monte") {
+        return { error: "slot invalide (attendu : etiquette, qrvelo, monte)" };
+      }
+
+      // 1. Résolution FNUCI → vélo
+      const vSnap = await getDocs(
+        query(collection(db, "velos"), where("fnuci", "==", fnuci)),
+      );
+      const matches = vSnap.docs.filter((d) => !(d.data() as { annule?: boolean }).annule);
+      if (matches.length === 0) {
+        return { error: "FNUCI inconnu — passe d'abord par la préparation", fnuci };
+      }
+      if (matches.length > 1) {
+        return {
+          error: `DOUBLON FNUCI : ce code est présent sur ${matches.length} vélos en base. Corrige la saisie avant d'uploader la photo.`,
+          fnuci,
+          doublons: matches.map((d) => ({
+            veloId: d.id,
+            clientId: (d.data() as { clientId?: string }).clientId || "",
+          })),
+        };
+      }
+      const veloDoc = matches[0];
+      const velo = veloDoc.data() as {
+        clientId?: string;
+        urlPhotoMontageEtiquette?: string;
+        urlPhotoMontageQrVelo?: string;
+        photoMontageUrl?: string;
+        dateMontage?: { toDate?: () => Date } | string;
+      };
+      const veloId = veloDoc.id;
+      const clientId = velo.clientId || "no-client";
+
+      // 2. Upload Storage
+      const fileName = `${fnuci}_${slot}_${Date.now()}.jpg`;
       const url = await uploadDataUrl(
-        `montage/${livraisonId}/${fileName}`,
+        `montage/${clientId}/${fileName}`,
         photoData,
         "image/jpeg",
       );
-      if (veloId) {
-        const stageFieldMap: Record<string, string> = {
-          etiquette: "photos.montageEtiquette",
-          qr: "photos.montageQrVelo",
-          monte: "photos.montageGenerale",
-        };
-        const field = stageFieldMap[stage] || "photos.montageGenerale";
-        await updateDoc(doc(db, "velos", veloId), {
-          [field]: url,
-          dateMontage: ts(),
-          updatedAt: ts(),
-        });
+
+      // 3. Champ destination en miroir GAS (champs plats lus par le composant)
+      const slotField =
+        slot === "etiquette"
+          ? "urlPhotoMontageEtiquette"
+          : slot === "qrvelo"
+            ? "urlPhotoMontageQrVelo"
+            : "photoMontageUrl";
+
+      const updates: Body = {
+        [slotField]: url,
+        updatedAt: ts(),
+      };
+
+      // 4. Les 3 slots remplis après cet upload ?
+      const hasEtiquette = slot === "etiquette" || !!velo.urlPhotoMontageEtiquette;
+      const hasQrVelo = slot === "qrvelo" || !!velo.urlPhotoMontageQrVelo;
+      const hasMonte = slot === "monte" || !!velo.photoMontageUrl;
+      const allThree = hasEtiquette && hasQrVelo && hasMonte;
+      const alreadyMonte = !!velo.dateMontage;
+      let dateMontageRet: string | null = null;
+      if (allThree && !alreadyMonte) {
+        updates.dateMontage = ts();
+        if (monteurId) updates.monteParId = monteurId;
+        dateMontageRet = new Date().toISOString();
+      } else if (alreadyMonte) {
+        const t = velo.dateMontage as { toDate?: () => Date } | string;
+        dateMontageRet =
+          typeof t === "string"
+            ? t
+            : t?.toDate?.()?.toISOString() || null;
       }
-      return { ok: true, url };
+
+      await updateDoc(veloDoc.ref, updates);
+
+      // 5. Nom du client pour message UX
+      let clientName: string | null = null;
+      try {
+        const c = await getDoc(doc(db, "clients", clientId));
+        if (c.exists()) {
+          clientName = (c.data() as { entreprise?: string }).entreprise || null;
+        }
+      } catch {}
+
+      return {
+        ok: true,
+        veloId,
+        fnuci,
+        clientId,
+        clientName,
+        slot,
+        photoUrl: url,
+        photos: { etiquette: hasEtiquette, qrvelo: hasQrVelo, monte: hasMonte },
+        complete: allThree,
+        dateMontage: dateMontageRet,
+      };
     }
 
     case "uploadVeloPhoto": {
@@ -867,6 +948,72 @@ export async function runFirestoreGet(
         },
       }));
       return { tourneeId, datePrevue, totals, clients };
+    }
+    case "getClientPreparation": {
+      // Miroir GAS getClientPreparation : utilisé par /montage pour afficher
+      // les vélos d'un client avec leur état (3 slots photo + dateMontage).
+      // Source de vérité = collection `velos` Firestore (où markVeloPrepare/
+      // Charge/LivreScan + uploadMontagePhoto écrivent).
+      const clientId = params.clientId;
+      if (!clientId) return { error: "clientId requis" };
+      const cSnap = await getDoc(doc(db, "clients", clientId));
+      if (!cSnap.exists()) return { error: "Client introuvable" };
+      const c = cSnap.data() as { entreprise?: string; adresse?: string; ville?: string };
+      const vSnap = await getDocs(
+        query(collection(db, "velos"), where("clientId", "==", clientId)),
+      );
+      const isoOrNull = (x: unknown): string | null => {
+        if (!x) return null;
+        if (x instanceof Date) return x.toISOString();
+        const t = x as { toDate?: () => Date };
+        if (t?.toDate) return t.toDate().toISOString();
+        const s = String(x).trim();
+        return s || null;
+      };
+      const asUrl = (x: unknown): string | null => {
+        const s = String(x || "").trim();
+        return s || null;
+      };
+      type VeloDoc = {
+        fnuci?: string;
+        annule?: boolean;
+        datePreparation?: unknown;
+        dateChargement?: unknown;
+        dateLivraisonScan?: unknown;
+        dateMontage?: unknown;
+        urlPhotoMontageEtiquette?: string;
+        urlPhotoMontageQrVelo?: string;
+        photoMontageUrl?: string;
+      };
+      const velos = vSnap.docs
+        .filter((d) => !(d.data() as VeloDoc).annule)
+        .map((d) => {
+          const v = d.data() as VeloDoc;
+          return {
+            veloId: d.id,
+            fnuci: (v.fnuci || "").trim() || null,
+            datePreparation: isoOrNull(v.datePreparation),
+            dateChargement: isoOrNull(v.dateChargement),
+            dateLivraisonScan: isoOrNull(v.dateLivraisonScan),
+            dateMontage: isoOrNull(v.dateMontage),
+            urlPhotoMontageEtiquette: asUrl(v.urlPhotoMontageEtiquette),
+            urlPhotoMontageQrVelo: asUrl(v.urlPhotoMontageQrVelo),
+            photoMontageUrl: asUrl(v.photoMontageUrl),
+          };
+        });
+      const avecFnuci = velos.filter((v) => !!v.fnuci);
+      return {
+        ok: true,
+        clientId,
+        entreprise: c.entreprise || "",
+        adresse: c.adresse || "",
+        ville: c.ville || "",
+        nbVelosTotal: velos.length,
+        nbVelosAvecFnuci: avecFnuci.length,
+        nbVelosSansFnuci: velos.length - avecFnuci.length,
+        fnuciAttendus: avecFnuci.map((v) => v.fnuci),
+        velos,
+      };
     }
     default:
       return null; // signal "fallback GAS"
