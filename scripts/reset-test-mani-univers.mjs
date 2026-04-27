@@ -13,10 +13,16 @@ const APPLY = process.argv.includes("--apply");
 const CLIENT_ID = "cmoa7mb4w03z4b2g2x0sdxjy8";
 const FNUCIS = ["BC6AHEK88E"];
 
-const sa = JSON.parse(
-  readFileSync(join(__dirname, "migration-data", "service-account.json"), "utf8"),
-);
-admin.initializeApp({ credential: admin.credential.cert(sa) });
+let cred;
+try {
+  const sa = JSON.parse(
+    readFileSync(join(__dirname, "migration-data", "service-account.json"), "utf8"),
+  );
+  cred = admin.credential.cert(sa);
+} catch {
+  cred = admin.credential.applicationDefault();
+}
+admin.initializeApp({ credential: cred, projectId: "velos-cargo" });
 const db = admin.firestore();
 
 console.log(`Mode: ${APPLY ? "APPLY ✍️" : "DRY-RUN 👀"}\n`);
@@ -44,9 +50,10 @@ if (APPLY) {
       dateChargement: null,
       dateLivraisonScan: null,
       dateMontage: null,
+      urlPhotoMontageEtiquette: null,
+      urlPhotoMontageQrVelo: null,
       photoMontageUrl: null,
-      photoEtiquetteUrl: null,
-      photoBicyCodeUrl: null,
+      monteParId: null,
       updatedAt: admin.firestore.FieldValue.serverTimestamp(),
     });
   }
