@@ -1,7 +1,8 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { gasUpload } from "@/lib/gas";
+import { gasPost, gasUpload } from "@/lib/gas";
 
+import { BASE_PATH } from "@/lib/base-path";
 // Capture photo iOS → upload GAS → Gemini Vision extrait les FNUCI → marquage
 // d'étape pour chaque code reconnu. Solution de remplacement au scan QR direct
 // (Strich/zbar/jsQR) qui n'arrive pas à lire les BicyCode plastifiés sur iOS
@@ -34,6 +35,39 @@ type ExtractResp =
 // bouton "↻ Réessayer" et l'utilisateur peut retenter manuellement.
 const TIMEOUT_MS = 30000;
 const RETRY_DELAY_MS = 1000;
+
+// Pour chaque résultat Gemini "ok" : écrit dans Firestore l'équivalent de ce
+// que GAS a fait dans son Sheet, pour que le reste de l'app (qui lit Firestore)
+// voie les vélos affectés et marqués prep/charg/livr. SÉQUENTIEL pour éviter
+// les races sur assignFnuciToClient (qui prend "le 1er slot vide").
+async function mirrorGeminiResultsToFirestore(
+  responses: ExtractResp[],
+  etape: GeminiEtape,
+  clientId: string | null,
+  tourneeId: string,
+  userId: string | null,
+): Promise<void> {
+  for (const resp of responses) {
+    if (!("ok" in resp) || !resp.ok || !resp.results) continue;
+    for (const r of resp.results) {
+      const result = r.result as { ok?: true } | { error: string } | null;
+      if (!(result && "ok" in result && result.ok)) continue;
+      try {
+        if (etape === "preparation") {
+          if (clientId) {
+            await gasPost("assignFnuciToClient", { fnuci: r.fnuci, clientId });
+          }
+        } else if (etape === "chargement") {
+          await gasPost("markVeloCharge", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
+        } else if (etape === "livraisonScan") {
+          await gasPost("markVeloLivreScan", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
+        }
+      } catch {
+        // Mirror best-effort : si Firestore tombe, GAS a déjà la donnée.
+      }
+    }
+  }
+}
 
 async function callExtractWithRetry(
   body: Record<string, unknown>,
@@ -276,6 +310,7 @@ export default function PhotoGeminiCapture({
       prev.map((i) => (pendingIds.includes(i.id) ? { ...i, status: "processing" } : i)),
     );
 
+    const collectedResps: ExtractResp[] = [];
     await Promise.all(
       pendingIds.map(async (id) => {
         const item = items.find((it) => it.id === id);
@@ -289,6 +324,7 @@ export default function PhotoGeminiCapture({
             etape,
             forceClientId: forceClientId || undefined,
           });
+          collectedResps.push(resp);
           setItems((prev) =>
             prev.map((it) => (it.id === id ? { ...it, status: "done", resp } : it)),
           );
@@ -303,6 +339,13 @@ export default function PhotoGeminiCapture({
         }
       }),
     );
+
+    // Mirror Firestore SÉQUENTIEL : Gemini Vision écrit dans le Sheet GAS, mais
+    // tant que getTourneeProgression lit Firestore on doit aussi y écrire pour
+    // que les compteurs de la page se mettent à jour. assignFnuciToClient pose
+    // un FNUCI sur le 1er slot vide du client → race condition si parallèle,
+    // d'où l'appel séquentiel.
+    await mirrorGeminiResultsToFirestore(collectedResps, etape, forceClientId, tourneeId, userId);
 
     setIdentifying(false);
     if (onAfter) onAfter();
@@ -343,6 +386,7 @@ export default function PhotoGeminiCapture({
       setItems((prev) =>
         prev.map((it) => (it.id === item.id ? { ...it, status: "done", resp } : it)),
       );
+      await mirrorGeminiResultsToFirestore([resp], etape, forceClientId, tourneeId, userId);
     } catch (e) {
       setItems((prev) =>
         prev.map((it) =>
@@ -377,7 +421,7 @@ export default function PhotoGeminiCapture({
             </div>
           </div>
           <a
-            href="/crm-velos-cargo/livraisons"
+            href={`${BASE_PATH}/livraisons`}
             className="text-[11px] text-emerald-700 underline whitespace-nowrap"
           >
             ← changer

@@ -8,6 +8,7 @@ import DateLoadPicker, { type DayLoad } from "@/components/date-load-picker";
 import AddClientModal from "@/components/add-client-modal";
 import DayPlannerModal from "@/components/day-planner-modal";
 
+import { BASE_PATH } from "@/lib/base-path";
 // Étapes accessibles par rôle.
 //   - Préparateur (ex: AXDIS) : prépare au dépôt + aide au chargement du camion.
 //   - Chauffeur (ex: Armel)   : charge le camion, livre, et peut donner un coup
@@ -1724,10 +1725,10 @@ function TourneeModal({
                       monte: nbMontIci,
                     };
                     const stages: { key: "prepare" | "charge" | "livre" | "monte"; label: string; emoji: string; href: string | null }[] = [
-                      { key: "prepare", label: "Prép.", emoji: "📦", href: `/crm-velos-cargo/preparation?tourneeId=${tid}${cid}` },
-                      { key: "charge", label: "Charg.", emoji: "🚚", href: `/crm-velos-cargo/chargement?tourneeId=${tid}${cid}` },
-                      { key: "livre", label: "Livr.", emoji: "📍", href: `/crm-velos-cargo/livraison?tourneeId=${tid}${cid}` },
-                      { key: "monte", label: "Mont.", emoji: "🔧", href: `/crm-velos-cargo/montage?tourneeId=${tid}${cid}` },
+                      { key: "prepare", label: "Prép.", emoji: "📦", href: `${BASE_PATH}/preparation?tourneeId=${tid}${cid}` },
+                      { key: "charge", label: "Charg.", emoji: "🚚", href: `${BASE_PATH}/chargement?tourneeId=${tid}${cid}` },
+                      { key: "livre", label: "Livr.", emoji: "📍", href: `${BASE_PATH}/livraison?tourneeId=${tid}${cid}` },
+                      { key: "monte", label: "Mont.", emoji: "🔧", href: `${BASE_PATH}/montage?tourneeId=${tid}${cid}` },
                     ];
                     return (
                       <div className="flex flex-wrap gap-1 mt-1.5">

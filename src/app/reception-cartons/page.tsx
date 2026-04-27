@@ -4,6 +4,7 @@ import dynamic from "next/dynamic";
 import { gasGet, gasPost } from "@/lib/gas";
 import { useData, type ClientPoint } from "@/lib/data-context";
 
+import { BASE_PATH } from "@/lib/base-path";
 const QrScanner = dynamic(() => import("@/components/qr-scanner"), { ssr: false });
 
 type LookupResp =
@@ -89,7 +90,7 @@ export default function ReceptionCartonsPage() {
       <div className="max-w-md mx-auto">
         <div className="flex items-center justify-between mb-4">
           <h1 className="text-xl font-bold">📦 Réception cartons</h1>
-          <a href="/crm-velos-cargo/" className="text-sm text-gray-500 hover:text-gray-700">← Accueil</a>
+          <a href={`${BASE_PATH}/`} className="text-sm text-gray-500 hover:text-gray-700">← Accueil</a>
         </div>
 
         {step === "scan" && (

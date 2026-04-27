@@ -175,7 +175,7 @@ interface DataState {
   refresh: (key?: "stats" | "clients" | "carte" | "livraisons" | "equipe" | "flotte" | "bonsEnlevement") => Promise<void>;
 }
 
-const DataContext = createContext<DataState>({
+export const DataContext = createContext<DataState>({
   stats: null,
   clients: [],
   carte: [],
@@ -191,7 +191,7 @@ export function useData() {
   return useContext(DataContext);
 }
 
-export { type Stats, type ClientRow, type ClientPoint, type LivraisonRow, type EquipeMember, type EquipeRole, type Camion, type CamionType, type BonEnlevement };
+export type { Stats, ClientRow, ClientPoint, LivraisonRow, EquipeMember, EquipeRole, Camion, CamionType, BonEnlevement, DataState };
 
 export function DataProvider({ children }: { children: ReactNode }) {
   const [stats, setStats] = useState<Stats | null>(null);

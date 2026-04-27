@@ -3,6 +3,9 @@
 import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { gasGet } from "@/lib/gas";
+import { useData } from "@/lib/data-context";
+
+const USE_FIREBASE = process.env.NEXT_PUBLIC_USE_FIREBASE === "1";
 
 // Périodes proposées dans le toolbar du dashboard. "tout" = pas de fenêtre,
 // stats globales du portefeuille (l'état historique). Les autres options
@@ -78,26 +81,36 @@ export default function Dashboard() {
   const [customFrom, setCustomFrom] = useState<string>(isoDay(new Date()));
   const [customTo, setCustomTo] = useState<string>(isoDay(new Date()));
   const [showCustom, setShowCustom] = useState(false);
-  const [stats, setStats] = useState<Stats | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [statsGas, setStatsGas] = useState<Stats | null>(null);
+  const [loadingGas, setLoadingGas] = useState(true);
 
   const window = useMemo(
     () => computeWindow(period, customFrom, customTo),
     [period, customFrom, customTo],
   );
 
+  // Mode Firebase : on utilise les stats calculées en temps réel par le data
+  // context. Le filtrage par période n'est pas (encore) supporté côté Firestore,
+  // donc tout est affiché en global tant qu'on n'a pas migré l'agrégation.
+  const dataCtx = useData();
+  const statsFirebase = dataCtx.stats;
+
   useEffect(() => {
+    if (USE_FIREBASE) {
+      setLoadingGas(false);
+      return;
+    }
     let cancelled = false;
     const load = async () => {
-      setLoading(true);
+      setLoadingGas(true);
       try {
         const params: Record<string, string> = window
           ? { from: window.from, to: window.to }
           : {};
         const r = (await gasGet("getStats", params)) as Stats;
-        if (!cancelled) setStats(r);
+        if (!cancelled) setStatsGas(r);
       } finally {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setLoadingGas(false);
       }
     };
     load();
@@ -105,6 +118,11 @@ export default function Dashboard() {
       cancelled = true;
     };
   }, [window]);
+
+  const stats: Stats | null = USE_FIREBASE
+    ? statsFirebase as Stats | null
+    : statsGas;
+  const loading = USE_FIREBASE ? dataCtx.loading : loadingGas;
 
   if (loading && !stats) {
     return (

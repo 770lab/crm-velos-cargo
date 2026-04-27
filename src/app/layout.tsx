@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { AppShell } from "@/components/app-shell";
+import { BASE_PATH } from "@/lib/base-path";
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -18,13 +19,13 @@ export const metadata: Metadata = {
   title: "CRM Vélos Cargo - Artisans Verts",
   description: "Gestion des livraisons de vélos cargo",
   icons: {
-    icon: "/crm-velos-cargo/favicon.svg",
-    apple: "/crm-velos-cargo/apple-touch-icon.png",
+    icon: `${BASE_PATH}/favicon.svg`,
+    apple: `${BASE_PATH}/apple-touch-icon.png`,
   },
   openGraph: {
     title: "CRM Vélos Cargo - Artisans Verts",
     description: "Gestion des livraisons de vélos cargo",
-    images: [{ url: "/crm-velos-cargo/og-image.png", width: 1200, height: 630 }],
+    images: [{ url: `${BASE_PATH}/og-image.png`, width: 1200, height: 630 }],
     type: "website",
   },
 };

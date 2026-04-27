@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { gasGet, gasPost, gasUpload } from "@/lib/gas";
 import { useCurrentUser } from "@/lib/current-user";
 
+import { BASE_PATH } from "@/lib/base-path";
 // Workflow montage par vélo (3 photos preuves) :
 //   1. 📦 Photo de l'étiquette du carton  → identifie quel vélo on monte
 //   2. 🏷️ Photo du QR BicyCode sur le vélo → confirme le numéro d'immatriculation
@@ -102,7 +103,7 @@ function MontagePage() {
             fiche client dans ton planning Livraisons.
           </p>
           <a
-            href="/crm-velos-cargo/livraisons"
+            href={`${BASE_PATH}/livraisons`}
             className="mt-4 inline-block text-sm text-blue-600 underline"
           >
             ← Aller au planning
@@ -352,7 +353,7 @@ function ClientMontageView({
         <div className="flex items-center justify-between mb-3">
           <h1 className="text-xl font-bold">🔧 Montage</h1>
           <a
-            href="/crm-velos-cargo/livraisons"
+            href={`${BASE_PATH}/livraisons`}
             className="text-sm text-gray-500 hover:text-gray-700"
           >
             ← Planning
@@ -513,7 +514,7 @@ function ClientMontageView({
             }
           }
           const nextUrl = nextClient
-            ? `/crm-velos-cargo/montage?tourneeId=${encodeURIComponent(tourneeId)}&clientId=${encodeURIComponent(nextClient.clientId)}`
+            ? `${BASE_PATH}/montage?tourneeId=${encodeURIComponent(tourneeId)}&clientId=${encodeURIComponent(nextClient.clientId)}`
             : null;
           return (
             <div className="bg-emerald-50 border-2 border-emerald-500 rounded-xl p-4 text-center">
@@ -534,7 +535,7 @@ function ClientMontageView({
                 </div>
               )}
               <a
-                href="/crm-velos-cargo/livraisons"
+                href={`${BASE_PATH}/livraisons`}
                 className="block mt-2 text-xs text-emerald-700 underline"
               >
                 ← Retour au planning

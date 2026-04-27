@@ -1,0 +1,76 @@
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function memberDoc() {
+      return firestore.get(/databases/(default)/documents/equipe/$(request.auth.uid));
+    }
+
+    function role() {
+      return memberDoc().data.role;
+    }
+
+    function isActive() {
+      return memberDoc().data.actif == true;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && isActive() && (role() == "superadmin" || role() == "admin");
+    }
+
+    function isStaff() {
+      return isSignedIn() && isActive() && role() in [
+        "superadmin", "admin", "chef", "chauffeur",
+        "monteur", "preparateur", "apporteur"
+      ];
+    }
+
+    function isImage() {
+      return request.resource.contentType.matches("image/.*");
+    }
+
+    function maxSize(mb) {
+      return request.resource.size < mb * 1024 * 1024;
+    }
+
+    // Documents clients (Kbis, devis, attestations, etc.)
+    match /clients/{clientId}/documents/{fileName} {
+      allow read: if isStaff();
+      allow write: if isAdmin() && maxSize(20);
+    }
+
+    // Photos de montage (preuves terrain)
+    match /montage/{livraisonId}/{fileName} {
+      allow read: if isStaff();
+      allow write: if isStaff() && isImage() && maxSize(10);
+    }
+
+    // BL signés
+    match /bl/{livraisonId}/{fileName} {
+      allow read: if isStaff();
+      allow write: if isStaff() && isImage() && maxSize(10);
+    }
+
+    // QR / étiquettes
+    match /preparation/{clientId}/{fileName} {
+      allow read: if isStaff();
+      allow write: if isStaff() && isImage() && maxSize(10);
+    }
+
+    // Bons d'enlèvement (PDF arrivés par email)
+    match /bonsEnlevement/{id}/{fileName} {
+      allow read: if isStaff();
+      allow write: if isAdmin() && maxSize(20);
+    }
+
+    // Tout le reste : refusé.
+    match /{allPaths=**} {
+      allow read, write: if false;
+    }
+  }
+}

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { gasGet, gasPost } from "@/lib/gas";
+import { callGemini } from "@/lib/gemini-client";
 import { useData, type Camion, type EquipeMember } from "@/lib/data-context";
 
 type Dispo = {
@@ -176,17 +177,9 @@ export default function DayPlannerModal({
       }
       setProposeStep("gemini");
       setGeminiStartedAt(Date.now());
-      const apiRes = await fetch("/api/gemini", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: built.prompt }),
-      });
-      const apiJson = (await apiRes.json()) as
-        | { ok: true; text: string; model: string }
-        | { ok: false; error: string };
-      if (!apiRes.ok || !apiJson.ok) {
-        const err = !apiJson.ok ? apiJson.error : `HTTP ${apiRes.status}`;
-        setProposition({ error: "Gemini (Vercel) : " + err });
+      const apiJson = await callGemini(built.prompt);
+      if (!apiJson.ok) {
+        setProposition({ error: "Gemini : " + apiJson.error });
         return;
       }
       setProposeStep("parsing");

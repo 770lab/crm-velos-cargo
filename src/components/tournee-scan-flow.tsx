@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { gasGet, gasPost } from "@/lib/gas";
 import { useCurrentUser } from "@/lib/current-user";
 
+import { BASE_PATH } from "@/lib/base-path";
 const QrScanner = dynamic(() => import("@/components/qr-scanner"), { ssr: false });
 const PhotoGeminiCapture = dynamic(() => import("@/components/photo-gemini-capture"), { ssr: false });
 const BlSignedUploader = dynamic(() => import("@/components/bl-signed-uploader"), { ssr: false });
@@ -370,7 +371,7 @@ function Inner({ mode }: { mode: ScanMode }) {
       <div className="max-w-md mx-auto">
         <div className="flex items-center justify-between mb-3">
           <h1 className="text-xl font-bold">{cfg.emoji} {cfg.title}</h1>
-          <a href="/crm-velos-cargo/livraisons" className="text-sm text-gray-500 hover:text-gray-700">← Planning</a>
+          <a href={`${BASE_PATH}/livraisons`} className="text-sm text-gray-500 hover:text-gray-700">← Planning</a>
         </div>
 
         {loadError && (
@@ -596,14 +597,14 @@ function Inner({ mode }: { mode: ScanMode }) {
                     </div>
                   </div>
                   <a
-                    href={`/crm-velos-cargo/etiquettes?tourneeId=${encodeURIComponent(tourneeId)}${cid}`}
+                    href={`${BASE_PATH}/etiquettes?tourneeId=${encodeURIComponent(tourneeId)}${cid}`}
                     target="_blank" rel="noopener noreferrer"
                     className="block text-center bg-emerald-600 text-white rounded-lg py-3 text-sm font-semibold hover:bg-emerald-700"
                   >
                     🏷️ Imprimer les {nbVelos} étiquette{nbVelos > 1 ? "s" : ""} (10×15)
                   </a>
                   <a
-                    href={`/crm-velos-cargo/bl?tourneeId=${encodeURIComponent(tourneeId)}${cid}`}
+                    href={`${BASE_PATH}/bl?tourneeId=${encodeURIComponent(tourneeId)}${cid}`}
                     target="_blank" rel="noopener noreferrer"
                     className="block text-center bg-white border border-emerald-400 text-emerald-800 rounded-lg py-3 text-sm font-semibold hover:bg-emerald-100"
                   >
@@ -643,7 +644,7 @@ function Inner({ mode }: { mode: ScanMode }) {
                 }
               }
               const nextUrl = nextClient
-                ? `/crm-velos-cargo/livraison?tourneeId=${encodeURIComponent(tourneeId)}&clientId=${encodeURIComponent(nextClient.clientId)}`
+                ? `${BASE_PATH}/livraison?tourneeId=${encodeURIComponent(tourneeId)}&clientId=${encodeURIComponent(nextClient.clientId)}`
                 : null;
               return (
                 <>
@@ -667,7 +668,7 @@ function Inner({ mode }: { mode: ScanMode }) {
 
             {tourneeAllDone && cfg.nextLink && (
               <a
-                href={`/crm-velos-cargo${cfg.nextLink.href(tourneeId)}`}
+                href={`${BASE_PATH}${cfg.nextLink.href(tourneeId)}`}
                 className="block w-full bg-green-600 text-white rounded-lg py-3 font-medium text-center"
               >
                 {cfg.nextLink.label}

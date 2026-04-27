@@ -3,6 +3,7 @@ import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { gasGet } from "@/lib/gas";
 
+import { BASE_PATH } from "@/lib/base-path";
 type Velo = { veloId: string; fnuci: string | null };
 type Client = {
   clientId: string;
@@ -19,7 +20,7 @@ type Progression =
   | { tourneeId: string; datePrevue: string | null; clients: Client[] }
   | { error: string };
 
-const LOGO_PATH = "/crm-velos-cargo/logo-av.png";
+const LOGO_PATH = `${BASE_PATH}/logo-av.png`;
 
 // Mentions légales reprises du footer DEVIS Artisans Verts (cf bat127, ITE, PAC).
 const LEGAL_BANNER_2026 = `LES ARTISANS VERTS SAS Société par actions simplifiée au capital de 40 000 € Siège social : 6 passage Eugène Barbier, 92400 Courbevoie · E-mail : contact@artisansverts.energy Téléphone : 01 87 66 27 08 SIRET : 878 062 793 00038 TVA intracommunautaire : FR34 878062793 · Assurance décennale : GROUPE LEADER Insurance N° de police : LINS267132 Période de validité : du 01/01/2026 au 31/12/2026`;

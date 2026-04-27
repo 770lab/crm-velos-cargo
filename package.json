@@ -14,6 +14,7 @@
     "@prisma/adapter-libsql": "^7.8.0",
     "@prisma/client": "^7.8.0",
     "date-fns": "^4.1.0",
+    "firebase": "^12.12.1",
     "leaflet": "^1.9.4",
     "next": "16.2.4",
     "prisma": "^7.8.0",
@@ -29,6 +30,8 @@
     "@types/react-dom": "^19",
     "eslint": "^9",
     "eslint-config-next": "16.2.4",
+    "firebase-admin": "^13.8.0",
+    "firebase-tools": "^15.15.0",
     "tailwindcss": "^4",
     "typescript": "^5"
   }

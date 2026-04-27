@@ -43,3 +43,11 @@ next-env.d.ts
 prisma/dev.db
 prisma/dev.db-journal
 src/generated/
+
+# Migration Firebase
+scripts/migration-data/service-account.json
+scripts/migration-data/credentials.csv
+scripts/migration-data/seed-report.json
+
+# Firebase build cache
+.firebase/

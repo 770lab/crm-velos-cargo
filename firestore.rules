@@ -1,0 +1,91 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Helpers
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    // Récupère le doc équipe correspondant à l'utilisateur connecté.
+    // Convention : le doc id de la collection "equipe" == request.auth.uid.
+    function memberDoc() {
+      return get(/databases/$(database)/documents/equipe/$(request.auth.uid));
+    }
+
+    function role() {
+      return memberDoc().data.role;
+    }
+
+    function isActive() {
+      return memberDoc().data.actif == true;
+    }
+
+    function isAdmin() {
+      return isSignedIn() && isActive() && (role() == "superadmin" || role() == "admin");
+    }
+
+    function isStaff() {
+      return isSignedIn() && isActive() && role() in [
+        "superadmin", "admin", "chef", "chauffeur",
+        "monteur", "preparateur", "apporteur"
+      ];
+    }
+
+    // equipe : un membre peut lire son propre doc; admin lit/écrit tout.
+    match /equipe/{uid} {
+      allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
+      allow write: if isAdmin();
+    }
+
+    // Données métier : tout le staff actif lit, admin écrit.
+    // Pour les opérations terrain (livraisons, vélos), on ouvrira l'écriture
+    // par rôle plus tard quand la migration sera plus avancée.
+    match /clients/{id} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    match /velos/{id} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    match /livraisons/{id} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    match /tournees/{id} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    match /camions/{id} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    match /bonsEnlevement/{id} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    match /verifications/{id} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
+    // Paramètres globaux (ex : config app, branding)
+    match /settings/{id} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    // Tout le reste est refusé par défaut.
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
