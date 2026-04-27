@@ -21,10 +21,19 @@ const CLIENT_ID = "cmoa7maty01hqb2g2laqluwu4"; // CHEN LEO
 const TOURNEE_ID = "818b8963";
 const FNUCIS = ["BCZ9CANA4D", "BC38FKZZ7H", "BCA24SN97A"];
 
-const sa = JSON.parse(
-  readFileSync(join(__dirname, "migration-data", "service-account.json"), "utf8"),
-);
-admin.initializeApp({ credential: admin.credential.cert(sa) });
+// Auth : si scripts/migration-data/service-account.json existe, l'utilise.
+// Sinon, retombe sur Application Default Credentials (gcloud auth
+// application-default login). Évite de devoir générer un service account.
+let cred;
+try {
+  const sa = JSON.parse(
+    readFileSync(join(__dirname, "migration-data", "service-account.json"), "utf8"),
+  );
+  cred = admin.credential.cert(sa);
+} catch {
+  cred = admin.credential.applicationDefault();
+}
+admin.initializeApp({ credential: cred, projectId: "velos-cargo" });
 const db = admin.firestore();
 
 async function main() {
@@ -66,15 +75,21 @@ async function main() {
     const batch = db.batch();
     for (const d of allDocs) {
       batch.update(d.ref, {
-        clientId: null,
-        fnuci: null,
+        // On garde le clientId (ne désaffilie pas) et le fnuci (évite de
+        // refaire la prép pour réassocier) — Yoann veut juste reset les
+        // étapes prép/charg/livr/mont pour rejouer le flow.
         datePreparation: null,
         dateChargement: null,
         dateLivraisonScan: null,
         dateMontage: null,
+        // Les 3 photos de montage : noms de champs PLATS comme GAS et
+        // comme le composant les lit (cf. firestore-actions.ts cas
+        // uploadMontagePhoto).
+        urlPhotoMontageEtiquette: null,
+        urlPhotoMontageQrVelo: null,
         photoMontageUrl: null,
-        photoEtiquetteUrl: null,
-        photoBicyCodeUrl: null,
+        // Identité du monteur posée par uploadMontagePhoto quand allThree.
+        monteParId: null,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
