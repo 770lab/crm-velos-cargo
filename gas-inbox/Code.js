@@ -62,6 +62,8 @@ function doGet(e) {
         return _respond(retryFailedThreads(e.parameter || {}));
       case "extractContacts":
         return _respond(extractContactsFromSignatures(e.parameter || {}));
+      case "reanalyzeByDocType":
+        return _respond(reanalyzeByDocType(e.parameter || {}));
       default:
         return _respondError("Action GET inconnue : " + action);
     }
@@ -216,6 +218,90 @@ function relabelUnprocessed() {
     count++;
   }
   return { relabeled: count };
+}
+
+// Re-soumet à Gemini les verifs des docTypes spécifiés (ex: après amélioration
+// du prompt). Pour chaque verif :
+//  1. Retrouve le thread Gmail via messageId
+//  2. Retire les labels crm-traite et crm-echec
+//  3. Pose le label crm-a-traiter
+//  4. Marque la verif comme "rejected" avec note "to-reanalyze"
+// Le sync auto recréera ensuite des verifs propres avec le nouveau prompt.
+//
+// Param: ?docTypes=DEVIS,DSN,URSSAF,LIASSE,ATTESTATION (default: tous ces 5)
+//        ?max=500 (default 500, max 2000) pour limiter le batch
+function reanalyzeByDocType(payload) {
+  var docTypesParam = payload && payload.docTypes
+    ? String(payload.docTypes)
+    : "DEVIS,DSN,URSSAF,LIASSE,ATTESTATION";
+  var docTypes = {};
+  docTypesParam.split(",").forEach(function (t) {
+    var s = String(t).trim().toUpperCase();
+    if (s) docTypes[s] = true;
+  });
+  var max = (payload && payload.max) ? Math.max(1, Math.min(2000, Number(payload.max))) : 500;
+
+  var sh = _ensureVerifSheet();
+  var data = sh.getDataRange().getValues();
+  if (data.length < 2) return { found: 0, relabeled: 0, errors: [] };
+
+  var headers = data[0];
+  var col = {
+    docType: headers.indexOf("docType"),
+    status: headers.indexOf("status"),
+    messageId: headers.indexOf("messageId"),
+    notes: headers.indexOf("notes")
+  };
+  if (col.messageId < 0 || col.docType < 0 || col.status < 0) {
+    return { error: "VerificationsPending: colonnes manquantes (docType/status/messageId)" };
+  }
+
+  var labelTo = _getOrCreateLabel(LABEL_TO_PROCESS);
+  var labelOk = _getOrCreateLabel(LABEL_PROCESSED);
+  var labelKo = _getOrCreateLabel(LABEL_FAILED);
+
+  var stats = { docTypes: Object.keys(docTypes), found: 0, relabeled: 0, marked: 0, errors: [], threadsTouched: 0 };
+  var seenThreads = {};
+
+  for (var i = 1; i < data.length && stats.marked < max; i++) {
+    var row = data[i];
+    var dt = String(row[col.docType] || "").toUpperCase();
+    if (!docTypes[dt]) continue;
+    var status = String(row[col.status] || "").toLowerCase();
+    // Skip les déjà rejetés "to-reanalyze" pour éviter boucle si on relance
+    var existingNote = col.notes >= 0 ? String(row[col.notes] || "") : "";
+    if (status === "rejected" && existingNote.indexOf("to-reanalyze") >= 0) continue;
+
+    var messageId = row[col.messageId];
+    if (!messageId) continue;
+    stats.found++;
+
+    try {
+      var msg = GmailApp.getMessageById(String(messageId));
+      var thread = msg.getThread();
+      var threadId = thread.getId();
+      if (!seenThreads[threadId]) {
+        try { thread.removeLabel(labelOk); } catch (e) {}
+        try { thread.removeLabel(labelKo); } catch (e) {}
+        thread.addLabel(labelTo);
+        seenThreads[threadId] = true;
+        stats.threadsTouched++;
+      }
+      stats.relabeled++;
+      // Marque la verif comme rejected pour qu'une nouvelle soit créée à la
+      // prochaine sync (sinon doublon dans /verifications).
+      sh.getRange(i + 1, col.status + 1).setValue("rejected");
+      if (col.notes >= 0) {
+        var tag = "to-reanalyze " + new Date().toISOString().slice(0, 10);
+        sh.getRange(i + 1, col.notes + 1).setValue(existingNote ? existingNote + " | " + tag : tag);
+      }
+      stats.marked++;
+    } catch (err) {
+      stats.errors.push({ messageId: String(messageId), error: String(err) });
+    }
+  }
+
+  return stats;
 }
 
 function installTriggers() {
