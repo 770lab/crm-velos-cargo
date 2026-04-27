@@ -321,7 +321,18 @@ function Inner({ mode }: { mode: ScanMode }) {
     );
   }
 
-  const prog = progression && !("error" in progression) ? progression : null;
+  // Logistique LIFO du camion :
+  //   - en préparation et chargement : l'ordre des clients est INVERSÉ par
+  //     rapport à l'ordre de livraison. Le dernier client à livrer est le
+  //     premier à charger (au fond du camion). Le premier à livrer entre en
+  //     dernier (à l'avant), pour pouvoir sortir en premier.
+  //   - en livraison : ordre normal du planning (1, 2, 3...) puisqu'on
+  //     décharge dans l'ordre inverse du chargement = ordre prévu.
+  const reverseClients = mode === "preparation" || mode === "chargement";
+  const progRaw = progression && !("error" in progression) ? progression : null;
+  const prog = progRaw
+    ? { ...progRaw, clients: reverseClients ? [...progRaw.clients].reverse() : progRaw.clients }
+    : null;
   const focusClient = focusClientId && prog ? prog.clients.find((c) => c.clientId === focusClientId) : null;
   // Si focusClientId est passé en URL : on compte uniquement les vélos de ce client
   // pour la barre de progression, mais "Passer à l'étape suivante" reste basé
