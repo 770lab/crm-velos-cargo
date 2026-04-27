@@ -1487,39 +1487,32 @@ function TourneeModal({
           )}
         </div>
 
-        {/* Suivi opérationnel : préparation → chargement → livraison → montage */}
+        {/* Suivi opérationnel global tournée */}
         {tournee.tourneeId && progression && progression.totals.total > 0 && (() => {
           const t = progression.totals;
-          const Bar = ({ value, total, color }: { value: number; total: number; color: string }) => (
-            <div className="h-1.5 bg-gray-200 rounded overflow-hidden">
-              <div className={color} style={{ width: total ? `${(value / total) * 100}%` : "0%", height: "100%" }} />
-            </div>
-          );
+          const stages: { key: string; label: string; emoji: string; value: number }[] = [
+            { key: "prepare", label: "Prép.", emoji: "📦", value: t.prepare },
+            { key: "charge", label: "Charg.", emoji: "🚚", value: t.charge },
+            { key: "livre", label: "Livr.", emoji: "📍", value: t.livre },
+            { key: "monte", label: "Mont.", emoji: "🔧", value: t.monte },
+          ];
           return (
-            <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 mb-3 space-y-2">
-              <div className="text-xs font-medium text-gray-700">Suivi opérationnel</div>
-              <div className="grid grid-cols-4 gap-2 text-[11px]">
-                <div>
-                  <div className="flex justify-between mb-0.5"><span>📦 Préparation</span><span className="font-mono">{t.prepare}/{t.total}</span></div>
-                  <Bar value={t.prepare} total={t.total} color="bg-blue-500" />
-                </div>
-                <div>
-                  <div className="flex justify-between mb-0.5"><span>🚚 Chargement</span><span className="font-mono">{t.charge}/{t.total}</span></div>
-                  <Bar value={t.charge} total={t.total} color="bg-indigo-500" />
-                </div>
-                <div>
-                  <div className="flex justify-between mb-0.5"><span>📍 Livraison</span><span className="font-mono">{t.livre}/{t.total}</span></div>
-                  <Bar value={t.livre} total={t.total} color="bg-purple-500" />
-                </div>
-                <div>
-                  <div className="flex justify-between mb-0.5"><span>🔧 Montage</span><span className="font-mono">{t.monte}/{t.total}</span></div>
-                  <Bar value={t.monte} total={t.total} color="bg-green-500" />
-                </div>
-              </div>
-              {/* Plus de boutons bulk Préparer/Charger/Livrer/Étiquettes/BL ici :
-                  workflow client par client uniquement, via les badges Prép./Charg./
-                  Livr./Mont. de chaque client plus bas (Yoann préfère fiabilité >
-                  rapidité, voir mémoire crm_velos_cargo_step_by_step). */}
+            <div className="flex flex-wrap items-center gap-2 mb-3">
+              {stages.map((s) => {
+                const done = t.total > 0 && s.value >= t.total;
+                const inProgress = s.value > 0 && s.value < t.total;
+                let cls = "bg-gray-100 text-gray-600 border-gray-200";
+                if (done) cls = "bg-green-100 text-green-800 border-green-300";
+                else if (inProgress) cls = "bg-blue-100 text-blue-800 border-blue-300";
+                return (
+                  <span key={s.key} className={`inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-full border font-medium ${cls}`}>
+                    <span>{s.emoji}</span>
+                    <span>{s.label}</span>
+                    <span className="font-mono">{s.value}/{t.total}</span>
+                    {done && <span>✓</span>}
+                  </span>
+                );
+              })}
             </div>
           );
         })()}
