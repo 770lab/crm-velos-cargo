@@ -235,12 +235,39 @@ export async function runFirestoreAction(
 
     // ---------- livraisons ----------
     case "createLivraison": {
+      // tourneeNumero stable : si le tourneeId est déjà connu, on hérite du
+      // numéro existant (mêmes tournées = même numéro). Sinon on alloue
+      // max(tourneeNumero) + 1 (numérotation globale qui ne décrémente jamais
+      // même quand on annule une tournée intermédiaire — cf. ce que demande
+      // Yoann le 2026-04-28).
+      const tourneeId = getString(body, "tourneeId");
+      let tourneeNumero: number | undefined;
+      if (tourneeId) {
+        const sib = await getDocs(
+          query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
+        );
+        for (const d of sib.docs) {
+          const n = (d.data() as { tourneeNumero?: number }).tourneeNumero;
+          if (typeof n === "number") { tourneeNumero = n; break; }
+        }
+      }
+      if (tourneeNumero == null) {
+        // Nouvelle tournée → max + 1
+        const all = await getDocs(collection(db, "livraisons"));
+        let maxN = 0;
+        for (const d of all.docs) {
+          const n = (d.data() as { tourneeNumero?: number }).tourneeNumero;
+          if (typeof n === "number" && n > maxN) maxN = n;
+        }
+        tourneeNumero = maxN + 1;
+      }
       const ref = await addDoc(collection(db, "livraisons"), {
         ...applyMaybeDates(body),
+        tourneeNumero,
         statut: body.statut || "planifiee",
         createdAt: ts(),
       });
-      return { ok: true, id: ref.id };
+      return { ok: true, id: ref.id, tourneeNumero };
     }
 
     case "updateLivraison": {

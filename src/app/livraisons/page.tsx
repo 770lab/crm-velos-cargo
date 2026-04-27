@@ -150,17 +150,28 @@ export default function LivraisonsPage() {
 
   const tournees = useMemo(() => {
     const list = groupByTournee(userLivraisons);
-    // Numérotation globale chronologique : Tournée 1 = la plus ancienne, 2 =
-    // la suivante, etc. Si on ajoute / supprime une tournée, les numéros se
-    // décalent automatiquement pour rester contigus 1, 2, 3, ...
-    [...list]
+    // Numérotation : on lit `tourneeNumero` PERSISTÉ sur les livraisons (champ
+    // attribué une fois pour toutes à la création de la tournée). Si on annule
+    // une tournée intermédiaire, les autres GARDENT leur numéro.
+    // Fallback : pour les tournées sans tourneeNumero (avant migration), on
+    // recalcule chronologiquement à partir du max existant + 1.
+    let maxPersisted = 0;
+    for (const t of list) {
+      const persisted = t.livraisons.find((l) => l.tourneeNumero != null)?.tourneeNumero ?? null;
+      if (persisted != null) {
+        t.numero = persisted;
+        if (persisted > maxPersisted) maxPersisted = persisted;
+      }
+    }
+    const orphans = list.filter((t) => t.numero == null);
+    orphans
       .sort((a, b) => {
         const da = a.datePrevue ? new Date(a.datePrevue).getTime() : Number.POSITIVE_INFINITY;
         const db = b.datePrevue ? new Date(b.datePrevue).getTime() : Number.POSITIVE_INFINITY;
         if (da !== db) return da - db;
         return String(a.tourneeId || "").localeCompare(String(b.tourneeId || ""));
       })
-      .forEach((t, i) => { t.numero = i + 1; });
+      .forEach((t, i) => { t.numero = maxPersisted + i + 1; });
     return list;
   }, [userLivraisons]);
 

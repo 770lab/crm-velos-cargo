@@ -155,6 +155,7 @@ function livraisonFromDoc(id: string, d: DocumentData): LivraisonRow {
     monteurIds: Array.isArray(d.monteurIds) ? d.monteurIds : [],
     preparateurIds: Array.isArray(d.preparateurIds) ? d.preparateurIds : [],
     nbMonteurs: d.nbMonteurs ?? 0,
+    tourneeNumero: typeof d.tourneeNumero === "number" ? d.tourneeNumero : null,
     client: {
       entreprise: d.clientSnapshot?.entreprise ?? "",
       ville: d.clientSnapshot?.ville ?? null,

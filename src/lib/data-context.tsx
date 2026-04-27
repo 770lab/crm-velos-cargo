@@ -96,6 +96,10 @@ interface LivraisonRow {
   monteurIds?: string[];
   preparateurIds?: string[];
   nbMonteurs?: number;
+  /** Numéro stable de tournée persisté côté Firestore (1, 2, 3, …) — attribué
+   *  à la création et qui ne bouge plus, même si une tournée antérieure est
+   *  annulée. null pour les livraisons importées avant la migration. */
+  tourneeNumero?: number | null;
   client: {
     entreprise: string;
     ville: string | null;
