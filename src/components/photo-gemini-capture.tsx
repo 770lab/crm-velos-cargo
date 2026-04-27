@@ -146,7 +146,6 @@ export default function PhotoGeminiCapture({
    * Vision en prenne le contrôle — iOS Safari = 1 seule appli active. */
   onCameraToggle?: (open: boolean) => void;
 }) {
-  const cameraRef = useRef<HTMLInputElement | null>(null);
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const [items, setItems] = useState<BatchItem[]>([]);
@@ -166,47 +165,6 @@ export default function PhotoGeminiCapture({
   const lockedClient = lockedClientId
     ? clients?.find((c) => c.clientId === lockedClientId)
     : undefined;
-
-  const addFiles = useCallback(async (files: FileList | null) => {
-    if (!files || files.length === 0) return;
-    setAdding(true);
-    const fileArr = Array.from(files);
-
-    // Compression en parallèle pendant que l'utilisateur regarde déjà la grille
-    // (les vignettes apparaissent dès qu'une compression est terminée). 800px
-    // / JPEG 0.7 = ~50-80 KB par image, taille suffisante pour Gemini Vision et
-    // ~3× plus rapide à uploader que 1280/0.8.
-    await Promise.all(
-      fileArr.map(async (file) => {
-        try {
-          const compressed = await compressImage(file, 800, 0.7);
-          const item: BatchItem = {
-            id: makeId(),
-            fileName: file.name || "photo.jpg",
-            thumbDataUrl: `data:${compressed.mimeType};base64,${compressed.base64}`,
-            base64: compressed.base64,
-            mimeType: compressed.mimeType,
-            status: "pending",
-          };
-          setItems((prev) => [...prev, item]);
-        } catch (e) {
-          const item: BatchItem = {
-            id: makeId(),
-            fileName: file.name || "photo.jpg",
-            thumbDataUrl: "",
-            base64: "",
-            mimeType: "image/jpeg",
-            status: "error",
-            errorMsg: e instanceof Error ? e.message : String(e),
-          };
-          setItems((prev) => [...prev, item]);
-        }
-      }),
-    );
-
-    setAdding(false);
-    if (cameraRef.current) cameraRef.current.value = "";
-  }, []);
 
   const removeItem = useCallback((id: string) => {
     setItems((prev) => prev.filter((it) => it.id !== id));
@@ -456,33 +414,14 @@ export default function PhotoGeminiCapture({
         </div>
       ) : null}
 
-      <div className="grid grid-cols-2 gap-2">
-        <button
-          type="button"
-          disabled={disabled || adding || identifying}
-          onClick={openCamera}
-          className="px-3 py-3 bg-rose-600 text-white rounded-lg font-semibold hover:bg-rose-700 disabled:opacity-60 text-sm"
-        >
-          📸 Caméra continue
-        </button>
-        <button
-          type="button"
-          disabled={disabled || adding || identifying}
-          onClick={() => cameraRef.current?.click()}
-          className="px-3 py-3 bg-amber-600 text-white rounded-lg font-medium hover:bg-amber-700 disabled:opacity-60 text-sm"
-        >
-          📷 Photo unique
-        </button>
-      </div>
-
-      <input
-        ref={cameraRef}
-        type="file"
-        accept="image/*"
-        capture="environment"
-        className="hidden"
-        onChange={(e) => addFiles(e.target.files)}
-      />
+      <button
+        type="button"
+        disabled={disabled || adding || identifying}
+        onClick={openCamera}
+        className="w-full px-3 py-3 bg-rose-600 text-white rounded-lg font-semibold hover:bg-rose-700 disabled:opacity-60 text-sm"
+      >
+        📸 Caméra continue
+      </button>
 
       {adding && (
         <div className="text-center text-xs text-gray-600 italic">
@@ -538,8 +477,8 @@ export default function PhotoGeminiCapture({
       )}
 
       <p className="text-[11px] text-gray-500 text-center">
-        📸 Caméra continue : reste ouverte, mitraille les stickers d&apos;affilée puis Terminer →
-        identification automatique. 📷 Photo unique : caméra iOS native (1 shot).
+        📸 La caméra reste ouverte, mitraille les stickers d&apos;affilée puis Terminer →
+        identification automatique.
       </p>
 
       {cameraOpen && (
