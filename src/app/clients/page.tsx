@@ -491,7 +491,7 @@ function RappelMailModal({
     ``,
     `Rappel du process :`,
     `  1. Livraison des vélos sur votre site et vérification contradictoire.`,
-    `  2. Signature du procès-verbal de livraison.`,
+    `  2. Signature du procès-verbal de livraison — le tampon de l'entreprise est impératif sur le PV au moment de la livraison.`,
     `  3. Inscription sur la plateforme Bicycle et transmission de votre certificat d'économies d'énergie.`,
     ``,
     `Si un document manquant pose question (pièce introuvable, besoin d'un modèle, doute sur la version demandée), appelez-nous dès aujourd'hui : il est toujours plus simple d'anticiper que de décaler une tournée.`,
