@@ -2905,6 +2905,16 @@ var DOC_TYPE_TO_CLIENT_FIELDS = {
 // pose flag+lien sur la fiche client. dryRun=true renvoie un aperçu sans écrire.
 function bulkAutoValidate(params) {
   var dryRun = !!(params && (params.dryRun === true || params.dryRun === "true"));
+  // Liste de clientIds à exclure du batch — l'utilisateur peut décocher des
+  // clients dans le modal preview pour les sortir de la validation en lot.
+  var excludeClientIds = {};
+  if (params && params.excludeClientIds) {
+    var ex = params.excludeClientIds;
+    if (typeof ex === "string") { try { ex = JSON.parse(ex); } catch (e) { ex = []; } }
+    if (Array.isArray(ex)) {
+      for (var ie = 0; ie < ex.length; ie++) excludeClientIds[String(ex[ie])] = true;
+    }
+  }
   var sh = ensureVerificationsSheet();
   var data = sh.getDataRange().getValues();
   if (data.length < 2) return { wouldValidate: 0, validated: 0, skipped: 0, dryRun: dryRun };
@@ -2930,7 +2940,7 @@ function bulkAutoValidate(params) {
     if (cid != null && cid !== "") clientRowById[String(cid)] = ci; // 0-based index dans cData
   }
 
-  var skipReasons = { notPending: 0, noClient: 0, clientNotFound: 0, unknownDocType: 0 };
+  var skipReasons = { notPending: 0, noClient: 0, clientNotFound: 0, unknownDocType: 0, excluded: 0 };
   var byDocType = {};
   var sample = [];
   // Map: clientId -> { flag -> {linkField, link (null si on ne touche pas au lien), when, setFlag} }
@@ -2938,6 +2948,10 @@ function bulkAutoValidate(params) {
   // Liste: { rowIndex (1-based), id, action: "fresh"|"linkOnly"|"skipExisting" }
   var rowsToValidate = [];
   var counts = { fresh: 0, linkOnly: 0, skipExisting: 0 };
+  // Détail par client pour le preview UI (l'user peut décocher dans le modal)
+  // clientId -> { entreprise, fresh, linkOnly, skipExisting, byDocType: {DEVIS: 3, ...} }
+  var clientsBreakdown = {};
+  var entrepriseCol = cHeaders.indexOf("entreprise");
   // Mode C : flag toujours posé à true (idempotent), mais le lien n'est rempli que si la
   // colonne lien côté Clients est vide aujourd'hui. On ne casse jamais un lien que tu as
   // classé manuellement.
@@ -2951,6 +2965,7 @@ function bulkAutoValidate(params) {
     }
     var clientId = col.clientId >= 0 ? row[col.clientId] : "";
     if (!clientId) { skipReasons.noClient++; continue; }
+    if (excludeClientIds[String(clientId)]) { skipReasons.excluded++; continue; }
     var clientRowIdx = clientRowById[String(clientId)];
     if (clientRowIdx == null) { skipReasons.clientNotFound++; continue; }
     var docType = col.docType >= 0 ? String(row[col.docType] || "").toUpperCase() : "";
@@ -3003,20 +3018,41 @@ function bulkAutoValidate(params) {
 
     counts[action]++;
     rowsToValidate.push({ rowIndex: i + 1, id: row[col.id], action: action });
+    // Agrégation par client pour le preview UI
+    var bk = clientsBreakdown[clientId];
+    if (!bk) {
+      bk = {
+        clientId: clientId,
+        entreprise: entrepriseCol >= 0 ? cData[clientRowIdx][entrepriseCol] : "",
+        fresh: 0, linkOnly: 0, skipExisting: 0,
+        byDocType: {}
+      };
+      clientsBreakdown[clientId] = bk;
+    }
+    bk[action]++;
+    bk.byDocType[docType] = (bk.byDocType[docType] || 0) + 1;
     if (sample.length < 10) {
       sample.push({ id: row[col.id], clientId: clientId, docType: docType, fileName: fileName, action: action });
     }
   }
+
+  // Liste triée par volume décroissant (plus gros impact en haut)
+  var clientsList = Object.keys(clientsBreakdown).map(function (k) {
+    var b = clientsBreakdown[k];
+    b.total = b.fresh + b.linkOnly + b.skipExisting;
+    return b;
+  }).sort(function (a, b) { return b.total - a.total; });
 
   var preview = {
     wouldValidate: rowsToValidate.length,
     fresh: counts.fresh,         // flag posé + lien rempli
     linkOnly: counts.linkOnly,   // flag déjà coché, on rajoute juste le lien
     skipExisting: counts.skipExisting, // déjà OK, juste sortie de la file
-    skipped: skipReasons.notPending + skipReasons.noClient + skipReasons.clientNotFound + skipReasons.unknownDocType,
+    skipped: skipReasons.notPending + skipReasons.noClient + skipReasons.clientNotFound + skipReasons.unknownDocType + skipReasons.excluded,
     skipReasons: skipReasons,
     byDocType: byDocType,
     clientsTouched: Object.keys(pendingClientUpdates).length,
+    clientsBreakdown: clientsList,
     sample: sample,
     dryRun: dryRun
   };

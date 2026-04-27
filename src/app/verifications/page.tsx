@@ -27,6 +27,16 @@ interface Verification {
 
 type Tab = "pending" | "validated" | "rejected" | "all";
 
+interface BulkClientBreakdown {
+  clientId: string;
+  entreprise: string;
+  fresh: number;
+  linkOnly: number;
+  skipExisting: number;
+  total: number;
+  byDocType: Record<string, number>;
+}
+
 interface BulkPreview {
   wouldValidate: number;
   validated?: number;
@@ -34,10 +44,11 @@ interface BulkPreview {
   linkOnly: number;     // flag déjà coché, on rajoute juste le lien
   skipExisting: number; // déjà OK, juste sortie de la file
   skipped: number;
-  skipReasons: { notPending: number; noClient: number; clientNotFound: number; unknownDocType: number };
+  skipReasons: { notPending: number; noClient: number; clientNotFound: number; unknownDocType: number; excluded?: number };
   byDocType: Record<string, number>;
   clientsTouched: number;
   clientsUpdated?: number;
+  clientsBreakdown?: BulkClientBreakdown[];
   sample: Array<{ id: string; clientId: string; docType: string; fileName: string; action?: string }>;
   dryRun: boolean;
 }
@@ -51,6 +62,7 @@ export default function VerificationsPage() {
   const [busyId, setBusyId] = useState<string | null>(null);
   const [rejectFor, setRejectFor] = useState<Verification | null>(null);
   const [bulkPreview, setBulkPreview] = useState<BulkPreview | null>(null);
+  const [bulkExcluded, setBulkExcluded] = useState<Set<string>>(new Set());
   const [bulkLoading, setBulkLoading] = useState(false);
   const [search, setSearch] = useState("");
 
@@ -109,6 +121,21 @@ export default function VerificationsPage() {
       const r = res as BulkPreview & { error?: string };
       if (r.error) throw new Error(r.error);
       setBulkPreview(r);
+      setBulkExcluded(new Set());
+    } catch (e) {
+      alert("Erreur preview : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBulkLoading(false);
+    }
+  };
+
+  const refreshBulkPreview = async (excluded: Set<string>) => {
+    setBulkLoading(true);
+    try {
+      const res = await gasPost("bulkAutoValidate", { dryRun: true, excludeClientIds: Array.from(excluded) });
+      const r = res as BulkPreview & { error?: string };
+      if (r.error) throw new Error(r.error);
+      setBulkPreview(r);
     } catch (e) {
       alert("Erreur preview : " + (e instanceof Error ? e.message : String(e)));
     } finally {
@@ -119,10 +146,11 @@ export default function VerificationsPage() {
   const runBulk = async () => {
     setBulkLoading(true);
     try {
-      const res = await gasPost("bulkAutoValidate", { dryRun: false });
+      const res = await gasPost("bulkAutoValidate", { dryRun: false, excludeClientIds: Array.from(bulkExcluded) });
       const r = res as BulkPreview & { error?: string };
       if (r.error) throw new Error(r.error);
       setBulkPreview(null);
+      setBulkExcluded(new Set());
       await load();
       refresh("clients");
       refresh("stats");
@@ -277,7 +305,16 @@ export default function VerificationsPage() {
         <BulkConfirmModal
           preview={bulkPreview}
           loading={bulkLoading}
-          onClose={() => setBulkPreview(null)}
+          excluded={bulkExcluded}
+          onToggleClient={(clientId) => {
+            setBulkExcluded((prev) => {
+              const next = new Set(prev);
+              if (next.has(clientId)) next.delete(clientId); else next.add(clientId);
+              return next;
+            });
+          }}
+          onRefresh={() => refreshBulkPreview(bulkExcluded)}
+          onClose={() => { setBulkPreview(null); setBulkExcluded(new Set()); }}
           onConfirm={runBulk}
         />
       )}
@@ -288,23 +325,35 @@ export default function VerificationsPage() {
 function BulkConfirmModal({
   preview,
   loading,
+  excluded,
+  onToggleClient,
+  onRefresh,
   onClose,
   onConfirm,
 }: {
   preview: BulkPreview;
   loading: boolean;
+  excluded: Set<string>;
+  onToggleClient: (clientId: string) => void;
+  onRefresh: () => void;
   onClose: () => void;
   onConfirm: () => void;
 }) {
   const docTypes = Object.entries(preview.byDocType).sort((a, b) => b[1] - a[1]);
   const reasons = preview.skipReasons;
+  const breakdown = preview.clientsBreakdown || [];
+  const [expanded, setExpanded] = useState(false);
+  const [clientFilter, setClientFilter] = useState("");
+  const filteredBreakdown = breakdown.filter((c) =>
+    !clientFilter || c.entreprise.toLowerCase().includes(clientFilter.toLowerCase())
+  );
   return (
     <div
       className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
       onClick={onClose}
     >
       <div
-        className="bg-white rounded-xl p-6 w-full max-w-lg max-h-[85vh] overflow-y-auto"
+        className="bg-white rounded-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex justify-between items-start mb-3">
@@ -362,7 +411,83 @@ function BulkConfirmModal({
               {reasons.noClient > 0 && <li>• Client non identifié : {reasons.noClient}</li>}
               {reasons.clientNotFound > 0 && <li>• Client introuvable dans la base : {reasons.clientNotFound}</li>}
               {reasons.unknownDocType > 0 && <li>• Type de doc inconnu : {reasons.unknownDocType}</li>}
+              {reasons.excluded != null && reasons.excluded > 0 && <li>• Clients exclus manuellement : {reasons.excluded}</li>}
             </ul>
+          </div>
+        )}
+
+        {breakdown.length > 0 && (
+          <div className="mb-4 border rounded-lg overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setExpanded(!expanded)}
+              className="w-full flex items-center justify-between px-3 py-2 bg-gray-50 hover:bg-gray-100 text-sm font-medium text-gray-700"
+            >
+              <span>👁 Détail par client ({breakdown.length})</span>
+              <span className="text-xs text-gray-500">{expanded ? "▲ replier" : "▼ déplier"}</span>
+            </button>
+            {expanded && (
+              <div className="p-3 space-y-2 max-h-[40vh] overflow-y-auto">
+                <div className="flex items-center gap-2 mb-2">
+                  <input
+                    type="search"
+                    value={clientFilter}
+                    onChange={(e) => setClientFilter(e.target.value)}
+                    placeholder="Filtrer par nom..."
+                    className="flex-1 px-2 py-1 text-xs border rounded"
+                  />
+                  {excluded.size > 0 && (
+                    <button
+                      onClick={onRefresh}
+                      disabled={loading}
+                      className="text-xs px-2 py-1 bg-amber-100 text-amber-800 rounded hover:bg-amber-200 disabled:opacity-50"
+                      title="Recalculer les chiffres en tenant compte des clients décochés"
+                    >
+                      ↻ Recalculer ({excluded.size} exclu{excluded.size > 1 ? "s" : ""})
+                    </button>
+                  )}
+                </div>
+                <div className="text-[10px] text-gray-500 mb-1">
+                  Décoche un client pour l&apos;exclure de la validation en lot. Les vérifications resteront dans la file pour traitement manuel.
+                </div>
+                {filteredBreakdown.map((c) => {
+                  const isExcluded = excluded.has(c.clientId);
+                  const dt = Object.entries(c.byDocType).sort((a, b) => b[1] - a[1]);
+                  return (
+                    <label
+                      key={c.clientId}
+                      className={`flex items-start gap-2 p-2 rounded border cursor-pointer ${
+                        isExcluded ? "bg-red-50 border-red-200 opacity-60" : "bg-white border-gray-200 hover:bg-gray-50"
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!isExcluded}
+                        onChange={() => onToggleClient(c.clientId)}
+                        className="mt-0.5"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium text-gray-900 truncate">
+                          {c.entreprise || c.clientId}
+                        </div>
+                        <div className="text-[11px] text-gray-500 mt-0.5 flex flex-wrap gap-x-2 gap-y-0.5">
+                          {c.fresh > 0 && <span className="text-green-700">+{c.fresh} flag</span>}
+                          {c.linkOnly > 0 && <span className="text-blue-700">+{c.linkOnly} lien</span>}
+                          {c.skipExisting > 0 && <span className="text-gray-500">{c.skipExisting} déjà OK</span>}
+                          <span className="text-gray-400">·</span>
+                          {dt.map(([type, n]) => (
+                            <span key={type} className="text-indigo-700">{type}:{n}</span>
+                          ))}
+                        </div>
+                      </div>
+                    </label>
+                  );
+                })}
+                {filteredBreakdown.length === 0 && (
+                  <div className="text-xs text-gray-400 text-center py-2">Aucun client ne matche le filtre.</div>
+                )}
+              </div>
+            )}
           </div>
         )}
 
