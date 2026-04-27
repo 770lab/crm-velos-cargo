@@ -334,6 +334,26 @@ function Inner({ mode }: { mode: ScanMode }) {
   const tourneeTotals = prog?.totals;
   const tourneeAllDone = !!tourneeTotals && tourneeTotals.total > 0 && tourneeTotals[cfg.totalsKey] >= tourneeTotals.total;
 
+  // Prochain client de la tournée a traiter pour cette etape, dans l'ordre du
+  // planning (wrap au debut si besoin pour les chauffeurs qui font la tournee
+  // dans un ordre different). Sert au CTA "Passer au client suivant" qui
+  // apparait des qu'un client est termine.
+  const nextClient = (() => {
+    if (!focusClientId || !prog || !("clients" in prog) || !focusClient) return null;
+    const list = prog.clients;
+    const idx = list.findIndex((c) => c.clientId === focusClient.clientId);
+    for (let i = idx + 1; i < list.length; i++) {
+      if (list[i].totals[cfg.totalsKey] < list[i].totals.total) return list[i];
+    }
+    for (let i = 0; i < idx; i++) {
+      if (list[i].totals[cfg.totalsKey] < list[i].totals.total) return list[i];
+    }
+    return null;
+  })();
+  const nextClientHref = nextClient
+    ? `?tourneeId=${encodeURIComponent(tourneeId)}&clientId=${encodeURIComponent(nextClient.clientId)}`
+    : null;
+
   return (
     <div className="min-h-screen bg-gray-50 p-3 md:p-6">
       <div className="max-w-md mx-auto">
@@ -640,6 +660,19 @@ function Inner({ mode }: { mode: ScanMode }) {
                 className="block w-full bg-green-600 text-white rounded-lg py-3 font-medium text-center"
               >
                 {cfg.nextLink.label}
+              </a>
+            )}
+            {allDone && !tourneeAllDone && nextClient && nextClientHref && (
+              <a
+                href={nextClientHref}
+                className="block w-full bg-blue-600 text-white rounded-xl py-4 px-4 text-center shadow hover:bg-blue-700"
+              >
+                <div className="text-xs uppercase tracking-wide opacity-80">→ Client suivant</div>
+                <div className="font-bold text-lg leading-tight mt-0.5">{nextClient.entreprise}</div>
+                <div className="text-xs opacity-80 mt-0.5">
+                  {nextClient.totals.total - nextClient.totals[cfg.totalsKey]} vélo
+                  {nextClient.totals.total - nextClient.totals[cfg.totalsKey] > 1 ? "s" : ""} à {cfg.title.toLowerCase()}
+                </div>
               </a>
             )}
             {allDone && !tourneeAllDone && cfg.nextLink && tourneeTotals && (
