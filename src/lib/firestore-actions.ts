@@ -278,21 +278,46 @@ export async function runFirestoreAction(
     }
 
     case "assignTournee": {
+      // 2 modes d'appel :
+      //  - livraisonId/id : MAJ d'UNE livraison ciblée (rare, non utilisé par
+      //    l'UI Affectation équipe actuelle).
+      //  - tourneeId      : MAJ de TOUTES les livraisons d'une tournée d'un
+      //    coup. C'est ce que fait le panel "Affectation équipe" du planning
+      //    semaine — on n'a qu'une équipe par tournée, pas par client.
+      // L'ancienne version ne gérait que livraisonId → l'UI plantait avec
+      // "livraisonId requis" car elle envoie tourneeId.
       const livraisonId = getString(body, "livraisonId") || getString(body, "id");
-      if (!livraisonId) throw new Error("livraisonId requis");
-      const fields: Body = { updatedAt: ts() };
-      for (const k of [
-        "tourneeId",
+      const tourneeId = getString(body, "tourneeId");
+      const writableKeys = [
         "chauffeurId",
+        "chefEquipeId",
         "chefEquipeIds",
         "monteurIds",
         "preparateurIds",
         "mode",
-      ]) {
+      ];
+      const fields: Body = { updatedAt: ts() };
+      for (const k of writableKeys) {
         if (k in body) fields[k] = body[k];
       }
-      await updateDoc(doc(db, "livraisons", livraisonId), fields);
-      return { ok: true };
+      if (livraisonId) {
+        // Ciblage 1 livraison : on autorise aussi à changer son tourneeId
+        // (cas marginal, rebascule).
+        if ("tourneeId" in body) fields.tourneeId = body.tourneeId;
+        await updateDoc(doc(db, "livraisons", livraisonId), fields);
+        return { ok: true, updated: 1 };
+      }
+      if (tourneeId) {
+        const snap = await getDocs(
+          query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
+        );
+        if (snap.empty) return { ok: true, updated: 0 };
+        const batch = writeBatch(db);
+        for (const d of snap.docs) batch.update(d.ref, fields);
+        await batch.commit();
+        return { ok: true, updated: snap.size };
+      }
+      throw new Error("livraisonId ou tourneeId requis");
     }
 
     // ---------- velos ----------
