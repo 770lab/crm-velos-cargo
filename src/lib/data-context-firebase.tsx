@@ -61,8 +61,12 @@ function tsToIso(value: unknown): string | null {
 }
 
 function asInt(v: unknown): number {
+  // Tolère les floats stockés par erreur en base (ex: nbVelosCommandes = 25.25
+  // observé en prod 2026-04-28 sur certains imports) en arrondissant à l'entier
+  // le plus proche. Sans ça, les sommes affichaient "6 358,25 commandés" au
+  // lieu d'un entier sur le bandeau /carte.
   const n = typeof v === "number" ? v : Number(v);
-  return Number.isFinite(n) ? n : 0;
+  return Number.isFinite(n) ? Math.round(n) : 0;
 }
 
 function clientFromDoc(id: string, d: DocumentData): ClientRow {
