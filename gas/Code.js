@@ -5394,8 +5394,18 @@ function proposeTournee(payload) {
   if (!payload || !payload.date) return { error: "date requise" };
   var date = payload.date;
   var mode = payload.mode || "fillGaps";
+  // Modes externalisation Gemini (pour contourner le quota UrlFetch GAS) :
+  //   - getPromptOnly = true : on construit le prompt + ctx et on retourne, sans appel Gemini.
+  //     Le frontend appellera Vercel /api/gemini avec ce prompt.
+  //   - geminiText (string) : le frontend nous renvoie la réponse Gemini brute,
+  //     on skip l'appel HTTP et on parse + sanitize directement.
+  // Si aucun des deux n'est fourni, comportement classique (appel Gemini en GAS).
+  var getPromptOnly = !!(payload && payload.getPromptOnly);
+  var externalGeminiText = (payload && typeof payload.geminiText === "string" && payload.geminiText) ? payload.geminiText : null;
 
-  var apiKey = PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
+  var apiKey = (getPromptOnly || externalGeminiText)
+    ? "external"
+    : PropertiesService.getScriptProperties().getProperty("GEMINI_API_KEY");
   if (!apiKey) return { error: "GEMINI_API_KEY manquante dans Script Properties" };
 
   var capa = _capaciteDuJour(date);
@@ -5472,6 +5482,40 @@ function proposeTournee(payload) {
 
   var prompt = _buildProposeTourneePrompt(date, camionsAvecRestant, clientsEnrichis, ctx.affectes, mode, capa);
 
+  // Mode externalisé : on retourne juste le prompt, le frontend va le passer
+  // à /api/gemini sur Vercel et nous renvoyer la réponse via geminiText.
+  if (getPromptOnly) {
+    return {
+      ok: true,
+      phase: "build",
+      date: date,
+      mode: mode,
+      prompt: prompt,
+      capacite: {
+        camions: camionsAvecRestant,
+        chauffeurs: capa.chauffeurs.length,
+        chefs: capa.chefs.length,
+        monteurs: capa.monteurs.length,
+        capaciteTotaleVelos: capa.capaciteTotaleVelos,
+        dejaAffecte: totalAffecte
+      },
+      clientsCandidats: clientsEnrichis.length,
+      clientsTropGros: clientsTropGros
+    };
+  }
+
+  // Mode externalisé phase 2 : on a reçu la réponse Gemini du frontend, on
+  // saute l'UrlFetch et on parse directement le texte fourni.
+  if (externalGeminiText) {
+    return _proposeTourneeParseAndSanitize(externalGeminiText, {
+      date: date, mode: mode,
+      camionsAvecRestant: camionsAvecRestant,
+      clientsEnrichis: clientsEnrichis,
+      clientsTropGros: clientsTropGros,
+      capa: capa, totalAffecte: totalAffecte
+    });
+  }
+
   // Modèles testés en cascade sur 503 : si gemini-2.5-flash est saturé, on
   // bascule sur gemini-2.0-flash (moins de charge, plus stable) avant
   // d'abandonner. Compromis qualité/dispo : 2.0 est suffisant pour le
@@ -5521,83 +5565,14 @@ function proposeTournee(payload) {
         var parts = (cand.content || {}).parts;
         var finishReason = cand.finishReason || null;
         if (!parts || !parts[0] || !parts[0].text) return { error: "Réponse Gemini vide", finishReason: finishReason };
-        var raw = parts[0].text;
-        var cleaned = raw
-          .replace(/^﻿/, "")
-          .replace(/^\s*```(?:json)?\s*\n?/i, "")
-          .replace(/\n?\s*```\s*$/i, "")
-          .trim();
-        try {
-          var parsed;
-          try {
-            parsed = JSON.parse(cleaned);
-          } catch (firstParseErr) {
-            // Cas vu en prod : Gemini génère DEUX objets JSON consécutifs
-            // ("...} {...}") dans la même réponse. JSON.parse échoue avec
-            // "Unexpected non-whitespace character after JSON at position X".
-            // On extrait alors uniquement le premier objet valide en
-            // comptant les { } au niveau racine (en respectant les strings).
-            var firstMsg = String(firstParseErr && firstParseErr.message || firstParseErr);
-            if (/non-whitespace character after JSON/i.test(firstMsg)) {
-              var firstObj = _extractFirstJsonObject(cleaned);
-              if (firstObj) {
-                parsed = JSON.parse(firstObj);
-              } else {
-                throw firstParseErr;
-              }
-            } else {
-              throw firstParseErr;
-            }
-          }
-          // Garde-fou anti-split : Gemini ignore parfois la règle 7. On dégage tout
-          // arrêt dont nbVelos != nbVelosRestants du client et on bascule le client
-          // dans clientsNonAffectes (ou clientsTropGros si la flotte ne peut pas absorber).
-          _sanitizeProposeSplit(parsed, clientsEnrichis, camionsAvecRestant, clientsTropGros);
-          return {
-            ok: true,
-            date: date,
-            mode: mode,
-            capacite: {
-              camions: camionsAvecRestant,
-              chauffeurs: capa.chauffeurs.length,
-              chefs: capa.chefs.length,
-              monteurs: capa.monteurs.length,
-              capaciteTotaleVelos: capa.capaciteTotaleVelos,
-              dejaAffecte: totalAffecte
-            },
-            clientsCandidats: clientsEnrichis.length,
-            clientsTropGros: clientsTropGros,
-            proposition: parsed
-          };
-        } catch (parseErr) {
-          // Extrait la position de l'erreur depuis le message de SyntaxError
-          // (ex: "Expected ',' or '}' after property value in JSON at position 33122 (line 1018 column 19)")
-          // pour renvoyer ~300 chars autour : c'est le seul moyen de diagnostiquer
-          // une corruption au milieu d'une réponse de 70k chars.
-          var parseMsg = String(parseErr && parseErr.message || parseErr);
-          var posMatch = parseMsg.match(/position\s+(\d+)/);
-          var errPos = posMatch ? parseInt(posMatch[1], 10) : -1;
-          var errContext = null;
-          if (errPos >= 0) {
-            var ctxStart = Math.max(0, errPos - 200);
-            var ctxEnd = Math.min(cleaned.length, errPos + 200);
-            errContext = {
-              position: errPos,
-              before: cleaned.slice(ctxStart, errPos),
-              at: cleaned.slice(errPos, errPos + 1),
-              after: cleaned.slice(errPos + 1, ctxEnd)
-            };
-          }
-          return {
-            error: "Réponse Gemini non-JSON",
-            parseError: parseMsg,
-            finishReason: finishReason,
-            rawLength: raw.length,
-            rawHead: cleaned.slice(0, 400),
-            rawTail: cleaned.slice(-400),
-            errContext: errContext
-          };
-        }
+        return _proposeTourneeParseAndSanitize(parts[0].text, {
+          date: date, mode: mode,
+          camionsAvecRestant: camionsAvecRestant,
+          clientsEnrichis: clientsEnrichis,
+          clientsTropGros: clientsTropGros,
+          capa: capa, totalAffecte: totalAffecte,
+          finishReason: finishReason
+        });
       }
       lastBody = res.getContentText();
       if (lastCode !== 503 && lastCode !== 429 && lastCode !== 500) break outerLoop;
@@ -5609,6 +5584,76 @@ function proposeTournee(payload) {
   // On bascule sur le modèle suivant (ex: 2.5-flash → 2.0-flash).
   }
   return { error: "Gemini HTTP " + lastCode + " (model " + lastModel + ")", body: lastBody.slice(0, 300) };
+}
+
+// Parse + sanitize commun aux deux flows Gemini (appel direct GAS ou via
+// Vercel/api/gemini). Prend le texte brut renvoyé par Gemini et le contexte
+// proposeTournee, retourne la même ProposeResponse que l'ancien code.
+function _proposeTourneeParseAndSanitize(rawText, ctx) {
+  var cleaned = String(rawText || "")
+    .replace(/^﻿/, "")
+    .replace(/^\s*```(?:json)?\s*\n?/i, "")
+    .replace(/\n?\s*```\s*$/i, "")
+    .trim();
+  if (!cleaned) return { error: "Réponse Gemini vide", finishReason: ctx.finishReason || null };
+
+  var parsed;
+  try {
+    try {
+      parsed = JSON.parse(cleaned);
+    } catch (firstParseErr) {
+      var firstMsg = String(firstParseErr && firstParseErr.message || firstParseErr);
+      if (/non-whitespace character after JSON/i.test(firstMsg)) {
+        var firstObj = _extractFirstJsonObject(cleaned);
+        if (firstObj) parsed = JSON.parse(firstObj);
+        else throw firstParseErr;
+      } else {
+        throw firstParseErr;
+      }
+    }
+  } catch (parseErr) {
+    var parseMsg = String(parseErr && parseErr.message || parseErr);
+    var posMatch = parseMsg.match(/position\s+(\d+)/);
+    var errPos = posMatch ? parseInt(posMatch[1], 10) : -1;
+    var errContext = null;
+    if (errPos >= 0) {
+      var ctxStart = Math.max(0, errPos - 200);
+      var ctxEnd = Math.min(cleaned.length, errPos + 200);
+      errContext = {
+        position: errPos,
+        before: cleaned.slice(ctxStart, errPos),
+        at: cleaned.slice(errPos, errPos + 1),
+        after: cleaned.slice(errPos + 1, ctxEnd)
+      };
+    }
+    return {
+      error: "Réponse Gemini non-JSON",
+      parseError: parseMsg,
+      finishReason: ctx.finishReason || null,
+      rawLength: rawText.length,
+      rawHead: cleaned.slice(0, 400),
+      rawTail: cleaned.slice(-400),
+      errContext: errContext
+    };
+  }
+
+  _sanitizeProposeSplit(parsed, ctx.clientsEnrichis, ctx.camionsAvecRestant, ctx.clientsTropGros);
+  return {
+    ok: true,
+    date: ctx.date,
+    mode: ctx.mode,
+    capacite: {
+      camions: ctx.camionsAvecRestant,
+      chauffeurs: ctx.capa.chauffeurs.length,
+      chefs: ctx.capa.chefs.length,
+      monteurs: ctx.capa.monteurs.length,
+      capaciteTotaleVelos: ctx.capa.capaciteTotaleVelos,
+      dejaAffecte: ctx.totalAffecte
+    },
+    clientsCandidats: ctx.clientsEnrichis.length,
+    clientsTropGros: ctx.clientsTropGros,
+    proposition: parsed
+  };
 }
 
 // Garde-fou serveur : règles métier strictes appliquées à la sortie Gemini.

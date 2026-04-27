@@ -147,7 +147,31 @@ export default function DayPlannerModal({
         chefIds: Array.from(chefIds),
         monteurIds: Array.from(monteurIds),
       });
-      const r = (await gasPost("proposeTournee", { date, mode })) as ProposeResponse;
+
+      // Appel Gemini déporté hors GAS pour contourner le quota UrlFetch :
+      //   1) GAS construit le prompt + contexte (pas d'appel HTTP externe)
+      //   2) /api/gemini sur Vercel appelle Gemini avec retry + fallback modèles
+      //   3) GAS reçoit la réponse texte et fait le parse + sanitize en local
+      const built = (await gasPost("proposeTournee", { date, mode, getPromptOnly: true })) as
+        ProposeResponse & { phase?: string; prompt?: string };
+      if (built.error || !built.prompt) {
+        setProposition(built as ProposeResponse);
+        return;
+      }
+      const apiRes = await fetch("/api/gemini", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt: built.prompt }),
+      });
+      const apiJson = (await apiRes.json()) as
+        | { ok: true; text: string; model: string }
+        | { ok: false; error: string };
+      if (!apiRes.ok || !apiJson.ok) {
+        const err = !apiJson.ok ? apiJson.error : `HTTP ${apiRes.status}`;
+        setProposition({ error: "Gemini (Vercel) : " + err });
+        return;
+      }
+      const r = (await gasPost("proposeTournee", { date, mode, geminiText: apiJson.text })) as ProposeResponse;
       setProposition(r);
     } catch (err) {
       setProposition({ error: String(err) });
