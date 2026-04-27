@@ -126,6 +126,7 @@ export default function PhotoGeminiCapture({
   disabled,
   clients,
   lockedClientId,
+  nextEligibleClientId,
   onCameraToggle,
 }: {
   tourneeId: string;
@@ -141,6 +142,10 @@ export default function PhotoGeminiCapture({
    * vignette "Prép. 0/7" d'un client précis). Le dropdown disparaît, on affiche
    * juste un bandeau "Préparation pour <nom>". Évite les erreurs de sélection. */
   lockedClientId?: string;
+  /** Verrou ordre LIFO : seul ce client (le 1er non-fini de la tournée pour
+   * l'étape courante) peut être sélectionné dans le dropdown. Les autres
+   * clients restent visibles mais grisés. */
+  nextEligibleClientId?: string;
   /** Notifie le parent quand la caméra continue s'ouvre/ferme. Permet de
    * désactiver le scanner Strich (qui tient la caméra) le temps que Gemini
    * Vision en prenne le contrôle — iOS Safari = 1 seule appli active. */
@@ -404,9 +409,18 @@ export default function PhotoGeminiCapture({
             <option value="">— Aucun (mode standard, FNUCI doit déjà exister) —</option>
             {clients.map((c) => {
               const free = c.total - c.done;
+              // Verrou LIFO : si nextEligibleClientId est défini, seul ce client
+              // est sélectionnable. Les autres restent visibles pour le contexte
+              // mais désactivés avec un suffixe explicite.
+              const lockedByOrder = !!(nextEligibleClientId && c.clientId !== nextEligibleClientId && free > 0);
+              const suffix = free <= 0
+                ? " — plein"
+                : lockedByOrder
+                  ? " — ⛔ verrouillé (ordre)"
+                  : ` — ${free} libre${free > 1 ? "s" : ""}`;
               return (
-                <option key={c.clientId} value={c.clientId} disabled={free <= 0}>
-                  {c.entreprise} ({c.done}/{c.total}{free <= 0 ? " — plein" : ` — ${free} libre${free > 1 ? "s" : ""}`})
+                <option key={c.clientId} value={c.clientId} disabled={free <= 0 || lockedByOrder}>
+                  {c.entreprise} ({c.done}/{c.total}{suffix})
                 </option>
               );
             })}

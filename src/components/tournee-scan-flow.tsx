@@ -346,22 +346,34 @@ function Inner({ mode }: { mode: ScanMode }) {
   const tourneeTotals = prog?.totals;
   const tourneeAllDone = !!tourneeTotals && tourneeTotals.total > 0 && tourneeTotals[cfg.totalsKey] >= tourneeTotals.total;
 
-  // Prochain client de la tournée a traiter pour cette etape, dans l'ordre du
-  // planning (wrap au debut si besoin pour les chauffeurs qui font la tournee
-  // dans un ordre different). Sert au CTA "Passer au client suivant" qui
-  // apparait des qu'un client est termine.
-  const nextClient = (() => {
-    if (!focusClientId || !prog || !("clients" in prog) || !focusClient) return null;
-    const list = prog.clients;
-    const idx = list.findIndex((c) => c.clientId === focusClient.clientId);
-    for (let i = idx + 1; i < list.length; i++) {
-      if (list[i].totals[cfg.totalsKey] < list[i].totals.total) return list[i];
-    }
-    for (let i = 0; i < idx; i++) {
-      if (list[i].totals[cfg.totalsKey] < list[i].totals.total) return list[i];
-    }
-    return null;
-  })();
+  // Verrou ordre LIFO : tant que le client N (dans l'ordre prep/charg/livr de
+  // la tournée) n'est pas terminé, le N+1 est inaccessible. Pour la prép/charg
+  // l'ordre est déjà inversé en amont (LIFO camion). Pour la livraison c'est
+  // l'ordre normal de la tournée.
+  // → Le `firstUnfinished` est le SEUL client qu'on accepte de scanner ;
+  //   tous les suivants sont grisés tant qu'il n'est pas done.
+  const firstUnfinished = prog
+    ? prog.clients.find((c) => c.totals[cfg.totalsKey] < c.totals.total) || null
+    : null;
+  const firstUnfinishedClientId = firstUnfinished?.clientId;
+  // Détection accès URL en avance : focusClientId qui n'est ni le firstUnfinished
+  // ni un client déjà fini (cas légitime: relire les scans). Si on est en avance
+  // → on bloque et on renvoie vers le bon client.
+  const focusIsAhead = !!(
+    focusClientId &&
+    focusClient &&
+    focusClient.totals[cfg.totalsKey] < focusClient.totals.total &&
+    firstUnfinishedClientId &&
+    focusClientId !== firstUnfinishedClientId
+  );
+
+  // CTA "Passer au client suivant" : pointe sur le firstUnfinished (donc
+  // strictement le client autorisé à être traité ensuite, pas un client
+  // arbitraire en aval/amont).
+  const nextClient =
+    focusClientId && firstUnfinished && firstUnfinishedClientId !== focusClientId
+      ? firstUnfinished
+      : null;
   const nextClientHref = nextClient
     ? `?tourneeId=${encodeURIComponent(tourneeId)}&clientId=${encodeURIComponent(nextClient.clientId)}`
     : null;
@@ -435,14 +447,22 @@ function Inner({ mode }: { mode: ScanMode }) {
             <div className="space-y-1.5">
               {prog.clients.map((c) => {
                 const reste = c.totals.total - c.totals.prepare;
+                // Verrou LIFO : seul le premier client non-fini peut recevoir le FNUCI.
+                // Les clients déjà finis ne sont pas une option (reste=0). Les clients
+                // en aval restent visibles pour donner le contexte mais grisés.
+                const isLocked = !!(firstUnfinishedClientId && c.clientId !== firstUnfinishedClientId);
                 return (
                   <button
                     key={c.clientId}
                     onClick={() => assignAndPrepare(c.clientId)}
-                    disabled={busy}
-                    className="w-full text-left border bg-white rounded-lg p-2.5 hover:bg-orange-100 hover:border-orange-400 disabled:opacity-50"
+                    disabled={busy || isLocked || reste <= 0}
+                    title={isLocked ? `Termine d'abord ${firstUnfinished?.entreprise}` : undefined}
+                    className="w-full text-left border bg-white rounded-lg p-2.5 hover:bg-orange-100 hover:border-orange-400 disabled:opacity-40 disabled:hover:bg-white disabled:hover:border-gray-200"
                   >
-                    <div className="font-medium text-sm">{c.entreprise}</div>
+                    <div className="font-medium text-sm">
+                      {c.entreprise}
+                      {isLocked && <span className="ml-2 text-[10px] font-normal text-gray-500">⛔ verrouillé</span>}
+                    </div>
                     <div className="text-xs text-gray-500">{c.codePostal} {c.ville} · {reste > 0 ? `${reste} vélos restants à préparer` : "complet"}</div>
                   </button>
                 );
@@ -454,7 +474,31 @@ function Inner({ mode }: { mode: ScanMode }) {
           </div>
         )}
 
-        {userId && prog && !pendingFnuci && (
+        {focusIsAhead && firstUnfinished && (
+          <div className="bg-amber-50 border-2 border-amber-400 rounded-xl shadow p-4 mb-3 space-y-3">
+            <div className="text-sm">
+              <div className="font-semibold text-amber-900">⛔ Ordre {cfg.title.toLowerCase()} verrouillé</div>
+              <div className="text-amber-800 mt-1">
+                Tu dois d&apos;abord terminer <strong>{firstUnfinished.entreprise}</strong>
+                {" "}({firstUnfinished.totals[cfg.totalsKey]}/{firstUnfinished.totals.total})
+                avant de passer à <strong>{focusClient?.entreprise}</strong>.
+              </div>
+              <div className="text-xs text-amber-700 mt-1">
+                {mode === "preparation" || mode === "chargement"
+                  ? "Le dernier client à livrer rentre en premier dans le camion : on prépare/charge dans l'ordre inverse de la livraison."
+                  : "On livre dans l'ordre de la tournée pour respecter l'ordre du camion."}
+              </div>
+            </div>
+            <a
+              href={nextClientHref || "#"}
+              className="block text-center bg-amber-600 text-white rounded-lg py-3 text-sm font-semibold hover:bg-amber-700"
+            >
+              → Aller à {firstUnfinished.entreprise}
+            </a>
+          </div>
+        )}
+
+        {userId && prog && !pendingFnuci && !focusIsAhead && (
           <>
             {/* Le scan QR Strich + saisie manuelle FNUCI a été retiré pour les
                 3 étapes préparation / chargement / livraison : toutes passent
@@ -481,6 +525,7 @@ function Inner({ mode }: { mode: ScanMode }) {
                   done: c.totals[cfg.totalsKey],
                 })) : undefined}
                 lockedClientId={focusClientId || undefined}
+                nextEligibleClientId={firstUnfinishedClientId}
                 onCameraToggle={setGeminiCameraOpen}
               />
             </div>
