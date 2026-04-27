@@ -1082,17 +1082,47 @@ function TourneeModal({
     () => new Set(tournee.livraisons.map((l) => l.clientId).filter((x): x is string => !!x)),
     [tournee.livraisons]
   );
+  // Centroïde GPS des arrêts existants de la tournée (clients déjà planifiés
+  // avec coords valides). Si la tournée est vide, on retombe sur l'entrepôt.
+  const tourCentroid = useMemo(() => {
+    const pts = tournee.livraisons
+      .map((l) => ({ lat: l.client.lat, lng: l.client.lng }))
+      .filter((p): p is { lat: number; lng: number } => !!p.lat && !!p.lng);
+    if (pts.length === 0) return { lat: ENTREPOT.lat, lng: ENTREPOT.lng };
+    const lat = pts.reduce((s, p) => s + p.lat, 0) / pts.length;
+    const lng = pts.reduce((s, p) => s + p.lng, 0) / pts.length;
+    return { lat, lng };
+  }, [tournee.livraisons]);
+
   const eligibleClients = useMemo(() => {
-    const list = allClients.filter((c) => {
-      const reste = c.nbVelos - c.velosLivres - (c.velosPlanifies || 0);
-      return reste > 0 && !alreadyInTour.has(c.id);
-    });
+    const libre = capaciteRestante(tournee.mode, tournee.totalVelos);
+    const list = allClients
+      .map((c) => {
+        const reste = c.nbVelos - c.velosLivres - (c.velosPlanifies || 0);
+        const distKm = c.lat && c.lng
+          ? haversineKm(tourCentroid.lat, tourCentroid.lng, c.lat, c.lng)
+          : Infinity;
+        return { c, reste, distKm, fits: reste <= libre };
+      })
+      .filter(({ c, reste }) => reste > 0 && !alreadyInTour.has(c.id));
     const q = clientSearch.trim().toLowerCase();
-    if (!q) return list.slice(0, 30);
+    if (q) {
+      return list
+        .filter(({ c }) => `${c.entreprise} ${c.ville ?? ""} ${c.codePostal ?? ""} ${c.contact ?? ""}`.toLowerCase().includes(q))
+        .map(({ c }) => c)
+        .slice(0, 30);
+    }
+    // Pas de recherche : on classe par (1) tient dans le camion d'abord,
+    // (2) plus proche du centroïde de la tournée, pour proposer en priorité
+    // les clients qui complètent vraiment la tournée sans détour.
     return list
-      .filter((c) => `${c.entreprise} ${c.ville ?? ""} ${c.codePostal ?? ""} ${c.contact ?? ""}`.toLowerCase().includes(q))
+      .sort((a, b) => {
+        if (a.fits !== b.fits) return a.fits ? -1 : 1;
+        return a.distKm - b.distKm;
+      })
+      .map(({ c }) => c)
       .slice(0, 30);
-  }, [allClients, alreadyInTour, clientSearch]);
+  }, [allClients, alreadyInTour, clientSearch, tourCentroid, tournee.mode, tournee.totalVelos]);
 
   const addClient = async (clientId: string, reste: number) => {
     setBusy("add-" + clientId);
@@ -1838,6 +1868,11 @@ function TourneeModal({
                 {eligibleClients.map((c) => {
                   const reste = c.nbVelos - c.velosLivres - (c.velosPlanifies || 0);
                   const loadingRow = busy === "add-" + c.id;
+                  const libre = capaciteRestante(tournee.mode, tournee.totalVelos);
+                  const fits = reste <= libre;
+                  const distKm = c.lat && c.lng
+                    ? haversineKm(tourCentroid.lat, tourCentroid.lng, c.lat, c.lng)
+                    : null;
                   return (
                     <button
                       key={c.id}
@@ -1849,7 +1884,15 @@ function TourneeModal({
                         <span className="font-medium">{c.entreprise}</span>
                         {c.ville && <span className="text-gray-400"> · {c.ville}</span>}
                       </span>
-                      <span className="text-xs font-medium text-blue-700 whitespace-nowrap">+ {reste}v</span>
+                      {distKm != null && (
+                        <span className="text-[10px] text-gray-400 whitespace-nowrap">{distKm.toFixed(1)} km</span>
+                      )}
+                      <span
+                        className={`text-xs font-medium whitespace-nowrap ${fits ? "text-blue-700" : "text-amber-600"}`}
+                        title={fits ? "Rentre dans le camion" : `Dépasse la capacité (${libre}v libre)`}
+                      >
+                        + {reste}v{!fits && " ⚠"}
+                      </span>
                       {loadingRow && <span className="text-xs text-gray-400">…</span>}
                     </button>
                   );
