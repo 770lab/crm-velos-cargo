@@ -102,7 +102,7 @@ function BlPage() {
         .dv-content { flex: 1 1 0; min-height: 0; }
         .dv-page-footer { flex-shrink: 0; padding-top: 6px; }
 
-        .dv-logo { height: 26mm; width: auto; display: block; margin-bottom: 4mm; }
+        .dv-logo { height: 26mm; width: auto; display: block; margin-bottom: 4mm; align-self: flex-start; max-width: 100%; }
 
         .dv-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px; }
         .dv-head-left .doc-title { font-size: 13pt; font-weight: 700; color: #1a1a1a; margin-bottom: 4px; }

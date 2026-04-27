@@ -639,8 +639,22 @@ export async function runFirestoreAction(
     }
 
     case "uploadBlSignedPhoto": {
-      const livraisonId = getRequired(body, "livraisonId");
+      // Le composant BlSignedUploader n'a pas livraisonId sous la main, juste
+      // tourneeId + clientId. On résout côté serveur (parité avec GAS).
+      const tourneeId = getRequired(body, "tourneeId");
+      const clientId = getRequired(body, "clientId");
       const photoData = getRequired(body, "photoData");
+      const snap = await getDocs(
+        query(
+          collection(db, "livraisons"),
+          where("tourneeId", "==", tourneeId),
+          where("clientId", "==", clientId),
+        ),
+      );
+      if (snap.empty) {
+        return { error: "Aucune livraison trouvée pour ce client/tournée" };
+      }
+      const livraisonId = snap.docs[0].id;
       const fileName = `bl-signed-${Date.now()}.jpg`;
       const url = await uploadDataUrl(
         `bl/${livraisonId}/${fileName}`,
@@ -651,7 +665,7 @@ export async function runFirestoreAction(
         urlBlSigne: url,
         updatedAt: ts(),
       });
-      return { ok: true, url };
+      return { ok: true, livraisonId, clientId, tourneeId, photoUrl: url };
     }
 
     case "uploadMontagePhoto": {
