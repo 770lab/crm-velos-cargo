@@ -581,19 +581,22 @@ function Inner({ mode }: { mode: ScanMode }) {
               );
             })()}
 
-            {mode === "preparation" && allDone && (() => {
+            {(mode === "preparation" || mode === "chargement") && allDone && (() => {
               const cid = focusClientId ? `&clientId=${encodeURIComponent(focusClientId)}` : "";
               const nbVelos = total;
               const cibleNom = focusClient?.entreprise || "la tournée";
+              const verbe = mode === "preparation" ? "préparés" : "chargés";
               return (
                 <div className="bg-emerald-50 border-2 border-emerald-500 rounded-xl p-4 mb-3 space-y-3">
                   <div className="text-center space-y-1">
                     <div className="text-3xl">🎉</div>
                     <div className="text-emerald-900 font-bold text-base">
-                      {nbVelos}/{nbVelos} préparés pour {cibleNom}
+                      {nbVelos}/{nbVelos} {verbe} pour {cibleNom}
                     </div>
                     <div className="text-emerald-700 text-xs">
-                      Imprime maintenant les étiquettes à coller sur le carton et le bon de livraison.
+                      {mode === "preparation"
+                        ? "Imprime maintenant les étiquettes à coller sur le carton et le bon de livraison."
+                        : "Tu peux ré-imprimer les étiquettes ou le bon de livraison si besoin."}
                     </div>
                   </div>
                   <a
