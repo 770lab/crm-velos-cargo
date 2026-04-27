@@ -423,7 +423,10 @@ function ClientMontageView({
           </div>
         </div>
 
-        {/* Bloc photo : différent selon qu'on est entre 2 vélos ou en cours */}
+        {/* Bloc photo : différent selon qu'on est entre 2 vélos ou en cours.
+            Caché quand le client est terminé pour ne pas laisser un bouton
+            grisé/transparent à côté du bouton "Client suivant". */}
+        {!(totals.done === totals.total && totals.total > 0) && (
         <div className="bg-white rounded-xl shadow p-4 space-y-3 mb-3">
           {currentFnuci ? (
             <>
@@ -488,6 +491,7 @@ function ClientMontageView({
             </div>
           )}
         </div>
+        )}
 
         {totals.done === totals.total && totals.total > 0 && (() => {
           // Calcule le prochain client de la tournée à monter (idem flow
