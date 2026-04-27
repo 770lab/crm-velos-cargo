@@ -1615,19 +1615,20 @@ function TourneeModal({
                   <span>{i === 0 ? `📍 ${ENTREPOT.label} → ` : "↓ "}{segments[i].distKm} km · ~{segments[i].trajetMin} min</span>
                 </div>
               )}
-              <div className={`border rounded-lg p-3 flex items-center gap-3 ${selected.has(l.id) ? "bg-blue-50 border-blue-300" : ""}`}>
+              <div className={`border rounded-lg p-3 ${selected.has(l.id) ? "bg-blue-50 border-blue-300" : ""}`}>
+                <div className="flex items-start gap-3">
                 <input
                   type="checkbox"
                   checked={selected.has(l.id)}
                   onChange={() => toggleSelect(l.id)}
-                  className="shrink-0"
+                  className="shrink-0 mt-1"
                 />
                 <span className="w-9 h-9 sm:w-7 sm:h-7 rounded-full bg-green-600 text-white text-base sm:text-sm flex items-center justify-center font-semibold shrink-0">
                   {i + 1}
                 </span>
                 <div className="flex-1 min-w-0">
-                  <div className="font-bold text-lg sm:text-base sm:font-medium leading-tight break-words">{l.client.entreprise}</div>
-                  <div className="text-xs text-gray-500 sm:truncate mt-0.5">
+                  <div className="font-bold text-base sm:font-medium leading-tight">{l.client.entreprise}</div>
+                  <div className="text-xs text-gray-500 mt-0.5">
                     {[l.client.adresse, l.client.ville, l.client.codePostal].filter(Boolean).join(", ") || "—"}
                   </div>
                   {l.client.telephone && (
@@ -1730,45 +1731,46 @@ function TourneeModal({
                     );
                   })()}
                 </div>
-                <div className="text-right shrink-0">
+                </div>
+                <div className="flex items-center gap-2 mt-2 ml-12 sm:ml-0 sm:mt-0 flex-wrap">
                   <span className="text-sm font-medium bg-gray-100 px-2 py-0.5 rounded">
                     {l._count.velos} v.
                   </span>
                   {!isRetrait && monteurs > 1 && deployPlan.steps[i] && (
-                    <div className={`text-[9px] mt-0.5 ${deployPlan.steps[i].camionAttend ? "text-gray-400" : "text-purple-600 font-medium"}`}>
+                    <span className={`text-[9px] ${deployPlan.steps[i].camionAttend ? "text-gray-400" : "text-purple-600 font-medium"}`}>
                       {fmtDuree(deployPlan.steps[i].tempsSurPlace)} · {deployPlan.steps[i].monteursAffectes}m
                       {!deployPlan.steps[i].camionAttend && " →"}
-                    </div>
+                    </span>
+                  )}
+                  <select
+                    value={l.statut}
+                    disabled={busy === l.id}
+                    onChange={(e) => updateStatut(l.id, e.target.value)}
+                    className="text-xs px-2 py-1 border rounded"
+                  >
+                    <option value="planifiee">Planifiée</option>
+                    <option value="en_cours">En cours</option>
+                    <option value="livree">Livrée</option>
+                    <option value="annulee">Annulée</option>
+                  </select>
+                  {l.statut === "annulee" ? (
+                    <button
+                      onClick={() => restaurer(l.id)}
+                      disabled={busy === l.id}
+                      className="text-emerald-500 hover:text-emerald-700 text-xs whitespace-nowrap"
+                    >
+                      ↺ restaurer
+                    </button>
+                  ) : (
+                    <button
+                      onClick={() => annuler(l.id)}
+                      disabled={busy === l.id}
+                      className="text-amber-500 hover:text-amber-700 text-xs whitespace-nowrap"
+                    >
+                      annuler
+                    </button>
                   )}
                 </div>
-                <select
-                  value={l.statut}
-                  disabled={busy === l.id}
-                  onChange={(e) => updateStatut(l.id, e.target.value)}
-                  className="text-xs px-2 py-1 border rounded"
-                >
-                  <option value="planifiee">Planifiée</option>
-                  <option value="en_cours">En cours</option>
-                  <option value="livree">Livrée</option>
-                  <option value="annulee">Annulée</option>
-                </select>
-                {l.statut === "annulee" ? (
-                  <button
-                    onClick={() => restaurer(l.id)}
-                    disabled={busy === l.id}
-                    className="text-emerald-500 hover:text-emerald-700 text-xs whitespace-nowrap"
-                  >
-                    ↺ restaurer
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => annuler(l.id)}
-                    disabled={busy === l.id}
-                    className="text-amber-500 hover:text-amber-700 text-xs whitespace-nowrap"
-                  >
-                    annuler
-                  </button>
-                )}
               </div>
             </div>
           ))}
