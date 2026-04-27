@@ -18,11 +18,41 @@ interface Incoherence {
   sens: "trop_velos" | "pas_assez_velos";
 }
 
+interface Etablissement {
+  clientId: string;
+  entreprise: string;
+  nbVelos: number;
+}
+
+interface IncoherenceSiren {
+  siren: string;
+  entreprise: string;
+  totalVelos: number;
+  effectifMax: number;
+  effectifSource: string;
+  ecart: number;
+  sens: "trop_velos" | "pas_assez_velos";
+  nbEtablissements: number;
+  etablissements: Etablissement[];
+  nbDocs: number;
+}
+
+interface ClientSansPiece {
+  siren: string;
+  entreprise: string;
+  totalVelos: number;
+  etablissements: Etablissement[];
+}
+
 interface AuditResp {
   ok?: boolean;
   error?: string;
   total?: number;
   incoherences?: Incoherence[];
+  incoherencesParSiren?: IncoherenceSiren[];
+  totalSiren?: number;
+  clientsSansPieceEffectif?: ClientSansPiece[];
+  totalSansPiece?: number;
   nbClientsAvecEffectifDetecte?: number;
 }
 
@@ -128,10 +158,11 @@ export default function AuditEffectifsPage() {
 
       {data?.ok && (
         <>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mb-6">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
             <KpiCard label="Clients avec effectif détecté" value={String(data.nbClientsAvecEffectifDetecte ?? 0)} />
-            <KpiCard label="Incohérences" value={String(data.total ?? 0)} accent={(data.total ?? 0) > 0 ? "text-orange-700" : "text-emerald-700"} />
-            <KpiCard label="Ajustements faits dans cette session" value={String(Object.keys(adjusted).length)} accent="text-blue-700" />
+            <KpiCard label="Incohérences (par établissement)" value={String(data.total ?? 0)} accent={(data.total ?? 0) > 0 ? "text-orange-700" : "text-emerald-700"} />
+            <KpiCard label="Incohérences (par SIREN)" value={String(data.totalSiren ?? 0)} accent={(data.totalSiren ?? 0) > 0 ? "text-orange-700" : "text-emerald-700"} />
+            <KpiCard label="Sans pièce d'effectif" value={String(data.totalSansPiece ?? 0)} accent={(data.totalSansPiece ?? 0) > 0 ? "text-amber-700" : "text-emerald-700"} />
           </div>
 
           {(data.incoherences?.length ?? 0) === 0 ? (
@@ -210,6 +241,126 @@ export default function AuditEffectifsPage() {
             tu peux étendre la commande. L&apos;ajustement passe par <code>setClientVelosTarget</code> qui fait du soft cancel
             (jamais de hard delete) et crée les vélos manquants si target {">"} actuel.
           </p>
+
+          {/* ---- INCOHERENCES PAR SIREN (multi-etablissements) ---- */}
+          {(data.incoherencesParSiren?.length ?? 0) > 0 && (
+            <div className="mt-10">
+              <h2 className="text-lg font-semibold mb-1">Incohérences par SIREN <span className="text-sm font-normal text-gray-500">(multi-établissements)</span></h2>
+              <p className="text-xs text-gray-500 mb-3">
+                Cas type : un même SIREN ouvert sur plusieurs adresses (ex L&apos;AFRICA PARIS, 10 boutiques). On somme les vélos commandés sur tous les établissements et on compare à l&apos;effectif global du SIREN détecté sur n&apos;importe quel doc.
+              </p>
+              <div className="bg-white rounded-xl border overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 border-b text-xs text-gray-600">
+                      <tr>
+                        <th className="text-left px-4 py-2 font-medium">SIREN / Enseigne</th>
+                        <th className="text-right px-3 py-2 font-medium">Étab.</th>
+                        <th className="text-right px-3 py-2 font-medium">Σ vélos</th>
+                        <th className="text-right px-3 py-2 font-medium">Effectif détecté</th>
+                        <th className="text-right px-3 py-2 font-medium">Écart</th>
+                        <th className="text-left px-3 py-2 font-medium">Source</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {data.incoherencesParSiren!.map((s) => {
+                        const sensColor = s.sens === "trop_velos" ? "text-orange-700" : "text-blue-700";
+                        const sensLabel =
+                          s.sens === "trop_velos"
+                            ? `${s.ecart} en trop`
+                            : `${Math.abs(s.ecart)} manquants`;
+                        return (
+                          <tr key={s.siren} className="hover:bg-gray-50 align-top">
+                            <td className="px-4 py-2">
+                              <div className="font-medium">{s.entreprise}</div>
+                              <div className="text-[11px] text-gray-400">SIREN {s.siren}</div>
+                              <details className="mt-1">
+                                <summary className="text-[11px] text-blue-600 cursor-pointer">voir les {s.nbEtablissements} établissements</summary>
+                                <ul className="mt-1 space-y-0.5">
+                                  {s.etablissements.map((e) => (
+                                    <li key={e.clientId} className="text-[11px] text-gray-600">
+                                      <Link href={`/clients/detail?id=${encodeURIComponent(e.clientId)}`} className="text-blue-700 hover:underline">
+                                        {e.entreprise}
+                                      </Link>
+                                      <span className="ml-2 text-gray-400">{e.nbVelos} vélos</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </details>
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono text-xs">{s.nbEtablissements}</td>
+                            <td className="px-3 py-2 text-right font-mono">{s.totalVelos}</td>
+                            <td className="px-3 py-2 text-right font-mono">{s.effectifMax}</td>
+                            <td className={`px-3 py-2 text-right text-xs ${sensColor}`}>{sensLabel}</td>
+                            <td className="px-3 py-2 text-xs text-gray-500">{s.effectifSource}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+              <p className="text-[11px] text-gray-400 mt-2 leading-snug">
+                Pas de bouton « Ajuster » à ce niveau : la répartition entre établissements est ta décision commerciale. Ouvre les fiches concernées pour ajuster établissement par établissement.
+              </p>
+            </div>
+          )}
+
+          {/* ---- CLIENTS SANS PIECE D'EFFECTIF ---- */}
+          {(data.clientsSansPieceEffectif?.length ?? 0) > 0 && (
+            <div className="mt-10">
+              <h2 className="text-lg font-semibold mb-1">Sans pièce d&apos;effectif</h2>
+              <p className="text-xs text-gray-500 mb-3">
+                Clients avec des vélos commandés mais aucune attestation URSSAF / DSN / liasse fiscale scannée. Impossible à vérifier tant qu&apos;on n&apos;a pas de doc — risque CEE en l&apos;état. Groupé par SIREN.
+              </p>
+              <div className="bg-white rounded-xl border overflow-hidden">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 border-b text-xs text-gray-600">
+                      <tr>
+                        <th className="text-left px-4 py-2 font-medium">SIREN / Enseigne</th>
+                        <th className="text-right px-3 py-2 font-medium">Étab.</th>
+                        <th className="text-right px-3 py-2 font-medium">Σ vélos commandés</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {data.clientsSansPieceEffectif!.map((s, idx) => (
+                        <tr key={s.siren || `nosi-${idx}`} className="hover:bg-amber-50/40 align-top">
+                          <td className="px-4 py-2">
+                            <div className="font-medium">{s.entreprise}</div>
+                            {s.siren && <div className="text-[11px] text-gray-400">SIREN {s.siren}</div>}
+                            {s.etablissements.length > 1 ? (
+                              <details className="mt-1">
+                                <summary className="text-[11px] text-blue-600 cursor-pointer">voir les {s.etablissements.length} établissements</summary>
+                                <ul className="mt-1 space-y-0.5">
+                                  {s.etablissements.map((e) => (
+                                    <li key={e.clientId} className="text-[11px] text-gray-600">
+                                      <Link href={`/clients/detail?id=${encodeURIComponent(e.clientId)}`} className="text-blue-700 hover:underline">
+                                        {e.entreprise}
+                                      </Link>
+                                      <span className="ml-2 text-gray-400">{e.nbVelos} vélos</span>
+                                    </li>
+                                  ))}
+                                </ul>
+                              </details>
+                            ) : (
+                              s.etablissements[0] && (
+                                <Link href={`/clients/detail?id=${encodeURIComponent(s.etablissements[0].clientId)}`} className="text-[11px] text-blue-700 hover:underline">
+                                  ouvrir la fiche →
+                                </Link>
+                              )
+                            )}
+                          </td>
+                          <td className="px-3 py-2 text-right font-mono text-xs">{s.etablissements.length}</td>
+                          <td className="px-3 py-2 text-right font-mono">{s.totalVelos}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
         </>
       )}
     </div>

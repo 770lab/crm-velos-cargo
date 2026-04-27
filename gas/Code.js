@@ -2551,7 +2551,7 @@ function auditEffectifs(params) {
     }
   }
 
-  // Charge nbVelosCommandes des clients pour comparer.
+  // Charge nbVelosCommandes + siren des clients pour comparer.
   var clientSheet = SS.getSheetByName("Clients");
   if (!clientSheet) return { incoherences: [], total: 0, error: "Feuille Clients introuvable" };
   var cData = clientSheet.getDataRange().getValues();
@@ -2559,15 +2559,18 @@ function auditEffectifs(params) {
   var iCidC = cHeaders.indexOf("id");
   var iEntC = cHeaders.indexOf("entreprise");
   var iNbC = cHeaders.indexOf("nbVelosCommandes");
+  var iSirenC = cHeaders.indexOf("siren");
   var clientByid = {};
+  var allClients = [];
   for (var ci = 1; ci < cData.length; ci++) {
     var ccid = String(cData[ci][iCidC] || "");
-    if (ccid) {
-      clientByid[ccid] = {
-        nbVelosCommandes: Number(cData[ci][iNbC] || 0),
-        entreprise: String(cData[ci][iEntC] || ""),
-      };
-    }
+    if (!ccid) continue;
+    var nbV = Number(cData[ci][iNbC] || 0);
+    var ent = String(cData[ci][iEntC] || "");
+    var siren = iSirenC >= 0 ? String(cData[ci][iSirenC] || "").replace(/\s/g, "") : "";
+    var entry = { clientId: ccid, nbVelosCommandes: nbV, entreprise: ent, siren: siren };
+    clientByid[ccid] = entry;
+    allClients.push(entry);
   }
 
   // Construit la liste des incoherences (effectif != nbVelosCommandes).
@@ -2596,10 +2599,127 @@ function auditEffectifs(params) {
   // Tri par ecart absolu desc (les plus gros decalages d'abord).
   incoherences.sort(function(a, b) { return Math.abs(b.ecart) - Math.abs(a.ecart); });
 
+  // ---- AGREGATION PAR SIREN ----
+  // Cas L'AFRICA PARIS : 1 SIREN = 10 etablissements, 1 attestation URSSAF
+  // suffit pour le SIREN entier. On somme les nbVelosCommandes de tous les
+  // etablissements et on compare a l'effectif max detecte sur n'importe quel
+  // doc rattache a l'un des etablissements du SIREN.
+  var sirenAgg = {}; // siren -> { entreprise, totalVelos, etablissements:[{clientId,entreprise,nbVelos}], effectifMax, effectifSource, nbDocs, verifIds, sirenClientIds:[] }
+  allClients.forEach(function(c) {
+    if (!c.siren || c.siren === "0") return;
+    if (!sirenAgg[c.siren]) {
+      sirenAgg[c.siren] = {
+        siren: c.siren,
+        entreprise: c.entreprise,
+        totalVelos: 0,
+        etablissements: [],
+        effectifMax: 0,
+        effectifSource: "",
+        nbDocs: 0,
+        verifIds: [],
+      };
+    }
+    sirenAgg[c.siren].totalVelos += c.nbVelosCommandes;
+    sirenAgg[c.siren].etablissements.push({
+      clientId: c.clientId,
+      entreprise: c.entreprise,
+      nbVelos: c.nbVelosCommandes,
+    });
+    var b = byClient[c.clientId];
+    if (b) {
+      sirenAgg[c.siren].nbDocs += b.nbDocs;
+      sirenAgg[c.siren].verifIds = sirenAgg[c.siren].verifIds.concat(b.verifIds);
+      if (b.effectifMax > sirenAgg[c.siren].effectifMax) {
+        sirenAgg[c.siren].effectifMax = b.effectifMax;
+        sirenAgg[c.siren].effectifSource = b.effectifSource;
+      }
+    }
+  });
+
+  var incoherencesParSiren = [];
+  Object.keys(sirenAgg).forEach(function(siren) {
+    var s = sirenAgg[siren];
+    if (s.etablissements.length < 2) return; // on ne sort que les SIREN multi-etabs
+    if (s.effectifMax === 0) return; // pas de doc detecte, va dans "sansPiece" au niveau client
+    var ecart = s.totalVelos - s.effectifMax;
+    if (ecart === 0) return;
+    incoherencesParSiren.push({
+      siren: siren,
+      entreprise: s.entreprise,
+      totalVelos: s.totalVelos,
+      effectifMax: s.effectifMax,
+      effectifSource: s.effectifSource,
+      ecart: ecart,
+      sens: ecart > 0 ? "trop_velos" : "pas_assez_velos",
+      nbEtablissements: s.etablissements.length,
+      etablissements: s.etablissements,
+      nbDocs: s.nbDocs,
+      verifIds: s.verifIds,
+    });
+  });
+  incoherencesParSiren.sort(function(a, b) { return Math.abs(b.ecart) - Math.abs(a.ecart); });
+
+  // ---- CLIENTS SANS PIECE D'EFFECTIF ----
+  // Tout client avec nbVelosCommandes > 0 mais aucune verif classee
+  // DSN/URSSAF/ATTESTATION pour CE clientId. On groupe aussi par SIREN pour
+  // que L'AFRICA PARIS apparaisse 1 fois et pas 10.
+  var sansPieceParSiren = {};
+  var sansPieceSansSiren = [];
+  allClients.forEach(function(c) {
+    if (c.nbVelosCommandes <= 0) return;
+    if (byClient[c.clientId]) return; // a deja une piece scannee
+    if (c.siren && c.siren !== "0") {
+      if (!sansPieceParSiren[c.siren]) {
+        sansPieceParSiren[c.siren] = {
+          siren: c.siren,
+          entreprise: c.entreprise,
+          totalVelos: 0,
+          etablissements: [],
+        };
+      }
+      sansPieceParSiren[c.siren].totalVelos += c.nbVelosCommandes;
+      sansPieceParSiren[c.siren].etablissements.push({
+        clientId: c.clientId,
+        entreprise: c.entreprise,
+        nbVelos: c.nbVelosCommandes,
+      });
+    } else {
+      sansPieceSansSiren.push({
+        clientId: c.clientId,
+        entreprise: c.entreprise,
+        nbVelos: c.nbVelosCommandes,
+      });
+    }
+  });
+  // Si pour un SIREN il y a au moins 1 etablissement deja scanne, on retire
+  // le groupe (l'effectif est connu via le SIREN).
+  Object.keys(sansPieceParSiren).forEach(function(siren) {
+    if (sirenAgg[siren] && sirenAgg[siren].effectifMax > 0) {
+      delete sansPieceParSiren[siren];
+    }
+  });
+  var clientsSansPieceEffectif = Object.keys(sansPieceParSiren).map(function(s) {
+    return sansPieceParSiren[s];
+  });
+  // Ajout des sans-siren comme groupes a 1 etablissement, pour homogeneite.
+  sansPieceSansSiren.forEach(function(c) {
+    clientsSansPieceEffectif.push({
+      siren: "",
+      entreprise: c.entreprise,
+      totalVelos: c.nbVelos,
+      etablissements: [c],
+    });
+  });
+  clientsSansPieceEffectif.sort(function(a, b) { return b.totalVelos - a.totalVelos; });
+
   return {
     ok: true,
     total: incoherences.length,
     incoherences: incoherences,
+    incoherencesParSiren: incoherencesParSiren,
+    totalSiren: incoherencesParSiren.length,
+    clientsSansPieceEffectif: clientsSansPieceEffectif,
+    totalSansPiece: clientsSansPieceEffectif.length,
     nbClientsAvecEffectifDetecte: Object.keys(byClient).length,
   };
 }
