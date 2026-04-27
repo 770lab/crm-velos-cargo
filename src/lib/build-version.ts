@@ -1,3 +1,3 @@
 // Généré par scripts/bump-version.mjs — ne pas éditer à la main.
-export const BUILD_VERSION = "20260427234910";
-export const BUILT_AT = "2026-04-27T23:49:10.954Z";
+export const BUILD_VERSION = "20260427235038";
+export const BUILT_AT = "2026-04-27T23:50:38.987Z";

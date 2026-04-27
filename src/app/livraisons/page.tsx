@@ -848,13 +848,33 @@ function TourneeCard({
   const palette = modePalette(tournee.mode);
   const libre = capaciteRestante(tournee.mode, tournee.totalVelos);
   const peutAjouter = libre >= SEUIL_2EME_TOURNEE && tournee.statutGlobal !== "livree" && tournee.statutGlobal !== "annulee";
+  // Check affectation : on regarde la 1re livraison (les affectations sont
+  // par tournée, donc toutes ses livraisons partagent les mêmes équipes via
+  // assignTournee). Manque = chauffeur OU chefs OU monteurs vide.
+  const ref = tournee.livraisons[0];
+  const missing: string[] = [];
+  if (ref) {
+    if (!ref.chauffeurId) missing.push("chauffeur");
+    const hasChef = !!ref.chefEquipeId || (ref.chefEquipeIds && ref.chefEquipeIds.length > 0);
+    if (!hasChef) missing.push("chef");
+    if (!ref.monteurIds || ref.monteurIds.length === 0) missing.push("monteur");
+  }
+  const affectIncomplete = missing.length > 0 && tournee.statutGlobal !== "livree" && tournee.statutGlobal !== "annulee";
   return (
     <button
       onClick={onClick}
       className={`w-full text-left rounded ${palette.bg} ${palette.border} border ${palette.text} ${
         compact ? "px-1.5 py-1 text-[11px]" : "px-2 py-1.5 text-xs"
-      } hover:opacity-90 transition-opacity`}
+      } hover:opacity-90 transition-opacity ${affectIncomplete ? "ring-2 ring-red-400 ring-offset-1" : ""}`}
     >
+      {affectIncomplete && (
+        <div
+          className="inline-flex items-center gap-1 px-1 mb-0.5 rounded bg-red-100 text-red-800 text-[9px] font-bold leading-tight"
+          title={`Affectation incomplète : manque ${missing.join(", ")}`}
+        >
+          ⚠️ Manque {missing.join(" + ")}
+        </div>
+      )}
       <div className="flex items-start justify-between gap-1">
         <div className="min-w-0 flex-1">
           {tournee.livraisons.map((l, i) => {
