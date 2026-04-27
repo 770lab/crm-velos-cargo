@@ -57,6 +57,12 @@ async function mirrorGeminiResultsToFirestore(
           if (clientId) {
             await gasPost("assignFnuciToClient", { fnuci: r.fnuci, clientId });
           }
+          // Miroir GAS: extractFnuciFromImage pose datePreparation après
+          // assignFnuciToClient (cf. gas/Code.js:6187). Sans cet appel, le
+          // compteur prepare côté Firestore reste à 0 → la page Préparation
+          // n'affiche jamais le bloc "Étiquettes + BL" (allDone toujours
+          // false).
+          await gasPost("markVeloPrepare", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
         } else if (etape === "chargement") {
           await gasPost("markVeloCharge", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
         } else if (etape === "livraisonScan") {
