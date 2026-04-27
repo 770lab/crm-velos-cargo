@@ -5476,7 +5476,7 @@ function proposeTournee(payload) {
   // bascule sur gemini-2.0-flash (moins de charge, plus stable) avant
   // d'abandonner. Compromis qualité/dispo : 2.0 est suffisant pour le
   // problème de ventilation (logique métier déjà cadrée par le prompt).
-  var modelsToTry = ["gemini-2.5-flash", "gemini-2.0-flash"];
+  var modelsToTry = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
   var requestPayload = {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: {
