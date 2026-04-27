@@ -1038,7 +1038,7 @@ function TourneeModal({
   onClose: () => void;
   onChanged: () => void;
 }) {
-  const { carte: allClients, equipe } = useData();
+  const { carte: allClients, equipe, bonsEnlevement } = useData();
   // Étapes autorisées pour le user connecté. Si pas de user (cas SSR ou non
   // logué), on laisse tout cliquable — l'auth-gate gère déjà la redirection.
   const currentUser = useCurrentUser();
@@ -1504,6 +1504,47 @@ function TourneeModal({
             </div>
           )}
         </div>
+
+        {/* Bon d'enlèvement de la tournée (Axdis) */}
+        {tournee.tourneeId && (() => {
+          const be = bonsEnlevement.find((b) => b.tourneeId === tournee.tourneeId);
+          if (!be) {
+            return (
+              <div className="mb-3 inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg border bg-gray-50 border-gray-200 text-gray-500">
+                <span>📋</span>
+                <span>Bon d&apos;enlèvement non reçu</span>
+              </div>
+            );
+          }
+          const qte = Number(be.quantite || 0);
+          const match = qte === tournee.totalVelos;
+          let cls = "bg-orange-50 border-orange-300 text-orange-800";
+          let icon = "⚠";
+          if (match) { cls = "bg-green-50 border-green-300 text-green-800"; icon = "✓"; }
+          return (
+            <div className={`mb-3 flex items-center gap-3 px-3 py-2 rounded-lg border ${cls}`}>
+              <span className="text-lg">📋</span>
+              <div className="flex-1 text-sm">
+                <div className="font-medium">
+                  Bon d&apos;enlèvement {be.fournisseur || ""} {be.numeroDoc ? `#${be.numeroDoc}` : ""} {icon}
+                </div>
+                <div className="text-xs opacity-80">
+                  {be.tourneeRef || ""} · {qte} vélo{qte > 1 ? "s" : ""} {match ? "= " : "≠ "}{tournee.totalVelos} dans la tournée
+                </div>
+              </div>
+              {be.driveUrl && (
+                <a
+                  href={be.driveUrl.split(" ||| ")[0]}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs underline hover:opacity-80"
+                >
+                  Voir le PDF
+                </a>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Suivi opérationnel global tournée */}
         {tournee.tourneeId && progression && progression.totals.total > 0 && (() => {

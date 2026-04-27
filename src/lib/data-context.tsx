@@ -145,6 +145,24 @@ interface Camion {
   createdAt?: string | null;
 }
 
+interface BonEnlevement {
+  id: string;
+  receivedAt: string;
+  fournisseur: string;
+  numeroDoc: string;
+  dateDoc: string;
+  tourneeRef: string;
+  tourneeDate: string;
+  tourneeNumero: number | string;
+  tourneeId: string;
+  quantite: number | string;
+  driveUrl: string;
+  fileName: string;
+  fromEmail: string;
+  subject: string;
+  messageId: string;
+}
+
 interface DataState {
   stats: Stats | null;
   clients: ClientRow[];
@@ -152,8 +170,9 @@ interface DataState {
   livraisons: LivraisonRow[];
   equipe: EquipeMember[];
   flotte: Camion[];
+  bonsEnlevement: BonEnlevement[];
   loading: boolean;
-  refresh: (key?: "stats" | "clients" | "carte" | "livraisons" | "equipe" | "flotte") => Promise<void>;
+  refresh: (key?: "stats" | "clients" | "carte" | "livraisons" | "equipe" | "flotte" | "bonsEnlevement") => Promise<void>;
 }
 
 const DataContext = createContext<DataState>({
@@ -163,6 +182,7 @@ const DataContext = createContext<DataState>({
   livraisons: [],
   equipe: [],
   flotte: [],
+  bonsEnlevement: [],
   loading: true,
   refresh: async () => {},
 });
@@ -171,7 +191,7 @@ export function useData() {
   return useContext(DataContext);
 }
 
-export { type Stats, type ClientRow, type ClientPoint, type LivraisonRow, type EquipeMember, type EquipeRole, type Camion, type CamionType };
+export { type Stats, type ClientRow, type ClientPoint, type LivraisonRow, type EquipeMember, type EquipeRole, type Camion, type CamionType, type BonEnlevement };
 
 export function DataProvider({ children }: { children: ReactNode }) {
   const [stats, setStats] = useState<Stats | null>(null);
@@ -180,17 +200,19 @@ export function DataProvider({ children }: { children: ReactNode }) {
   const [livraisons, setLivraisons] = useState<LivraisonRow[]>([]);
   const [equipe, setEquipe] = useState<EquipeMember[]>([]);
   const [flotte, setFlotte] = useState<Camion[]>([]);
+  const [bonsEnlevement, setBonsEnlevement] = useState<BonEnlevement[]>([]);
   const [loading, setLoading] = useState(true);
 
   const loadAll = useCallback(async () => {
     setLoading(true);
-    const [s, c, ca, l, e, f] = await Promise.all([
+    const [s, c, ca, l, e, f, b] = await Promise.all([
       gasGet("getStats"),
       gasGet("getClients"),
       gasGet("getCarte"),
       gasGet("getLivraisons"),
       gasGet("listEquipe").catch(() => ({ items: [] })),
       gasGet("listFlotte").catch(() => ({ items: [] })),
+      gasGet("getBonsEnlevement").catch(() => ({ items: [] })),
     ]);
     setStats(s);
     setClients(c);
@@ -198,10 +220,11 @@ export function DataProvider({ children }: { children: ReactNode }) {
     setLivraisons(l);
     setEquipe(Array.isArray(e?.items) ? e.items : []);
     setFlotte(Array.isArray(f?.items) ? f.items : []);
+    setBonsEnlevement(Array.isArray(b?.items) ? b.items : []);
     setLoading(false);
   }, []);
 
-  const refresh = useCallback(async (key?: "stats" | "clients" | "carte" | "livraisons" | "equipe" | "flotte") => {
+  const refresh = useCallback(async (key?: "stats" | "clients" | "carte" | "livraisons" | "equipe" | "flotte" | "bonsEnlevement") => {
     if (!key) {
       await loadAll();
       return;
@@ -218,6 +241,10 @@ export function DataProvider({ children }: { children: ReactNode }) {
       flotte: async () => {
         const f = await gasGet("listFlotte").catch(() => ({ items: [] }));
         setFlotte(Array.isArray(f?.items) ? f.items : []);
+      },
+      bonsEnlevement: async () => {
+        const b = await gasGet("getBonsEnlevement").catch(() => ({ items: [] }));
+        setBonsEnlevement(Array.isArray(b?.items) ? b.items : []);
       },
     };
     await fetchers[key]();
@@ -249,7 +276,7 @@ export function DataProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <DataContext.Provider value={{ stats, clients, carte, livraisons, equipe, flotte, loading, refresh }}>
+    <DataContext.Provider value={{ stats, clients, carte, livraisons, equipe, flotte, bonsEnlevement, loading, refresh }}>
       {children}
     </DataContext.Provider>
   );

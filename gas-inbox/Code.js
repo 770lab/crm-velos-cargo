@@ -404,7 +404,36 @@ function _processMessage(msg, crmCtx) {
     if (effPCol >= 0) _updateClientField(matched.rowIndex, effPCol + 1, true);
   }
 
-  // Écrit la ligne dans VerificationsPending
+  // Routage spécial Bons d'enlèvement : écrit directement dans la sheet
+  // BonsEnlevement, pas dans VerificationsPending (le BE n'est pas un doc client
+  // à valider, c'est une confirmation de commande fournisseur liée à une tournée).
+  if (gemini && gemini.docType === "BON_ENLEVEMENT" && gemini.bonEnlevement) {
+    var be = gemini.bonEnlevement;
+    var driveUrls = result.attachments.map(function (a) { return a.url || ""; }).filter(Boolean).join(" ||| ");
+    var fileNames = result.attachments.map(function (a) { return a.name; }).join(", ");
+    try {
+      _addBonEnlevementRow({
+        fournisseur: be.fournisseur || "",
+        numeroDoc: be.numeroDoc || "",
+        dateDoc: be.dateDoc || "",
+        tourneeRef: be.tourneeRef || "",
+        tourneeDate: be.dateDoc || "",
+        tourneeNumero: be.tourneeNumero != null ? be.tourneeNumero : "",
+        quantite: be.quantite != null ? be.quantite : "",
+        driveUrl: driveUrls,
+        fileName: fileNames,
+        fromEmail: fromEmail,
+        subject: msg.getSubject(),
+        messageId: msg.getId()
+      });
+      result.bonEnlevement = be;
+    } catch (e) {
+      result.bonEnlevementError = String(e);
+    }
+    return result;
+  }
+
+  // Écrit la ligne dans VerificationsPending (cas standard)
   _addVerification({
     clientId: matched ? matched.id : "",
     entreprise: matched ? matched.entreprise : (gemini && gemini.clientName) || "",
@@ -448,13 +477,15 @@ function _geminiAnalyze(ctx) {
       "Renvoie UNIQUEMENT un JSON strict :\n" +
       "{\n" +
       '  "clientName": string|null (nom de la societe CIBLE du document, PAS l\'expediteur),\n' +
-      '  "docType": "DEVIS"|"KBIS"|"LIASSE"|"URSSAF"|"ATTESTATION"|"SIGNATURE"|"BICYCLE"|"PARCELLE"|"AUTRE"|null,\n' +
+      '  "docType": "DEVIS"|"KBIS"|"LIASSE"|"URSSAF"|"ATTESTATION"|"SIGNATURE"|"BICYCLE"|"PARCELLE"|"BON_ENLEVEMENT"|"AUTRE"|null,\n' +
       '  "effectif": number|null (effectif moyen mensuel si DSN/URSSAF/liasse/registre du personnel),\n' +
       '  "effectifPresent": true|false|null (true si un nombre d\'effectifs/salaries est visible dans le document),\n' +
       '  "kbisDate": "YYYY-MM-DD"|null (date de l\'extrait Kbis/RNE "a jour au..." visible sur le document),\n' +
       '  "devisDate": "YYYY-MM-DD"|null (date du devis si document est un devis signe),\n' +
+      '  "bonEnlevement": null|{ "fournisseur": string, "numeroDoc": string, "dateDoc": "YYYY-MM-DD", "tourneeRef": string (ex: "TOURNEE 1"), "tourneeNumero": number|null (juste le numero extrait de tourneeRef), "quantite": number (quantite totale de velos cargo, somme des lignes "VELO CARGO ELECTRIQUE" sans compter les eco-contributions ni les frais d\'enlevement) },\n' +
       '  "notes": string (1 phrase de contexte)\n' +
       "}\n\n" +
+      "REGLE BON D\'ENLEVEMENT : si le document est une \"Confirmation de commande\" ou un \"Bon d\'enlevement\" d\'un fournisseur (ex: AXDIS PRO) avec une reference type \"VELO CARGO- TOURNEE N\", alors docType=\"BON_ENLEVEMENT\" et remplis le champ bonEnlevement. La quantite est le nombre de velos cargo electriques sur le bon (NE compte PAS les lignes ENL/eco-contribution).\n\n" +
       "Email :\n" +
       "From: " + ctx.fromEmail + "\n" +
       "Subject: " + ctx.subject + "\n" +
@@ -594,6 +625,92 @@ function _addVerification(row) {
     return row[h] == null ? "" : row[h];
   });
   sh.appendRow(out);
+}
+
+// ─── BonsEnlevement sheet (écriture depuis Inbox Watcher) ────────────────────
+
+var BE_SHEET = "BonsEnlevement";
+var BE_COLS = [
+  "id", "receivedAt", "fournisseur", "numeroDoc", "dateDoc",
+  "tourneeRef", "tourneeDate", "tourneeNumero", "tourneeId",
+  "quantite", "driveUrl", "fileName", "fromEmail", "subject", "messageId"
+];
+
+function _ensureBonsEnlevementSheet() {
+  var ss = _openCrm();
+  var sh = ss.getSheetByName(BE_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(BE_SHEET);
+    sh.getRange(1, 1, 1, BE_COLS.length).setValues([BE_COLS]);
+    sh.setFrozenRows(1);
+    return sh;
+  }
+  var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  var missing = BE_COLS.filter(function (c) { return headers.indexOf(c) < 0; });
+  if (missing.length) {
+    sh.getRange(1, headers.length + 1, 1, missing.length).setValues([missing]);
+  }
+  return sh;
+}
+
+function _addBonEnlevementRow(payload) {
+  var sh = _ensureBonsEnlevementSheet();
+  var headers = sh.getRange(1, 1, 1, sh.getLastColumn()).getValues()[0];
+  // Idempotence : update si messageId déjà présent
+  var existingRow = -1;
+  if (payload.messageId) {
+    var data = sh.getDataRange().getValues();
+    var iMsg = headers.indexOf("messageId");
+    for (var r = 1; r < data.length; r++) {
+      if (String(data[r][iMsg]) === String(payload.messageId)) { existingRow = r + 1; break; }
+    }
+  }
+  // Match tourneeId par date+numéro (numérotation séquentielle par jour)
+  var matchedTourneeId = "";
+  if (payload.tourneeDate && payload.tourneeNumero) {
+    matchedTourneeId = _findTourneeIdByDateAndNumeroInbox(payload.tourneeDate, Number(payload.tourneeNumero));
+  }
+  var out = headers.map(function (h) {
+    if (h === "id") return existingRow > 0 ? sh.getRange(existingRow, headers.indexOf("id") + 1).getValue() : Utilities.getUuid();
+    if (h === "receivedAt") return new Date();
+    if (h === "tourneeId") return matchedTourneeId;
+    return payload[h] == null ? "" : payload[h];
+  });
+  if (existingRow > 0) {
+    sh.getRange(existingRow, 1, 1, headers.length).setValues([out]);
+  } else {
+    sh.appendRow(out);
+  }
+}
+
+function _findTourneeIdByDateAndNumeroInbox(dateStr, numero) {
+  var ss = _openCrm();
+  var sh = ss.getSheetByName("Livraisons");
+  if (!sh) return "";
+  var data = sh.getDataRange().getValues();
+  if (!data.length) return "";
+  var headers = data[0];
+  var iDate = headers.indexOf("datePrevue");
+  var iTid = headers.indexOf("tourneeId");
+  var iStatut = headers.indexOf("statut");
+  if (iDate < 0 || iTid < 0) return "";
+  var target = String(dateStr).slice(0, 10);
+  var seen = {};
+  var ids = [];
+  var tz = Session.getScriptTimeZone();
+  for (var r = 1; r < data.length; r++) {
+    var d = data[r][iDate];
+    if (!d) continue;
+    var iso = (d instanceof Date) ? Utilities.formatDate(d, tz, "yyyy-MM-dd") : String(d).slice(0, 10);
+    if (iso !== target) continue;
+    if (iStatut >= 0 && data[r][iStatut] === "annulee") continue;
+    var tid = String(data[r][iTid] || "").trim();
+    if (!tid || seen[tid]) continue;
+    seen[tid] = true;
+    ids.push(tid);
+  }
+  ids.sort(function (a, b) { return a.localeCompare(b); });
+  return ids[numero - 1] || "";
 }
 
 // ─── Drive helpers ───────────────────────────────────────────────────────────

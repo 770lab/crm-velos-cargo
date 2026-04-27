@@ -242,6 +242,15 @@ function handleRequest(e) {
       case "extractFnuciFromImage":
         result = extractFnuciFromImage(getBody());
         break;
+      case "addBonEnlevement":
+        result = addBonEnlevement(getBody());
+        break;
+      case "getBonsEnlevement":
+        result = getBonsEnlevement(e.parameter);
+        break;
+      case "getBonEnlevementByTournee":
+        result = getBonEnlevementByTournee(e.parameter.tourneeId);
+        break;
       default:
         result = { error: "Action inconnue: " + action };
     }
@@ -5997,4 +6006,130 @@ function extractFnuciFromImage(body) {
     results: results,
     rawGeminiText: rawText.slice(0, 500)
   };
+}
+
+// ─── BONS D'ENLÈVEMENT ────────────────────────────────────────────────────────
+// Bon d'enlèvement = confirmation de commande Axdis (ou autre fournisseur) reçue
+// par mail. Référence client format : "VELO CARGO- TOURNEE N" → on match sur la
+// numérotation séquentielle par jour calculée côté frontend.
+
+var BE_SHEET = "BonsEnlevement";
+var BE_COLS = [
+  "id", "receivedAt", "fournisseur", "numeroDoc", "dateDoc",
+  "tourneeRef", "tourneeDate", "tourneeNumero", "tourneeId",
+  "quantite", "driveUrl", "fileName", "fromEmail", "subject", "messageId"
+];
+
+function ensureBonsEnlevementSchema() {
+  var sheet = SS.getSheetByName(BE_SHEET);
+  if (!sheet) {
+    sheet = SS.insertSheet(BE_SHEET);
+    sheet.getRange(1, 1, 1, BE_COLS.length).setValues([BE_COLS]);
+    return { sheet: sheet, headers: BE_COLS.slice() };
+  }
+  var lastCol = sheet.getLastColumn();
+  var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  for (var k = 0; k < BE_COLS.length; k++) {
+    if (headers.indexOf(BE_COLS[k]) === -1) {
+      lastCol++;
+      sheet.getRange(1, lastCol).setValue(BE_COLS[k]);
+      headers.push(BE_COLS[k]);
+    }
+  }
+  return { sheet: sheet, headers: headers };
+}
+
+function addBonEnlevement(payload) {
+  var ctx = ensureBonsEnlevementSchema();
+  // Idempotence : si messageId déjà présent → on update au lieu de doubler
+  var existingRow = -1;
+  if (payload.messageId) {
+    var data = ctx.sheet.getDataRange().getValues();
+    var iMsg = ctx.headers.indexOf("messageId");
+    for (var r = 1; r < data.length; r++) {
+      if (String(data[r][iMsg]) === String(payload.messageId)) {
+        existingRow = r + 1;
+        break;
+      }
+    }
+  }
+
+  // Match tourneeId via tourneeDate + tourneeNumero (numérotation séquentielle par jour)
+  var matchedTourneeId = "";
+  if (payload.tourneeDate && payload.tourneeNumero) {
+    matchedTourneeId = _findTourneeIdByDateAndNumero(payload.tourneeDate, Number(payload.tourneeNumero));
+  }
+
+  var row = BE_COLS.map(function (col) {
+    if (col === "id") return existingRow > 0 ? "" : Utilities.getUuid();
+    if (col === "receivedAt") return new Date().toISOString();
+    if (col === "tourneeId") return matchedTourneeId;
+    return payload[col] != null ? payload[col] : "";
+  });
+
+  if (existingRow > 0) {
+    // On préserve l'id existant
+    var existingId = ctx.sheet.getRange(existingRow, ctx.headers.indexOf("id") + 1).getValue();
+    row[BE_COLS.indexOf("id")] = existingId;
+    ctx.sheet.getRange(existingRow, 1, 1, BE_COLS.length).setValues([row]);
+    return { ok: true, updated: true, id: existingId, tourneeId: matchedTourneeId };
+  }
+  ctx.sheet.appendRow(row);
+  return { ok: true, created: true, id: row[0], tourneeId: matchedTourneeId };
+}
+
+function _findTourneeIdByDateAndNumero(dateStr, numero) {
+  // Reproduit la logique frontend : trie les tournées du jour par tourneeId
+  // (localeCompare) et prend le N-ième.
+  var ctx = ensureLivraisonsSchema();
+  var data = ctx.sheet.getDataRange().getValues();
+  var iDate = ctx.headers.indexOf("datePrevue");
+  var iTid = ctx.headers.indexOf("tourneeId");
+  var iStatut = ctx.headers.indexOf("statut");
+  if (iDate < 0 || iTid < 0) return "";
+  var target = String(dateStr).slice(0, 10);
+  var seen = {};
+  var ids = [];
+  for (var r = 1; r < data.length; r++) {
+    var d = data[r][iDate];
+    if (!d) continue;
+    var iso = (d instanceof Date) ? Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy-MM-dd") : String(d).slice(0, 10);
+    if (iso !== target) continue;
+    if (iStatut >= 0 && data[r][iStatut] === "annulee") continue;
+    var tid = String(data[r][iTid] || "").trim();
+    if (!tid || seen[tid]) continue;
+    seen[tid] = true;
+    ids.push(tid);
+  }
+  ids.sort(function (a, b) { return a.localeCompare(b); });
+  return ids[numero - 1] || "";
+}
+
+function getBonsEnlevement(params) {
+  var ctx = ensureBonsEnlevementSchema();
+  var data = ctx.sheet.getDataRange().getValues();
+  var headers = ctx.headers;
+  var items = [];
+  for (var r = 1; r < data.length; r++) {
+    var obj = {};
+    for (var c = 0; c < headers.length; c++) obj[headers[c]] = data[r][c];
+    if (obj.tourneeDate instanceof Date) {
+      obj.tourneeDate = Utilities.formatDate(obj.tourneeDate, Session.getScriptTimeZone(), "yyyy-MM-dd");
+    }
+    if (obj.dateDoc instanceof Date) {
+      obj.dateDoc = Utilities.formatDate(obj.dateDoc, Session.getScriptTimeZone(), "yyyy-MM-dd");
+    }
+    if (params && params.tourneeId && obj.tourneeId !== params.tourneeId) continue;
+    if (params && params.clientId) {
+      // filtre côté frontend si besoin (BE ne sont pas par client)
+    }
+    items.push(obj);
+  }
+  return { items: items };
+}
+
+function getBonEnlevementByTournee(tourneeId) {
+  if (!tourneeId) return { item: null };
+  var r = getBonsEnlevement({ tourneeId: tourneeId });
+  return { item: r.items[0] || null, count: r.items.length };
 }
