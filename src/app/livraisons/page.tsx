@@ -19,6 +19,7 @@ import DayPlannerModal from "@/components/day-planner-modal";
 // Les boutons d'étape interdits restent visibles mais non cliquables (grisés).
 type StageKey = "prepare" | "charge" | "livre" | "monte";
 const STAGE_ACCESS: Record<EquipeRole, ReadonlySet<StageKey>> = {
+  superadmin: new Set<StageKey>(["prepare", "charge", "livre", "monte"]),
   admin: new Set<StageKey>(["prepare", "charge", "livre", "monte"]),
   preparateur: new Set<StageKey>(["prepare", "charge"]),
   chef: new Set<StageKey>(["charge", "livre", "monte"]),
@@ -52,7 +53,7 @@ interface Tournee {
 // Une livraison appartient au user si celui-ci y est affecté selon son rôle.
 // Admin voit tout, apporteur ne voit aucune livraison (commercial pur).
 function livraisonMatchesUser(l: LivraisonRow, userId: string, role: EquipeRole): boolean {
-  if (role === "admin") return true;
+  if (role === "admin" || role === "superadmin") return true;
   if (role === "apporteur") return false;
   switch (role) {
     case "chauffeur":
@@ -93,7 +94,8 @@ export default function LivraisonsPage() {
     }
     // Attend currentUser pour decider en fonction du role.
     if (!currentUser) return;
-    const isTerrain = currentUser.role !== "admin" && currentUser.role !== "apporteur";
+    const isAdminLike = currentUser.role === "admin" || currentUser.role === "superadmin";
+    const isTerrain = !isAdminLike && currentUser.role !== "apporteur";
     if (isTerrain || window.innerWidth < 768) setView("jour");
     setViewInited(true);
   }, [currentUser, viewInited]);
@@ -280,7 +282,7 @@ export default function LivraisonsPage() {
         <div className="flex flex-wrap items-center gap-2">
           {/* Boutons admin uniquement : ni un préparateur, ni un chauffeur,
               ni un monteur n'ont à planifier la journée ou créer un client. */}
-          {currentUser?.role === "admin" && (
+          {(currentUser?.role === "admin" || currentUser?.role === "superadmin") && (
             <>
               <button
                 onClick={() => setShowPlanner(true)}

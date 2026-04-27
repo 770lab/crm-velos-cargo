@@ -29,6 +29,7 @@ interface FinancesResponse {
 }
 
 const ROLE_LABEL: Record<EquipeRole, string> = {
+  superadmin: "Super admin",
   admin: "Admin",
   chauffeur: "Chauffeur",
   chef: "Chef d'équipe",
@@ -38,6 +39,7 @@ const ROLE_LABEL: Record<EquipeRole, string> = {
 };
 
 const ROLE_COLOR: Record<EquipeRole, string> = {
+  superadmin: "bg-yellow-100 text-yellow-800",
   admin: "bg-red-100 text-red-800",
   chauffeur: "bg-blue-100 text-blue-800",
   chef: "bg-purple-100 text-purple-800",
@@ -96,12 +98,12 @@ export default function FinancesPage() {
     };
   }, [from, to]);
 
-  // Garde-fou : seul l'admin a accès. Les rôles terrain n'ont pas vocation à
-  // voir les salaires de toute l'équipe.
-  if (user && user.role !== "admin") {
+  // Garde-fou : seul le super-admin a acces a la masse salariale. Les admins
+  // standards ont la gestion ops complete mais sans donnees RH sensibles.
+  if (user && user.role !== "superadmin") {
     return (
       <div className="max-w-2xl mx-auto bg-amber-50 border border-amber-200 rounded-xl p-6 text-amber-800">
-        Cette page est réservée à l&apos;administration.
+        Cette page est réservée au super-admin (accès aux salaires/primes).
       </div>
     );
   }

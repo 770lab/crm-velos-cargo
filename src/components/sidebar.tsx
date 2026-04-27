@@ -9,15 +9,26 @@ import type { EquipeRole } from "@/lib/data-context";
 
 type NavItem = { href: string; label: string; icon: string; badge?: true };
 
-// Pages accessibles par rôle. Admin voit tout. Les autres voient le strict utile.
+// Pages accessibles par rôle.
+// - superadmin : tout, y compris /finances (donnees salaires/primes sensibles).
+// - admin     : tout sauf /finances (gestion ops complete sans donnees RH).
+// - autres    : strict utile selon role terrain.
 const NAV_BY_ROLE: Record<EquipeRole, NavItem[]> = {
-  admin: [
+  superadmin: [
     { href: "/", label: "Tableau de bord", icon: "📊" },
     { href: "/clients", label: "Clients", icon: "🏢" },
     { href: "/carte", label: "Carte & Tournées", icon: "🗺️" },
     { href: "/livraisons", label: "Livraisons", icon: "🚚" },
     { href: "/equipe", label: "Équipe", icon: "👷" },
     { href: "/finances", label: "Finances", icon: "💶" },
+    { href: "/verifications", label: "À vérifier", icon: "🔎", badge: true },
+  ],
+  admin: [
+    { href: "/", label: "Tableau de bord", icon: "📊" },
+    { href: "/clients", label: "Clients", icon: "🏢" },
+    { href: "/carte", label: "Carte & Tournées", icon: "🗺️" },
+    { href: "/livraisons", label: "Livraisons", icon: "🚚" },
+    { href: "/equipe", label: "Équipe", icon: "👷" },
     { href: "/verifications", label: "À vérifier", icon: "🔎", badge: true },
   ],
   preparateur: [
@@ -41,6 +52,7 @@ const NAV_BY_ROLE: Record<EquipeRole, NavItem[]> = {
 };
 
 const ROLE_LABEL: Record<EquipeRole, string> = {
+  superadmin: "Super admin",
   admin: "Admin",
   chauffeur: "Chauffeur",
   chef: "Chef d'équipe",
@@ -56,7 +68,7 @@ export function Sidebar() {
   const user = useCurrentUser();
 
   useEffect(() => {
-    if (user?.role !== "admin") return;
+    if (user?.role !== "admin" && user?.role !== "superadmin") return;
     let cancelled = false;
     const load = async () => {
       try {

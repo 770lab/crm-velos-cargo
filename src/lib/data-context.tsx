@@ -109,7 +109,11 @@ interface LivraisonRow {
   _count: { velos: number };
 }
 
-type EquipeRole = "admin" | "chauffeur" | "chef" | "monteur" | "apporteur" | "preparateur";
+// superadmin : voit tout y compris Finances et masse salariale.
+// admin      : gestion operationnelle complete MAIS sans acces aux donnees
+//              financieres sensibles (salaires, primes, masse salariale).
+// Les autres roles sont des roles terrain (chauffeur, chef, etc.).
+type EquipeRole = "superadmin" | "admin" | "chauffeur" | "chef" | "monteur" | "apporteur" | "preparateur";
 
 interface EquipeMember {
   id: string;

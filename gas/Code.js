@@ -2790,7 +2790,9 @@ var EQUIPE_SHEET_NAME = "Equipe";
 //   de la tournee. Pour les monteurs : les velos qu'ils ont montes (split
 //   entre les monteurs de l'equipe pour la tournee).
 var EQUIPE_COLS = ["id", "nom", "role", "telephone", "email", "actif", "notes", "createdAt", "pinHash", "salaireJournalier", "primeVelo"];
-var EQUIPE_ROLES = ["admin", "chauffeur", "chef", "monteur", "apporteur", "preparateur"];
+// superadmin : seul role qui voit la masse salariale (page Finances).
+// admin      : gestion ops complete sans donnees RH sensibles.
+var EQUIPE_ROLES = ["superadmin", "admin", "chauffeur", "chef", "monteur", "apporteur", "preparateur"];
 
 function ensureEquipeSheet() {
   var sh = SS.getSheetByName(EQUIPE_SHEET_NAME);
