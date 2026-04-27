@@ -78,7 +78,21 @@ export default function DayPlannerModal({
   const [loadingDispo, setLoadingDispo] = useState(false);
   const [savingDispo, setSavingDispo] = useState(false);
   const [proposing, setProposing] = useState(false);
+  const [proposeStep, setProposeStep] = useState<
+    "idle" | "savingDispo" | "buildingPrompt" | "gemini" | "parsing"
+  >("idle");
+  const [geminiStartedAt, setGeminiStartedAt] = useState<number | null>(null);
+  const [tick, setTick] = useState(0);
   const [proposition, setProposition] = useState<ProposeResponse | null>(null);
+
+  // Tick toutes les 200ms pendant que Gemini réfléchit, pour faire avancer
+  // visuellement la barre de progression sans connaître la durée exacte
+  // (Gemini = 20-90s selon charge).
+  useEffect(() => {
+    if (proposeStep !== "gemini") return;
+    const id = setInterval(() => setTick((t) => t + 1), 200);
+    return () => clearInterval(id);
+  }, [proposeStep]);
   const [applying, setApplying] = useState(false);
   const [mode, setMode] = useState<"fillGaps" | "fromScratch">("fillGaps");
 
@@ -138,6 +152,7 @@ export default function DayPlannerModal({
   const propose = async () => {
     setProposing(true);
     setProposition(null);
+    setProposeStep("savingDispo");
     try {
       // Sauvegarde les dispos d'abord pour que Gemini voie l'état actuel
       await gasPost("setDisponibilites", {
@@ -152,12 +167,15 @@ export default function DayPlannerModal({
       //   1) GAS construit le prompt + contexte (pas d'appel HTTP externe)
       //   2) /api/gemini sur Vercel appelle Gemini avec retry + fallback modèles
       //   3) GAS reçoit la réponse texte et fait le parse + sanitize en local
+      setProposeStep("buildingPrompt");
       const built = (await gasPost("proposeTournee", { date, mode, getPromptOnly: true })) as
         ProposeResponse & { phase?: string; prompt?: string };
       if (built.error || !built.prompt) {
         setProposition(built as ProposeResponse);
         return;
       }
+      setProposeStep("gemini");
+      setGeminiStartedAt(Date.now());
       const apiRes = await fetch("/api/gemini", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -171,13 +189,40 @@ export default function DayPlannerModal({
         setProposition({ error: "Gemini (Vercel) : " + err });
         return;
       }
+      setProposeStep("parsing");
       const r = (await gasPost("proposeTournee", { date, mode, geminiText: apiJson.text })) as ProposeResponse;
       setProposition(r);
     } catch (err) {
       setProposition({ error: String(err) });
     } finally {
       setProposing(false);
+      setProposeStep("idle");
+      setGeminiStartedAt(null);
     }
+  };
+
+  // Progression estimée 0-100% selon l'étape. Gemini est l'étape la plus
+  // longue (20-90s) ; on remplit linéairement de 30% à 90% sur 60s pour donner
+  // un feedback visuel sans bloquer à 100% si ça dépasse.
+  const progressPct = (() => {
+    if (proposeStep === "idle") return 0;
+    if (proposeStep === "savingDispo") return 8;
+    if (proposeStep === "buildingPrompt") return 20;
+    if (proposeStep === "parsing") return 95;
+    if (proposeStep === "gemini" && geminiStartedAt) {
+      const elapsedMs = Date.now() - geminiStartedAt;
+      const ratio = Math.min(1, elapsedMs / 60000);
+      return Math.round(30 + 60 * ratio);
+    }
+    return 30;
+  })();
+  void tick; // re-render trigger pendant l'étape gemini
+  const stepLabel: Record<typeof proposeStep, string> = {
+    idle: "",
+    savingDispo: "💾 Sauvegarde des dispositions du jour…",
+    buildingPrompt: "📝 Construction du prompt avec les clients à livrer…",
+    gemini: "🧠 Gemini ventile les tournées (15-90 s)…",
+    parsing: "✅ Validation des règles métier…",
   };
 
   const applyProposition = async () => {
@@ -340,6 +385,29 @@ export default function DayPlannerModal({
             {proposing ? "Gemini réfléchit…" : "🪄 Proposer la tournée"}
           </button>
         </div>
+
+        {/* Barre de progression pendant la génération */}
+        {proposing && (
+          <div className="mb-4 bg-purple-50 border border-purple-200 rounded-lg p-3">
+            <div className="text-xs text-purple-800 mb-2 font-medium">
+              {stepLabel[proposeStep]}
+            </div>
+            <div className="h-2 bg-purple-100 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-purple-600 rounded-full transition-all duration-300 ease-out"
+                style={{ width: `${progressPct}%` }}
+              />
+            </div>
+            <div className="text-[10px] text-purple-600 mt-1 text-right tabular-nums">
+              {progressPct}%
+              {proposeStep === "gemini" && geminiStartedAt && (
+                <span className="ml-2 text-purple-400">
+                  · {Math.round((Date.now() - geminiStartedAt) / 1000)}s
+                </span>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* Résultat Gemini */}
         {proposition && (
