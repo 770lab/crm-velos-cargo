@@ -2518,6 +2518,7 @@ function auditEffectifs(params) {
   var iEnt = headers.indexOf("entreprise");
   var iDoc = headers.indexOf("docType");
   var iEff = headers.indexOf("effectifDetected");
+  var iVDev = headers.indexOf("nbVelosDevis"); // -1 si colonne pas encore creee
   var iStat = headers.indexOf("status");
   var iRecv = headers.indexOf("receivedAt");
 
@@ -2529,12 +2530,35 @@ function auditEffectifs(params) {
   // Pour chaque client, on retient l'effectif MAX detecte (le plus genereux,
   // pour eviter de trop reduire si une vieille DSN a un chiffre obsolete) +
   // la liste des verifIds qui l'ont confirme.
+  // En parallele, on capture aussi le nb de velos detecte par Gemini sur les
+  // DEVIS du client (pour comparer DEVIS vs ATTESTATION).
   var byClient = {};
+  var devisByClient = {}; // cid -> { nbVelosMax, sourceVerifId, nbDevis }
   for (var i = 1; i < data.length; i++) {
     var row = data[i];
     var cid = String(row[iCid] || "");
     if (!cid) continue;
     var docType = String(row[iDoc] || "").toUpperCase();
+
+    // Capture du nb de velos sur les DEVIS analyses par Gemini
+    if (docType === "DEVIS" && iVDev >= 0) {
+      var vRaw = row[iVDev];
+      if (vRaw !== "" && vRaw != null) {
+        var nbV = Number(vRaw);
+        if (isFinite(nbV) && nbV >= 0 && nbV < 10000) {
+          if (!devisByClient[cid]) {
+            devisByClient[cid] = { nbVelosMax: nbV, sourceVerifId: String(row[iId] || ""), nbDevis: 1 };
+          } else {
+            devisByClient[cid].nbDevis++;
+            if (nbV > devisByClient[cid].nbVelosMax) {
+              devisByClient[cid].nbVelosMax = nbV;
+              devisByClient[cid].sourceVerifId = String(row[iId] || "");
+            }
+          }
+        }
+      }
+    }
+
     if (!DOCS_AVEC_EFFECTIF[docType]) continue;
     var effRaw = row[iEff];
     if (effRaw === "" || effRaw == null) continue;
@@ -2590,10 +2614,16 @@ function auditEffectifs(params) {
     if (!c) return; // verif orpheline (client supprime ?), on saute
     var ecart = c.nbVelosCommandes - b.effectifMax;
     if (ecart === 0) return; // tout est coherent
+    var devisInfo = devisByClient[cid] || null;
     incoherences.push({
       clientId: cid,
       entreprise: c.entreprise || b.entreprise,
       nbVelosCommandes: c.nbVelosCommandes,
+      // Nb de velos lu par Gemini sur le DEVIS du client (pour confronter avec
+      // l'attestation et detecter une saisie commerciale optimiste vs ce que le
+      // devis SIGNE par le client engageait reellement).
+      nbVelosDevis: devisInfo ? devisInfo.nbVelosMax : null,
+      nbDevis: devisInfo ? devisInfo.nbDevis : 0,
       effectifMax: b.effectifMax,
       effectifSource: b.effectifSource,
       ecart: ecart, // positif = trop de velos commandes ; negatif = pas assez

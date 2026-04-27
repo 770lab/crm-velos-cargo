@@ -36,7 +36,7 @@ var VERIF_SHEET = "VerificationsPending";
 var VERIF_COLS  = [
   "id", "receivedAt", "clientId", "entreprise", "docType",
   "driveUrl", "fileName", "fromEmail", "subject",
-  "effectifDetected", "nbVelosBefore", "nbVelosAfter",
+  "effectifDetected", "nbVelosDevis", "nbVelosBefore", "nbVelosAfter",
   "status", "notes", "messageId"
 ];
 
@@ -443,6 +443,7 @@ function _processMessage(msg, crmCtx) {
     fromEmail: fromEmail,
     subject: msg.getSubject(),
     effectifDetected: gemini && gemini.effectif != null ? gemini.effectif : "",
+    nbVelosDevis: gemini && gemini.nbVelosDevis != null ? gemini.nbVelosDevis : "",
     nbVelosBefore: nbBefore == null ? "" : nbBefore,
     nbVelosAfter:  nbAfter == null ? "" : nbAfter,
     status: matched ? "pending" : "unassigned",
@@ -465,6 +466,7 @@ function _geminiAnalyze(ctx) {
     text:
       "Tu analyses un email reçu pour un CRM de livraison de vélos cargo aux commerces.\n" +
       "Contexte : Artisans Verts Energy livre des vélos électriques aux salariés de magasins (1 vélo / salarié max).\n\n" +
+      "REGLE GLOBALE : tu DOIS lire CHAQUE PAGE de CHAQUE PDF joint en entier avant de repondre. Ne te limite PAS a la 1re page. Verifie le footer \"Page X / Y\" et assure-toi d\'avoir scanne tout le document. Un document tronque = mauvaise extraction = donnees CEE faussees.\n\n" +
       "IMPORTANT : L'expéditeur de l'email N'EST PAS forcément le client final. " +
       "Il peut être un apporteur d'affaires, un courtier, un cabinet RH ou un intermédiaire " +
       "qui transmet des documents pour le compte d'un de ses propres clients. " +
@@ -478,14 +480,23 @@ function _geminiAnalyze(ctx) {
       "{\n" +
       '  "clientName": string|null (nom de la societe CIBLE du document, PAS l\'expediteur),\n' +
       '  "docType": "DEVIS"|"KBIS"|"LIASSE"|"URSSAF"|"ATTESTATION"|"SIGNATURE"|"BICYCLE"|"PARCELLE"|"BON_ENLEVEMENT"|"AUTRE"|null,\n' +
-      '  "effectif": number|null (effectif moyen mensuel si DSN/URSSAF/liasse/registre du personnel),\n' +
+      '  "effectif": number|null (effectif total de salaries de l\'entreprise au moment du document. Voir REGLES EFFECTIF ci-dessous pour le comptage selon le type de doc),\n' +
       '  "effectifPresent": true|false|null (true si un nombre d\'effectifs/salaries est visible dans le document),\n' +
+      '  "nbVelosDevis": number|null (UNIQUEMENT si docType=\"DEVIS\" : nombre TOTAL de velos cargo electriques commandes sur le devis, somme des quantites des lignes \"velo cargo\". Ne compte PAS les accessoires/bornes/services),\n' +
       '  "kbisDate": "YYYY-MM-DD"|null (date de l\'extrait Kbis/RNE "a jour au..." visible sur le document),\n' +
       '  "devisDate": "YYYY-MM-DD"|null (date du devis si document est un devis signe),\n' +
       '  "bonEnlevement": null|{ "fournisseur": string, "numeroDoc": string, "dateDoc": "YYYY-MM-DD", "tourneeRef": string (ex: "TOURNEE 1"), "tourneeNumero": number|null (juste le numero extrait de tourneeRef), "quantite": number (quantite totale de velos cargo, somme des lignes "VELO CARGO ELECTRIQUE" sans compter les eco-contributions ni les frais d\'enlevement) },\n' +
       '  "notes": string (1 phrase de contexte)\n' +
       "}\n\n" +
       "REGLE BON D\'ENLEVEMENT : si le document est une \"Confirmation de commande\" ou un \"Bon d\'enlevement\" d\'un fournisseur (ex: AXDIS PRO) avec une reference type \"VELO CARGO- TOURNEE N\", alors docType=\"BON_ENLEVEMENT\" et remplis le champ bonEnlevement. La quantite est le nombre de velos cargo electriques sur le bon (NE compte PAS les lignes ENL/eco-contribution).\n\n" +
+      "REGLES EFFECTIF (TRES IMPORTANT — lecture DSN, URSSAF, registre du personnel, liasse) :\n" +
+      " * Le document peut faire PLUSIEURS PAGES — tu DOIS scanner TOUTES les pages avant de retourner ton chiffre. Ne te limite JAMAIS a la page 1.\n" +
+      " * Cherche en priorite un chiffre EXPLICITE intitule : \"effectif\", \"effectif salarie\", \"nombre de salaries\", \"effectif moyen mensuel\", \"effectif au [date]\", \"total des salaries\", \"effectif declare\". Si tu en trouves un, utilise-le.\n" +
+      " * Si le document est un REGISTRE UNIQUE DU PERSONNEL (RUP) sans chiffre total : compte le NOMBRE DE LIGNES de salaries listes sur l\'ensemble des pages, en EXCLUANT les salaries dont la date de sortie est passee (anteriore a la date du document). Ne compte chaque salarie qu\'une seule fois meme s\'il apparait sur plusieurs pages. Le RUP fait souvent 5-10 pages — verifie le footer \"Page X / Y\" pour t\'assurer d\'avoir tout lu.\n" +
+      " * Si le document est une DSN ou attestation URSSAF : prends l\'effectif declare au mois le plus recent.\n" +
+      " * Si le document est une LIASSE FISCALE : prends la ligne \"effectif moyen du personnel\" (case YP du formulaire 2058-C ou equivalent).\n" +
+      " * Si tu n\'es PAS SUR du chiffre (registre tronque, page manquante, ambigu), retourne effectif=null plutot qu\'un chiffre faux. Mieux vaut null qu\'un mauvais chiffre.\n" +
+      " * Indique TOUJOURS dans le champ \"notes\" comment tu as obtenu le chiffre (ex: \"Compte 31 lignes salaries sur 6 pages du RUP\", \"Effectif moyen mensuel mai 2025 = 12 sur DSN\").\n\n" +
       "Email :\n" +
       "From: " + ctx.fromEmail + "\n" +
       "Subject: " + ctx.subject + "\n" +

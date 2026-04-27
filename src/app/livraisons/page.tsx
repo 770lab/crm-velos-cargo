@@ -133,7 +133,7 @@ export default function LivraisonsPage() {
       byDay.get(dateKey)!.push(t);
     }
     for (const sameDay of byDay.values()) {
-      sameDay.sort((a, b) => (a.tourneeId || "").localeCompare(b.tourneeId || ""));
+      sameDay.sort((a, b) => String(a.tourneeId || "").localeCompare(String(b.tourneeId || "")));
       sameDay.forEach((t, i) => { t.numero = i + 1; });
     }
     return list;

@@ -9,6 +9,8 @@ interface Incoherence {
   clientId: string;
   entreprise: string;
   nbVelosCommandes: number;
+  nbVelosDevis: number | null;
+  nbDevis: number;
   effectifMax: number;
   effectifSource: string;
   ecart: number;
@@ -83,25 +85,28 @@ export default function AuditEffectifsPage() {
     load();
   }, []);
 
-  // Ajuste le nb de vélos d'un client après confirmation utilisateur.
-  // Utilise setClientVelosTarget côté GAS qui fait du soft cancel des vélos en
-  // trop (jamais de hard delete) et crée les manquants si target > actuel.
-  const adjust = async (item: Incoherence) => {
+  // Ajuste le nb de vélos d'un client à une cible custom (peut être différente
+  // de la suggestion si Gemini a mal lu le doc — ex: RUP multi-pages compté
+  // partiellement).
+  const adjust = async (item: Incoherence, target: number) => {
+    const safeTarget = Math.max(0, Math.floor(target));
     const msg =
       `Client : ${item.entreprise}\n` +
       `Actuellement : ${item.nbVelosCommandes} vélos commandés\n` +
       `Effectif détecté (${item.effectifSource}) : ${item.effectifMax} salariés\n\n` +
-      `Ajuster à ${item.suggestedTarget} vélos ?\n\n` +
-      (item.sens === "trop_velos"
+      `Ajuster à ${safeTarget} vélos ?\n\n` +
+      (safeTarget < item.nbVelosCommandes
         ? "Cela va annuler (soft) les vélos en trop. Aucune donnée n'est supprimée."
-        : "Cela va créer les vélos manquants pour atteindre l'effectif détecté.");
+        : safeTarget > item.nbVelosCommandes
+        ? "Cela va créer les vélos manquants pour atteindre la cible."
+        : "");
     if (!confirm(msg)) return;
 
     setAdjusting(item.clientId);
     try {
       const r = (await gasPost("setClientVelosTarget", {
         clientId: item.clientId,
-        target: item.suggestedTarget,
+        target: safeTarget,
       })) as { ok?: boolean; error?: string; before?: number; after?: number; cancelled?: number; created?: number; reactivated?: number };
       if (r.error) {
         alert("Erreur : " + r.error);
@@ -109,7 +114,7 @@ export default function AuditEffectifsPage() {
       }
       setAdjusted((prev) => ({
         ...prev,
-        [item.clientId]: { before: item.nbVelosCommandes, after: item.suggestedTarget },
+        [item.clientId]: { before: item.nbVelosCommandes, after: safeTarget },
       }));
     } catch (e) {
       alert("Erreur : " + (e instanceof Error ? e.message : String(e)));
@@ -176,59 +181,24 @@ export default function AuditEffectifsPage() {
                   <thead className="bg-gray-50 border-b text-xs text-gray-600">
                     <tr>
                       <th className="text-left px-4 py-2 font-medium">Client</th>
-                      <th className="text-right px-3 py-2 font-medium">Vélos commandés</th>
-                      <th className="text-right px-3 py-2 font-medium">Effectif détecté</th>
+                      <th className="text-right px-3 py-2 font-medium" title="Vélos commandés sur la fiche CRM">CRM</th>
+                      <th className="text-right px-3 py-2 font-medium" title="Vélos lus par Gemini sur le devis signé">Devis</th>
+                      <th className="text-right px-3 py-2 font-medium" title="Effectif lu par Gemini sur l'attestation">Effectif</th>
                       <th className="text-right px-3 py-2 font-medium">Écart</th>
                       <th className="text-left px-3 py-2 font-medium">Source</th>
                       <th className="text-right px-4 py-2 font-medium">Action</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
-                    {data.incoherences!.map((it) => {
-                      const wasAdjusted = adjusted[it.clientId];
-                      const sensColor =
-                        it.sens === "trop_velos" ? "text-orange-700" : "text-blue-700";
-                      const sensLabel =
-                        it.sens === "trop_velos"
-                          ? `${it.ecart} vélo${it.ecart > 1 ? "s" : ""} en trop`
-                          : `${Math.abs(it.ecart)} vélo${Math.abs(it.ecart) > 1 ? "s" : ""} manquant${Math.abs(it.ecart) > 1 ? "s" : ""}`;
-                      return (
-                        <tr key={it.clientId} className={wasAdjusted ? "bg-emerald-50/50" : "hover:bg-gray-50"}>
-                          <td className="px-4 py-2">
-                            <Link
-                              href={`/clients/detail?id=${encodeURIComponent(it.clientId)}`}
-                              className="text-blue-700 hover:underline font-medium"
-                            >
-                              {it.entreprise}
-                            </Link>
-                            {it.nbDocs > 1 && (
-                              <span className="ml-2 text-[10px] text-gray-400">
-                                ({it.nbDocs} docs)
-                              </span>
-                            )}
-                          </td>
-                          <td className="px-3 py-2 text-right font-mono">{it.nbVelosCommandes}</td>
-                          <td className="px-3 py-2 text-right font-mono">{it.effectifMax}</td>
-                          <td className={`px-3 py-2 text-right text-xs ${sensColor}`}>{sensLabel}</td>
-                          <td className="px-3 py-2 text-xs text-gray-500">{it.effectifSource}</td>
-                          <td className="px-4 py-2 text-right">
-                            {wasAdjusted ? (
-                              <span className="text-xs text-emerald-700">
-                                ✓ ajusté ({wasAdjusted.before} → {wasAdjusted.after})
-                              </span>
-                            ) : (
-                              <button
-                                onClick={() => adjust(it)}
-                                disabled={adjusting === it.clientId}
-                                className="px-3 py-1 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
-                              >
-                                {adjusting === it.clientId ? "…" : `Ajuster à ${it.suggestedTarget}`}
-                              </button>
-                            )}
-                          </td>
-                        </tr>
-                      );
-                    })}
+                    {data.incoherences!.map((it) => (
+                      <IncoherenceRow
+                        key={it.clientId}
+                        item={it}
+                        wasAdjusted={adjusted[it.clientId]}
+                        adjusting={adjusting === it.clientId}
+                        onAdjust={(target) => adjust(it, target)}
+                      />
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -373,5 +343,80 @@ function KpiCard({ label, value, accent }: { label: string; value: string; accen
       <div className="text-[11px] uppercase tracking-wide text-gray-500">{label}</div>
       <div className={`text-2xl font-bold mt-1 ${accent || "text-gray-900"}`}>{value}</div>
     </div>
+  );
+}
+
+function IncoherenceRow({
+  item,
+  wasAdjusted,
+  adjusting,
+  onAdjust,
+}: {
+  item: Incoherence;
+  wasAdjusted?: { before: number; after: number };
+  adjusting: boolean;
+  onAdjust: (target: number) => void;
+}) {
+  const [target, setTarget] = useState<string>(String(item.suggestedTarget));
+  const sensColor = item.sens === "trop_velos" ? "text-orange-700" : "text-blue-700";
+  const sensLabel =
+    item.sens === "trop_velos"
+      ? `${item.ecart} vélo${item.ecart > 1 ? "s" : ""} en trop`
+      : `${Math.abs(item.ecart)} vélo${Math.abs(item.ecart) > 1 ? "s" : ""} manquant${Math.abs(item.ecart) > 1 ? "s" : ""}`;
+  const targetNum = Number(target);
+  const validTarget = Number.isFinite(targetNum) && targetNum >= 0;
+  return (
+    <tr className={wasAdjusted ? "bg-emerald-50/50" : "hover:bg-gray-50"}>
+      <td className="px-4 py-2">
+        <Link
+          href={`/clients/detail?id=${encodeURIComponent(item.clientId)}`}
+          className="text-blue-700 hover:underline font-medium"
+        >
+          {item.entreprise}
+        </Link>
+        {item.nbDocs > 1 && (
+          <span className="ml-2 text-[10px] text-gray-400">({item.nbDocs} docs)</span>
+        )}
+      </td>
+      <td className="px-3 py-2 text-right font-mono">{item.nbVelosCommandes}</td>
+      <td className="px-3 py-2 text-right font-mono">
+        {item.nbVelosDevis != null ? (
+          <span className={item.nbVelosDevis !== item.nbVelosCommandes ? "text-amber-700" : ""} title={`${item.nbDevis} devis analysé${item.nbDevis > 1 ? "s" : ""} par Gemini`}>
+            {item.nbVelosDevis}
+          </span>
+        ) : (
+          <span className="text-gray-300">—</span>
+        )}
+      </td>
+      <td className="px-3 py-2 text-right font-mono">{item.effectifMax}</td>
+      <td className={`px-3 py-2 text-right text-xs ${sensColor}`}>{sensLabel}</td>
+      <td className="px-3 py-2 text-xs text-gray-500">{item.effectifSource}</td>
+      <td className="px-4 py-2 text-right">
+        {wasAdjusted ? (
+          <span className="text-xs text-emerald-700">
+            ✓ ajusté ({wasAdjusted.before} → {wasAdjusted.after})
+          </span>
+        ) : (
+          <div className="inline-flex items-center gap-1">
+            <input
+              type="number"
+              min={0}
+              value={target}
+              onChange={(e) => setTarget(e.target.value)}
+              disabled={adjusting}
+              className="w-16 px-2 py-1 text-xs border rounded text-right"
+              title="Si Gemini a mal lu le doc, corrige le chiffre ici avant d'ajuster"
+            />
+            <button
+              onClick={() => onAdjust(targetNum)}
+              disabled={adjusting || !validTarget}
+              className="px-3 py-1 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50"
+            >
+              {adjusting ? "…" : "Ajuster"}
+            </button>
+          </div>
+        )}
+      </td>
+    </tr>
   );
 }
