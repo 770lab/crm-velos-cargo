@@ -2481,6 +2481,14 @@ function setClientVelosTarget(clientId, target) {
     if (toCancelIdxs.length) batchSetAnnule(toCancelIdxs, "TRUE");
   }
 
+  // Propage la correction d'effectif sur les Livraisons planifiées : si la
+  // somme des nbVelos planifiés pour ce client dépasse le nouveau target, on
+  // réduit les livraisons (les plus récentes d'abord) jusqu'à matcher target.
+  // Une livraison réduite à 0 est marquée annulee. Sens inverse (target >
+  // somme) : rien à faire, le planning existant reste valide et les nouveaux
+  // vélos créés sont disponibles pour de futures tournées.
+  var livraisonAdjust = _capLivraisonsToTarget(clientId, target);
+
   SpreadsheetApp.flush();
   _invalidateClientCache(clientId);
   return {
@@ -2490,8 +2498,67 @@ function setClientVelosTarget(clientId, target) {
     after: target,
     reactivated: reactivated,
     cancelled: cancelled,
-    created: created
+    created: created,
+    livraisons: livraisonAdjust
   };
+}
+
+function _capLivraisonsToTarget(clientId, target) {
+  var sheet = SS.getSheetByName("Livraisons");
+  if (!sheet) return { reduced: 0, cancelled: 0, before: 0, after: 0 };
+  var data = sheet.getDataRange().getValues();
+  if (data.length <= 1) return { reduced: 0, cancelled: 0, before: 0, after: 0 };
+  var headers = data[0];
+  var iCid = headers.indexOf("clientId");
+  var iStatut = headers.indexOf("statut");
+  var iNbVelos = headers.indexOf("nbVelos");
+  var iDate = headers.indexOf("datePrevue");
+  var iNotes = headers.indexOf("notes");
+  if (iCid === -1 || iStatut === -1 || iNbVelos === -1) {
+    return { reduced: 0, cancelled: 0, before: 0, after: 0, error: "colonnes manquantes" };
+  }
+
+  var rows = [];
+  for (var i = 1; i < data.length; i++) {
+    if (data[i][iCid] !== clientId) continue;
+    var statut = String(data[i][iStatut] || "");
+    if (statut === "livree" || statut === "annulee") continue;
+    var nb = Number(data[i][iNbVelos]) || 0;
+    if (nb <= 0) continue;
+    rows.push({
+      rowIndex: i + 1,
+      nb: nb,
+      date: data[i][iDate] ? new Date(data[i][iDate]).getTime() : 0
+    });
+  }
+  var totalBefore = rows.reduce(function (s, r) { return s + r.nb; }, 0);
+  if (totalBefore <= target) {
+    return { reduced: 0, cancelled: 0, before: totalBefore, after: totalBefore };
+  }
+
+  // Réduit en commençant par les livraisons les plus récentes (dates max d'abord).
+  rows.sort(function (a, b) { return b.date - a.date; });
+  var toCut = totalBefore - target;
+  var reduced = 0, cancelled = 0;
+  for (var k = 0; k < rows.length && toCut > 0; k++) {
+    var r = rows[k];
+    var cut = Math.min(toCut, r.nb);
+    var newNb = r.nb - cut;
+    sheet.getRange(r.rowIndex, iNbVelos + 1).setValue(newNb);
+    if (newNb === 0) {
+      sheet.getRange(r.rowIndex, iStatut + 1).setValue("annulee");
+      if (iNotes >= 0) {
+        var prevNotes = String(data[r.rowIndex - 1][iNotes] || "");
+        var tag = "auto-annulée par correction effectif " + new Date().toISOString().slice(0, 10);
+        sheet.getRange(r.rowIndex, iNotes + 1).setValue(prevNotes ? prevNotes + " | " + tag : tag);
+      }
+      cancelled++;
+    } else {
+      reduced++;
+    }
+    toCut -= cut;
+  }
+  return { reduced: reduced, cancelled: cancelled, before: totalBefore, after: target };
 }
 
 // Croise les verifications (DSN / ATTESTATION_URSSAF / LIASSE) avec les fiches
