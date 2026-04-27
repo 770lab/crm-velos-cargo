@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { gasGet, gasPost } from "@/lib/gas";
 import { useData, type LivraisonRow, type EquipeMember, type ClientPoint, type EquipeRole } from "@/lib/data-context";
 import { useCurrentUser } from "@/lib/current-user";
@@ -48,6 +48,7 @@ interface Tournee {
   totalVelos: number;
   nbMonteurs: number;
   statutGlobal: "planifiee" | "en_cours" | "livree" | "annulee" | "mixte";
+  numero?: number;
 }
 
 // Une livraison appartient au user si celui-ci y est affecté selon son rôle.
@@ -122,7 +123,21 @@ export default function LivraisonsPage() {
     return livraisons.filter((l) => livraisonMatchesUser(l, currentUser.id, currentUser.role));
   }, [livraisons, currentUser]);
 
-  const tournees = useMemo(() => groupByTournee(userLivraisons), [userLivraisons]);
+  const tournees = useMemo(() => {
+    const list = groupByTournee(userLivraisons);
+    // Numérotation séquentielle par jour : Tournée 1, 2, 3...
+    const byDay = new Map<string, Tournee[]>();
+    for (const t of list) {
+      const dateKey = t.datePrevue ? isoDate(t.datePrevue) : "no-date";
+      if (!byDay.has(dateKey)) byDay.set(dateKey, []);
+      byDay.get(dateKey)!.push(t);
+    }
+    for (const sameDay of byDay.values()) {
+      sameDay.sort((a, b) => (a.tourneeId || "").localeCompare(b.tourneeId || ""));
+      sameDay.forEach((t, i) => { t.numero = i + 1; });
+    }
+    return list;
+  }, [userLivraisons]);
 
   const loadByDate = useMemo(() => {
     const map = new Map<string, { velos: number; tournees: Set<string>; modes: Set<string> }>();
@@ -351,6 +366,7 @@ export default function LivraisonsPage() {
       {openTournee && (
         <TourneeModal
           tournee={openTournee}
+          tourneeNumber={openTournee.numero ?? null}
           loadByDate={loadByDate}
           onClose={() => setOpenTournee(null)}
           onChanged={() => { refresh("livraisons"); refresh("carte"); }}
@@ -836,7 +852,7 @@ function TourneeCard({
       )}
       {!compact && (
         <div className="text-[10px] opacity-75 truncate">
-          {tournee.tourneeId ? `🚛 ${tournee.tourneeId}` : ""}
+          {tournee.numero ? `🚛 Tournée ${tournee.numero}` : tournee.tourneeId ? `🚛 ${tournee.tourneeId}` : ""}
           {tournee.mode ? ` · ${MODE_LABELS[tournee.mode] || tournee.mode}` : ""}
         </div>
       )}
@@ -1011,11 +1027,13 @@ function computeDeployPlan(
 
 function TourneeModal({
   tournee,
+  tourneeNumber,
   loadByDate,
   onClose,
   onChanged,
 }: {
   tournee: Tournee;
+  tourneeNumber: number | null;
   loadByDate: Map<string, DayLoad>;
   onClose: () => void;
   onChanged: () => void;
@@ -1329,7 +1347,7 @@ function TourneeModal({
           <div>
             <div className={`inline-flex items-center gap-2 ${palette.text}`}>
               <span className="text-lg font-semibold">
-                {isRetrait ? "Retrait client" : "Tournée"} {tournee.tourneeId ? <span className="font-mono">{tournee.tourneeId}</span> : "(sans id)"}
+                {isRetrait ? "Retrait client" : "Tournée"} {tourneeNumber ? <span>{tourneeNumber}</span> : tournee.tourneeId ? <span className="font-mono text-sm">{tournee.tourneeId}</span> : "(sans id)"}
               </span>
             </div>
             <div className="text-sm text-gray-500 mt-1 flex items-center gap-2 flex-wrap">
@@ -1879,7 +1897,7 @@ function FeuilleDeRoute({
           <h1 className="text-xl font-bold">Feuille de route</h1>
           <div className="text-sm text-gray-600 mt-1">
             {tournee.datePrevue && new Date(tournee.datePrevue).toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
-            {tournee.tourneeId && <span className="ml-2 font-mono text-xs text-gray-400">[{tournee.tourneeId}]</span>}
+            {tournee.numero ? <span className="ml-2 text-xs text-gray-500">— Tournée {tournee.numero}</span> : tournee.tourneeId ? <span className="ml-2 font-mono text-xs text-gray-400">[{tournee.tourneeId}]</span> : null}
           </div>
           <div className="text-xs text-gray-500 mt-1">Départ : {ENTREPOT.label}</div>
           <div className="flex justify-center gap-6 mt-3 text-sm">
