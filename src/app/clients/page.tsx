@@ -465,6 +465,20 @@ function RappelMailModal({
       ]
     : [];
 
+  // Bloc effectif CEE : la pièce d'effectif doit être contemporaine du devis
+  // signé (date d'engagement de l'opération) — exigence de l'instruction CEE.
+  const dateEngObj = client.dateEngagement ? new Date(client.dateEngagement) : null;
+  const dateEngLabel = dateEngObj && !isNaN(dateEngObj.getTime())
+    ? dateEngObj.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })
+    : null;
+  const blocEffectif = [
+    ``,
+    `Document permettant de justifier l'effectif et les fonctions de chaque collaborateur de l'entreprise :`,
+    `  ➢ Liasse fiscale ou DSN (Déclaration Sociale Nominative).`,
+    `  ➢ Registre du personnel de moins d'un an.`,
+    `Ces documents doivent correspondre à ceux de la date d'engagement de l'opération, c'est-à-dire de la date du devis signé${dateEngLabel ? ` soit le ${dateEngLabel}` : ""}.`,
+  ];
+
   const defaultBody = [
     `Bonjour${client.contact ? " " + client.contact : ""},`,
     ``,
@@ -472,6 +486,7 @@ function RappelMailModal({
       ? `Votre livraison de ${delivery!.nbVelos} vélo${delivery!.nbVelos > 1 ? "s" : ""} cargo est programmée le ${dateLabel}.`
       : `Nous finalisons la préparation de votre dossier Vélos Cargo en vue de la livraison.`,
     ...blocManquants,
+    ...blocEffectif,
     ...blocDeadline,
     ``,
     `Rappel du process :`,
