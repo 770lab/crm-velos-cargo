@@ -46,7 +46,13 @@ async function mirrorGeminiResultsToFirestore(
   clientId: string | null,
   tourneeId: string,
   userId: string | null,
-): Promise<void> {
+): Promise<{ failed: Array<{ fnuci: string; error: string }> }> {
+  // Important: depuis la migration Firestore, gasPost résout DIRECTEMENT
+  // sur Firestore (USE_FIREBASE=1) — il n'y a plus de filet GAS en aval.
+  // On collecte les erreurs pour les remonter à l'UI au lieu de les
+  // avaler silencieusement (sinon un scan "OK Gemini" apparaît mais le
+  // vélo reste invisible côté compteurs préparation → bug fantôme).
+  const failed: Array<{ fnuci: string; error: string }> = [];
   for (const resp of responses) {
     if (!("ok" in resp) || !resp.ok || !resp.results) continue;
     for (const r of resp.results) {
@@ -57,22 +63,20 @@ async function mirrorGeminiResultsToFirestore(
           if (clientId) {
             await gasPost("assignFnuciToClient", { fnuci: r.fnuci, clientId });
           }
-          // Miroir GAS: extractFnuciFromImage pose datePreparation après
-          // assignFnuciToClient (cf. gas/Code.js:6187). Sans cet appel, le
-          // compteur prepare côté Firestore reste à 0 → la page Préparation
-          // n'affiche jamais le bloc "Étiquettes + BL" (allDone toujours
-          // false).
           await gasPost("markVeloPrepare", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
         } else if (etape === "chargement") {
           await gasPost("markVeloCharge", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
         } else if (etape === "livraisonScan") {
           await gasPost("markVeloLivreScan", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
         }
-      } catch {
-        // Mirror best-effort : si Firestore tombe, GAS a déjà la donnée.
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        failed.push({ fnuci: r.fnuci, error: msg });
+        console.error("[scan] mirror Firestore failed", r.fnuci, etape, msg);
       }
     }
   }
+  return { failed };
 }
 
 async function callExtractWithRetry(
@@ -160,6 +164,7 @@ export default function PhotoGeminiCapture({
   const [cameraOpen, setCameraOpen] = useState(false);
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [shooting, setShooting] = useState(false);
+  const [mirrorErrors, setMirrorErrors] = useState<Array<{ fnuci: string; error: string }>>([]);
 
   // Si lockedClientId fourni, on force forceClientId à cette valeur. L'effet
   // garantit que ça reste sync même si la URL change pendant la session.
@@ -309,12 +314,20 @@ export default function PhotoGeminiCapture({
       }),
     );
 
-    // Mirror Firestore SÉQUENTIEL : Gemini Vision écrit dans le Sheet GAS, mais
-    // tant que getTourneeProgression lit Firestore on doit aussi y écrire pour
-    // que les compteurs de la page se mettent à jour. assignFnuciToClient pose
-    // un FNUCI sur le 1er slot vide du client → race condition si parallèle,
-    // d'où l'appel séquentiel.
-    await mirrorGeminiResultsToFirestore(collectedResps, etape, forceClientId, tourneeId, userId);
+    // Mirror Firestore SÉQUENTIEL : assignFnuciToClient pose un FNUCI sur
+    // le 1er slot vide du client → race condition si parallèle, d'où l'appel
+    // séquentiel. Si Firestore tombe (4G coupée terrain), on remonte les
+    // FNUCI échoués pour que l'opérateur puisse re-scanner.
+    const { failed } = await mirrorGeminiResultsToFirestore(
+      collectedResps, etape, forceClientId, tourneeId, userId,
+    );
+    if (failed.length) {
+      const summary = failed.map((f) => `${f.fnuci}: ${f.error}`).join("\n");
+      setMirrorErrors(failed);
+      console.error(`[scan] ${failed.length} écriture(s) Firestore échouée(s)\n${summary}`);
+    } else {
+      setMirrorErrors([]);
+    }
 
     setIdentifying(false);
     if (onAfter) onAfter();
@@ -355,7 +368,13 @@ export default function PhotoGeminiCapture({
       setItems((prev) =>
         prev.map((it) => (it.id === item.id ? { ...it, status: "done", resp } : it)),
       );
-      await mirrorGeminiResultsToFirestore([resp], etape, forceClientId, tourneeId, userId);
+      const { failed } = await mirrorGeminiResultsToFirestore(
+        [resp], etape, forceClientId, tourneeId, userId,
+      );
+      if (failed.length) {
+        setMirrorErrors((prev) => [...prev, ...failed]);
+        console.error(`[scan retry] ${failed.length} écriture(s) Firestore échouée(s)`);
+      }
     } catch (e) {
       setItems((prev) =>
         prev.map((it) =>
@@ -375,6 +394,29 @@ export default function PhotoGeminiCapture({
 
   return (
     <div className="space-y-2">
+      {mirrorErrors.length > 0 && (
+        <div className="bg-red-50 border-2 border-red-400 rounded-lg p-3 space-y-2">
+          <div className="text-sm font-semibold text-red-900">
+            ⚠️ {mirrorErrors.length} scan{mirrorErrors.length > 1 ? "s" : ""} non sauvegardé{mirrorErrors.length > 1 ? "s" : ""} en base
+          </div>
+          <div className="text-xs text-red-800">
+            La photo a été reconnue mais l&apos;écriture Firestore a échoué (réseau ?).
+            Re-scanne ces FNUCI maintenant que tu as du réseau.
+          </div>
+          <ul className="text-xs font-mono text-red-900 bg-white border border-red-300 rounded p-2 max-h-32 overflow-auto">
+            {mirrorErrors.map((e, i) => (
+              <li key={i}>· {e.fnuci} — {e.error}</li>
+            ))}
+          </ul>
+          <button
+            type="button"
+            onClick={() => setMirrorErrors([])}
+            className="text-[11px] text-red-700 underline"
+          >
+            J&apos;ai re-scanné, masquer
+          </button>
+        </div>
+      )}
       {lockedClient ? (
         <div className="bg-emerald-50 border border-emerald-300 rounded-lg p-2.5 flex items-center justify-between gap-2">
           <div>
