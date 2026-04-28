@@ -558,12 +558,32 @@ function normalizeDate(raw: string | null | undefined): string | null {
 }
 
 const EXTRACTION_PROMPTS: Record<string, string> = {
-  kbisRecu: `Tu analyses un extrait Kbis français. Renvoie UNIQUEMENT un JSON :
+  kbisRecu: `Tu analyses un extrait Kbis français.
+
+OBJECTIF : extraire la date de fraîcheur de l'extrait — celle qui prouve que le document est récent (< 3 mois) pour la compliance CEE.
+
+RECHERCHE STRICTE : trouve dans le document UNE des formulations exactes ci-dessous (par ordre de priorité) et renvoie la date qui la suit :
+  1. "à jour au"
+  2. "extrait certifié conforme du" / "extrait certifié conforme à l'inscription au RCS du"
+  3. "RCS de [ville] en date du"
+  4. "Délivré le" (en bas du document, près de la signature greffier)
+
+NE JAMAIS RETOURNER :
+  ✗ La date d'immatriculation au RCS
+  ✗ La date de début d'activité
+  ✗ La date d'origine (création de l'entreprise)
+  ✗ La date de naissance d'un dirigeant
+  ✗ La date du jour si tu ne la vois pas explicitement sur le document
+  ✗ Une date que tu déduis ou supposes
+
+Si AUCUNE des formulations ci-dessus n'est trouvée explicitement dans le document, renvoie "date": null. Mieux vaut null qu'une mauvaise date.
+
+Renvoie UNIQUEMENT un JSON :
 {
   "date": "AAAA-MM-JJ" ou null,
+  "dateLabel": "le texte exact entourant la date trouvée (ex 'à jour au 11 février 2026')" ou null,
   "raisonSociale": "..." ou null
-}
-La "date" est la date de fraîcheur du Kbis, généralement introduite par "à jour au", "extrait certifié conforme du" ou "RCS de ... en date du" — PAS la date d'immatriculation, PAS la date de début d'activité, PAS la date d'origine.`,
+}`,
   attestationRecue: `Tu analyses un document RH français qui sert à prouver l'effectif d'une entreprise (registre du personnel, liasse fiscale, attestation URSSAF, DPAE, DSN…).
 
 Pour la compliance CEE, ce qui compte est la date à laquelle la situation de l'entreprise est attestée — PAS la date d'édition du PDF.
