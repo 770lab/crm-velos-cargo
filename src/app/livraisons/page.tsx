@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { gasGet, gasPost } from "@/lib/gas";
 import { useData, type LivraisonRow, type EquipeMember, type ClientPoint, type EquipeRole } from "@/lib/data-context";
 import { useCurrentUser } from "@/lib/current-user";
+import { callGemini } from "@/lib/gemini-client";
 import DateLoadPicker, { type DayLoad } from "@/components/date-load-picker";
 import AddClientModal from "@/components/add-client-modal";
 import DayPlannerModal from "@/components/day-planner-modal";
@@ -1258,6 +1259,11 @@ function TourneeModal({
   const [newDate, setNewDate] = useState(tournee.datePrevue ? isoDate(tournee.datePrevue) : "");
   const [addingClient, setAddingClient] = useState(false);
   const [clientSearch, setClientSearch] = useState("");
+  // Suggestion Gemini : clientId mis en évidence + raison à afficher.
+  // On NE l'ajoute PAS automatiquement (irréversible) — Yoann valide d'un clic.
+  const [suggestion, setSuggestion] = useState<{ clientId: string; raison: string } | null>(null);
+  const [suggesting, setSuggesting] = useState(false);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const [progression, setProgression] = useState<{
     totals: { total: number; prepare: number; charge: number; livre: number; monte: number };
     clients?: { clientId: string; totals: { total: number; prepare: number; charge: number; livre: number; monte: number } }[];
@@ -1347,8 +1353,105 @@ function TourneeModal({
     });
     onChanged();
     setClientSearch("");
+    setSuggestion(null);
+    setSuggestionError(null);
     setAddingClient(false);
     setBusy(null);
+  };
+
+  // Demande à Gemini de choisir le meilleur client de remplacement parmi les
+  // 10 plus proches déjà filtrés (eligibleClients pré-trié par centroïde +
+  // capacité). Renvoie {clientId, raison} qu'on met en évidence dans la liste
+  // — Yoann valide d'un clic. Pas d'auto-ajout (irréversible si Gemini se
+  // trompe). Dépend de callGemini (Cloud Function europe-west1, déjà déployée).
+  const suggestBest = async () => {
+    if (!eligibleClients.length) return;
+    setSuggesting(true);
+    setSuggestion(null);
+    setSuggestionError(null);
+    try {
+      const top = eligibleClients.slice(0, 10);
+      const libre = capaciteRestante(tournee.mode, tournee.totalVelos);
+      const arrets = tournee.livraisons.map((l) => ({
+        entreprise: l.client.entreprise,
+        ville: l.client.ville || "",
+        codePostal: l.client.codePostal || "",
+        nbVelos: l.nbVelos,
+        lat: l.client.lat ?? null,
+        lng: l.client.lng ?? null,
+      }));
+      const candidats = top.map((c) => {
+        const planifiesLive = planifiesParClient.get(c.id) || 0;
+        const reste = c.nbVelos - c.velosLivres - planifiesLive;
+        const distKm =
+          c.lat && c.lng
+            ? haversineKm(tourCentroid.lat, tourCentroid.lng, c.lat, c.lng)
+            : null;
+        return {
+          clientId: c.id,
+          entreprise: c.entreprise,
+          ville: c.ville || "",
+          codePostal: c.codePostal || "",
+          nbVelosRestant: reste,
+          distanceKm: distKm != null ? Math.round(distKm * 10) / 10 : null,
+          lat: c.lat ?? null,
+          lng: c.lng ?? null,
+        };
+      });
+      const prompt = `Tu es l'optimiseur de tournées de livraison vélos cargo en Île-de-France.
+
+Un client a annulé sa livraison dans une tournée déjà planifiée. Il faut
+le remplacer par un autre client en attente, en minimisant le détour
+géographique et en remplissant le camion au mieux.
+
+Capacité restante du camion : ${libre} vélos.
+
+ARRÊTS DÉJÀ DANS LA TOURNÉE :
+${JSON.stringify(arrets)}
+
+CANDIDATS DE REMPLACEMENT (déjà triés par proximité) :
+${JSON.stringify(candidats)}
+
+Choisis LE MEILLEUR candidat selon, par ordre d'importance :
+  1. Détour minimal (proche des arrêts existants, même bassin urbain)
+  2. Remplissage du camion sans dépasser ${libre} vélos
+  3. Cohérence (codes postaux/villes proches des autres arrêts)
+
+Réponds STRICTEMENT en JSON sans markdown, format :
+{ "clientId": "<id du candidat choisi>", "raison": "<phrase courte FR>" }`;
+
+      const r = await callGemini(prompt);
+      if (!r.ok) {
+        setSuggestionError(`Gemini : ${r.error}`);
+        return;
+      }
+      const text = r.text.trim();
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      if (!jsonMatch) {
+        setSuggestionError("Réponse Gemini non-JSON");
+        return;
+      }
+      let parsed: { clientId?: string; raison?: string };
+      try {
+        parsed = JSON.parse(jsonMatch[0]);
+      } catch {
+        setSuggestionError("JSON Gemini invalide");
+        return;
+      }
+      const clientId = parsed.clientId;
+      if (!clientId || !candidats.find((c) => c.clientId === clientId)) {
+        setSuggestionError("Gemini a proposé un client hors liste");
+        return;
+      }
+      setSuggestion({
+        clientId,
+        raison: parsed.raison || "Choix optimal selon Gemini",
+      });
+    } catch (e) {
+      setSuggestionError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSuggesting(false);
+    }
   };
 
   const loadByDateSansTournee = useMemo(() => {
@@ -2154,20 +2257,44 @@ function TourneeModal({
               <div className="flex items-center justify-between">
                 <span className="text-sm font-medium text-gray-700">Ajouter un client à cette tournée</span>
                 <button
-                  onClick={() => { setAddingClient(false); setClientSearch(""); }}
+                  onClick={() => { setAddingClient(false); setClientSearch(""); setSuggestion(null); setSuggestionError(null); }}
                   className="text-gray-400 hover:text-gray-600 text-xs"
                 >
                   annuler
                 </button>
               </div>
-              <input
-                type="text"
-                value={clientSearch}
-                onChange={(e) => setClientSearch(e.target.value)}
-                placeholder="Chercher un client (nom, ville, CP, contact)…"
-                className="w-full px-3 py-1.5 border rounded-lg text-sm"
-                autoFocus
-              />
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={clientSearch}
+                  onChange={(e) => setClientSearch(e.target.value)}
+                  placeholder="Chercher un client (nom, ville, CP, contact)…"
+                  className="flex-1 px-3 py-1.5 border rounded-lg text-sm"
+                  autoFocus
+                />
+                {/* Bouton "auto" : Gemini choisit le meilleur candidat parmi
+                    les 10 plus proches (Maps déjà appliqué côté tri haversine).
+                    Met le résultat en évidence dans la liste — pas d'auto-ajout. */}
+                <button
+                  onClick={suggestBest}
+                  disabled={suggesting || eligibleClients.length === 0}
+                  title="Demander à Gemini de choisir le meilleur remplaçant"
+                  className="px-3 py-1.5 bg-violet-600 text-white text-sm rounded-lg hover:bg-violet-700 disabled:opacity-50 whitespace-nowrap"
+                >
+                  {suggesting ? "🪄 …" : "🪄 Auto"}
+                </button>
+              </div>
+              {suggestionError && (
+                <div className="text-xs text-red-600 bg-red-50 border border-red-200 rounded px-2 py-1">
+                  ⚠ {suggestionError}
+                </div>
+              )}
+              {suggestion && (
+                <div className="text-xs bg-violet-50 border border-violet-300 rounded px-2 py-1.5 text-violet-900">
+                  🪄 <span className="font-semibold">Suggestion Gemini :</span> {suggestion.raison}
+                  <div className="text-[10px] text-violet-700 mt-0.5">Clique sur la ligne mise en évidence pour confirmer.</div>
+                </div>
+              )}
               <div className="max-h-48 overflow-y-auto divide-y border rounded-lg bg-white">
                 {eligibleClients.length === 0 && (
                   <div className="px-3 py-4 text-xs text-gray-400 text-center">
@@ -2182,13 +2309,19 @@ function TourneeModal({
                   const distKm = c.lat && c.lng
                     ? haversineKm(tourCentroid.lat, tourCentroid.lng, c.lat, c.lng)
                     : null;
+                  const isSuggested = suggestion?.clientId === c.id;
                   return (
                     <button
                       key={c.id}
                       onClick={() => addClient(c.id, reste)}
                       disabled={!!busy}
-                      className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-blue-50 text-left disabled:opacity-50"
+                      className={`w-full flex items-center gap-2 px-3 py-2 text-sm text-left disabled:opacity-50 ${
+                        isSuggested
+                          ? "bg-violet-100 hover:bg-violet-200 ring-2 ring-violet-400"
+                          : "hover:bg-blue-50"
+                      }`}
                     >
+                      {isSuggested && <span className="text-violet-600">🪄</span>}
                       <span className="flex-1 truncate">
                         <span className="font-medium">{c.entreprise}</span>
                         {c.ville && <span className="text-gray-400"> · {c.ville}</span>}
