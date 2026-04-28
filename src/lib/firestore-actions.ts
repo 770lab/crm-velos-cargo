@@ -3988,30 +3988,6 @@ export async function runFirestoreGet(
       return { items };
     }
 
-    case "lookupFnuci": {
-      // Page /reception-cartons : scan QR → cherche le vélo dont fnuci match,
-      // remonte le client courant pour permettre une réaffectation manuelle.
-      const fnuci = (params.fnuci || "").toUpperCase();
-      if (!fnuci) return { found: false, fnuci: "" };
-      const vSnap = await getDocs(
-        query(collection(db, "velos"), where("fnuci", "==", fnuci)),
-      );
-      if (vSnap.empty) return { found: false, fnuci };
-      const veloDoc = vSnap.docs[0];
-      const v = veloDoc.data() as { clientId?: string };
-      const clientId = v.clientId || "";
-      let clientName: string | null = null;
-      if (clientId) {
-        try {
-          const c = await getDoc(doc(db, "clients", clientId));
-          if (c.exists()) {
-            clientName = (c.data() as { entreprise?: string }).entreprise || null;
-          }
-        } catch {}
-      }
-      return { found: true, veloId: veloDoc.id, clientId, clientName, fnuci };
-    }
-
     case "listEquipe": {
       // includeInactifs="true" → tout le monde, sinon seuls les actifs.
       // Parité avec gas listEquipe (gas/Code.js) consommé par /equipe.

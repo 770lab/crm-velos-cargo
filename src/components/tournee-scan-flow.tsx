@@ -6,7 +6,6 @@ import { gasGet, gasPost } from "@/lib/gas";
 import { useCurrentUser } from "@/lib/current-user";
 
 import { BASE_PATH } from "@/lib/base-path";
-const QrScanner = dynamic(() => import("@/components/qr-scanner"), { ssr: false });
 const PhotoGeminiCapture = dynamic(() => import("@/components/photo-gemini-capture"), { ssr: false });
 const BlSignedUploader = dynamic(() => import("@/components/bl-signed-uploader"), { ssr: false });
 
