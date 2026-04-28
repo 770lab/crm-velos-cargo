@@ -155,6 +155,9 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "extractFnuciFromImage",
   // routing & planning (vague 3 — Cloud Function lit Firestore + appelle Gemini)
   "proposeTournee",
+  // suggestTournee (vague 3) — algo pur côté frontend, pas de Cloud Function
+  // (lit clients + livraisons direct Firestore, bin-packing local).
+  "suggestTournee",
 ]);
 
 export function isMigrated(action: string): boolean {
@@ -1738,6 +1741,204 @@ export async function runFirestoreAction(
       }
     }
 
+    case "suggestTournee": {
+      // Migré depuis gas/Code.js:957. Algo pur (pas Gemini) :
+      //   1) Charger client cible + tous clients + livraisons planifiees
+      //   2) Calculer "vélos restants à planifier" par client = nbVelosCommandes
+      //      − vélos déjà livrés − vélos planifiés en livraison(s) en cours
+      //      (calcul live à partir des livraisons réelles, pas des stats
+      //      persistées qui peuvent dériver — cf. fix /carte 2026-04-28).
+      //   3) Filtrer nearby = clients ≠ cible, distance ≤ maxDistance, reste > 0
+      //   4) Bin packing en N camions de capacité fixe (compact : remplir
+      //      camion par camion, le client cible d'abord, puis nearby triés
+      //      par distance croissante)
+      //   5) Format de retour identique GAS (mode/capacite/nbCamions/splits/
+      //      tournee/totalVelos/clientsProches) pour ne pas casser /carte.
+      const clientId = String(body.clientId || "");
+      const mode = String(body.mode || "moyen");
+      const maxDistance = Number(body.maxDistance || 50);
+      if (!clientId) return { error: "clientId requis" };
+
+      // Capacités historiques GAS (cf. gas/Code.js:965). Le frontend /carte
+      // affiche les vraies capacités via le data-context, mais ici on garde
+      // une table par TYPE (gros/moyen/camionnette/retrait) qui sert juste à
+      // borner le bin-packing — peu importe quel doc camion précis.
+      const capacites: Record<string, number> = {
+        gros: 132,
+        moyen: 54,
+        camionnette: 20,
+        petit: 20,
+        retrait: 9999,
+      };
+      const capacite = capacites[mode] ?? 54;
+
+      // 1) Tous les clients livrables (avec lat/lng)
+      const cSnap = await getDocs(collection(db, "clients"));
+      type Pt = {
+        id: string;
+        entreprise: string;
+        ville: string;
+        lat: number;
+        lng: number;
+        nbVelos: number;
+        velosLivres: number;
+      };
+      const points: Pt[] = [];
+      let target: Pt | null = null;
+      for (const d of cSnap.docs) {
+        const o = d.data() as {
+          entreprise?: string;
+          ville?: string;
+          latitude?: number;
+          longitude?: number;
+          nbVelosCommandes?: number;
+          stats?: { livres?: number };
+        };
+        const lat = typeof o.latitude === "number" ? o.latitude : NaN;
+        const lng = typeof o.longitude === "number" ? o.longitude : NaN;
+        if (!isFinite(lat) || !isFinite(lng)) {
+          if (d.id === clientId) target = null;
+          continue;
+        }
+        const pt: Pt = {
+          id: d.id,
+          entreprise: String(o.entreprise || ""),
+          ville: String(o.ville || ""),
+          lat,
+          lng,
+          nbVelos: Number(o.nbVelosCommandes || 0),
+          velosLivres: Number(o.stats?.livres || 0),
+        };
+        points.push(pt);
+        if (d.id === clientId) target = pt;
+      }
+      if (!target) return { error: "Client non trouvé" };
+
+      // 2) Livraisons planifiees → vélos planifiés par clientId (live)
+      const lSnap = await getDocs(collection(db, "livraisons"));
+      const planifiesParClient = new Map<string, number>();
+      for (const d of lSnap.docs) {
+        const o = d.data() as { statut?: string; clientId?: string; nbVelos?: number };
+        if (String(o.statut || "").toLowerCase() !== "planifiee") continue;
+        const cid = String(o.clientId || "");
+        if (!cid) continue;
+        planifiesParClient.set(cid, (planifiesParClient.get(cid) || 0) + (Number(o.nbVelos) || 0));
+      }
+      const resteOf = (p: Pt): number =>
+        Math.max(0, p.nbVelos - p.velosLivres - (planifiesParClient.get(p.id) || 0));
+
+      const velosTarget = resteOf(target);
+      if (velosTarget <= 0) {
+        return { error: "Aucun vélo à planifier pour ce client (tout livré ou déjà planifié)." };
+      }
+
+      // 3) Cas retrait : tournée mono-stop client cible
+      if (mode === "retrait") {
+        const retStops = [{
+          id: target.id,
+          entreprise: target.entreprise,
+          ville: target.ville,
+          lat: target.lat,
+          lng: target.lng,
+          nbVelos: velosTarget,
+          distance: 0,
+        }];
+        return {
+          mode: "retrait",
+          capacite: velosTarget,
+          nbCamions: 1,
+          velosClient: velosTarget,
+          splits: [{ stops: retStops, totalVelos: velosTarget, capacite: velosTarget, indexCamion: 1, nbCamionsTotal: 1 }],
+          tournee: retStops,
+          totalVelos: velosTarget,
+          clientsProches: [],
+        };
+      }
+
+      // 4) Nearby : clients ≠ cible avec lat/lng, dans le rayon, avec reste > 0
+      type Near = Pt & { distance: number; velosRestants: number };
+      const nearby: Near[] = points
+        .filter((c) => c.id !== clientId)
+        .map((c) => ({
+          ...c,
+          distance: haversineKmFs(target.lat, target.lng, c.lat, c.lng),
+          velosRestants: resteOf(c),
+        }))
+        .filter((c) => c.distance <= maxDistance && c.velosRestants > 0)
+        .sort((a, b) => a.distance - b.distance);
+
+      // 5) Bin packing — chaque camion plein avant le suivant
+      const nbCamions = Math.ceil(velosTarget / capacite);
+      const splits: Array<{
+        stops: Array<{ id: string; entreprise: string; ville: string; lat: number; lng: number; nbVelos: number; distance: number }>;
+        totalVelos: number;
+        capacite: number;
+        indexCamion: number;
+        nbCamionsTotal: number;
+      }> = [];
+      let velosACassign = velosTarget;
+
+      for (let k = 0; k < nbCamions; k++) {
+        const velosCeCamion = Math.min(velosACassign, capacite);
+        const stops = [{
+          id: target.id,
+          entreprise: target.entreprise,
+          ville: target.ville,
+          lat: target.lat,
+          lng: target.lng,
+          nbVelos: velosCeCamion,
+          distance: 0,
+        }];
+
+        let resteCamion = capacite - velosCeCamion;
+        for (let j = 0; j < nearby.length && resteCamion > 0; j++) {
+          const c = nearby[j];
+          if (c.velosRestants <= 0) continue;
+          const nb = Math.min(c.velosRestants, resteCamion);
+          stops.push({
+            id: c.id,
+            entreprise: c.entreprise,
+            ville: c.ville,
+            lat: c.lat,
+            lng: c.lng,
+            nbVelos: nb,
+            distance: Math.round(c.distance * 10) / 10,
+          });
+          c.velosRestants -= nb;
+          resteCamion -= nb;
+        }
+
+        splits.push({
+          stops,
+          totalVelos: stops.reduce((s, t) => s + t.nbVelos, 0),
+          capacite,
+          indexCamion: k + 1,
+          nbCamionsTotal: nbCamions,
+        });
+        velosACassign -= velosCeCamion;
+      }
+
+      return {
+        mode,
+        capacite,
+        nbCamions,
+        velosClient: velosTarget,
+        splits,
+        // Compat ascendante : 1ère tournée à plat (cf. gas/Code.js:1045)
+        tournee: splits[0].stops,
+        totalVelos: splits[0].totalVelos,
+        clientsProches: nearby.slice(0, 20).map((c) => ({
+          id: c.id,
+          entreprise: c.entreprise,
+          ville: c.ville,
+          lat: c.lat,
+          lng: c.lng,
+          distance: Math.round(c.distance * 10) / 10,
+          velosRestants: c.velosRestants,
+        })),
+      };
+    }
+
     default:
       return { ok: false, error: `Action Firestore non implémentée: ${action}` };
   }
@@ -1749,6 +1950,17 @@ export async function runFirestoreAction(
  * Quelques lectures qui pourraient appeler GAS aujourd'hui.
  * Pas exhaustif — on étend si besoin.
  */
+// Distance grand cercle entre 2 points (km). Cf. gas/Code.js:1058.
+function haversineKmFs(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) * Math.sin(dLat / 2)
+    + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180)
+      * Math.sin(dLng / 2) * Math.sin(dLng / 2);
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
 export async function runFirestoreGet(
   action: string,
   params: Record<string, string> = {},
