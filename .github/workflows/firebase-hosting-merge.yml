@@ -8,6 +8,13 @@ on:
   push:
     branches:
       - main
+
+# Un push plus récent annule le build précédent → on évite qu'un build
+# obsolète (ex : code buggé) écrase un déploiement plus récent.
+concurrency:
+  group: firebase-hosting-live
+  cancel-in-progress: true
+
 jobs:
   build_and_deploy:
     runs-on: ubuntu-latest
