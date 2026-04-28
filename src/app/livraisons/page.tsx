@@ -910,7 +910,14 @@ function TourneeCard({
   onClick: () => void;
   compact?: boolean;
 }) {
-  const palette = modePalette(tournee.mode);
+  // Couleur de la carte = couleur du chauffeur (sauf retrait = violet).
+  // On résout l'ID chauffeur via la collection equipe déjà chargée par useData.
+  const { equipe } = useData();
+  const chauffeurId = tournee.livraisons[0]?.chauffeurId;
+  const chauffeurNom = chauffeurId
+    ? equipe.find((m) => m.id === chauffeurId)?.nom || null
+    : null;
+  const palette = modePalette(tournee.mode, chauffeurNom);
   const libre = capaciteRestante(tournee.mode, tournee.totalVelos);
   const peutAjouter = libre >= SEUIL_2EME_TOURNEE && tournee.statutGlobal !== "livree" && tournee.statutGlobal !== "annulee";
   // Check affectation : on regarde la 1re livraison (les affectations sont
@@ -986,11 +993,25 @@ function TourneeCard({
   );
 }
 
-function modePalette(mode: string | null) {
-  if (mode === "gros") return { bg: "bg-sky-100", border: "border-sky-300", text: "text-sky-900" };
-  if (mode === "moyen") return { bg: "bg-orange-100", border: "border-orange-300", text: "text-orange-900" };
-  if (mode === "camionnette") return { bg: "bg-teal-100", border: "border-teal-300", text: "text-teal-900" };
+// Palette d'une carte tournée. Évolution 2026-04-29 (cf. screenshot Yoann) :
+// la couleur reflète maintenant le CHAUFFEUR (avant : type de camion).
+//   • mode "retrait"            → violet (le client vient lui-même, pas de chauffeur)
+//   • chauffeur Armel           → vert
+//   • chauffeur Zinedine        → bleu
+//   • autre / inconnu / absent  → gris neutre
+// Pour ajouter un futur chauffeur, étends CHAUFFEUR_COLORS (clé = 1er token du
+// nom en minuscules). Match insensible à la casse + au prénom seul.
+const CHAUFFEUR_COLORS: Record<string, { bg: string; border: string; text: string }> = {
+  armel: { bg: "bg-green-100", border: "border-green-300", text: "text-green-900" },
+  zinedine: { bg: "bg-blue-100", border: "border-blue-300", text: "text-blue-900" },
+};
+
+function modePalette(mode: string | null, chauffeurNom?: string | null) {
   if (mode === "retrait") return { bg: "bg-purple-100", border: "border-purple-300", text: "text-purple-900" };
+  if (chauffeurNom) {
+    const key = chauffeurNom.trim().toLowerCase().split(/\s+/)[0];
+    if (CHAUFFEUR_COLORS[key]) return CHAUFFEUR_COLORS[key];
+  }
   return { bg: "bg-gray-100", border: "border-gray-300", text: "text-gray-800" };
 }
 
@@ -1423,7 +1444,12 @@ function TourneeModal({
     setBusy(null);
   };
 
-  const palette = modePalette(tournee.mode);
+  // Cohérent avec TourneeCard : couleur = chauffeur (sauf retrait = violet).
+  const chauffeurIdModal = tournee.livraisons[0]?.chauffeurId;
+  const chauffeurNomModal = chauffeurIdModal
+    ? equipe.find((m) => m.id === chauffeurIdModal)?.nom || null
+    : null;
+  const palette = modePalette(tournee.mode, chauffeurNomModal);
   const [showPrint, setShowPrint] = useState(false);
 
   const isRetrait = tournee.mode === "retrait";
