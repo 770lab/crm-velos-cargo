@@ -24,6 +24,8 @@ import {
   writeBatch,
   query,
   where,
+  orderBy,
+  limit,
   getDocs,
   Timestamp,
   type FieldValue,
@@ -252,12 +254,17 @@ export async function runFirestoreAction(
         }
       }
       if (tourneeNumero == null) {
-        // Nouvelle tournée → max + 1
-        const all = await getDocs(collection(db, "livraisons"));
+        // Nouvelle tournée → max + 1. On utilise orderBy desc + limit 1 pour
+        // ne lire QU'UN seul doc Firestore (avant : full scan de la collection
+        // livraisons à chaque création de tournée — coût croissant à mesure que
+        // la base grandit).
+        const top = await getDocs(
+          query(collection(db, "livraisons"), orderBy("tourneeNumero", "desc"), limit(1)),
+        );
         let maxN = 0;
-        for (const d of all.docs) {
-          const n = (d.data() as { tourneeNumero?: number }).tourneeNumero;
-          if (typeof n === "number" && n > maxN) maxN = n;
+        if (!top.empty) {
+          const n = (top.docs[0].data() as { tourneeNumero?: number }).tourneeNumero;
+          if (typeof n === "number") maxN = n;
         }
         tourneeNumero = maxN + 1;
       }

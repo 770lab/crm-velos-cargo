@@ -274,12 +274,17 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
   const [equipe, setEquipe] = useState<EquipeMember[]>([]);
   const [flotte, setFlotte] = useState<Camion[]>([]);
   const [bonsEnlevement, setBonsEnlevement] = useState<BonEnlevement[]>([]);
+  // Note 2026-04-28 : bonsEnlevement est volontairement retiré des flags de
+  // chargement. Cette collection n'est lue que sur /livraisons (badge "Bon
+  // d'enlèvement non reçu"). Bloquer le boot dessus ralentissait l'apparition
+  // de l'UI sur 4G terrain (5 listeners concurrents = saccade). Le listener
+  // tourne quand même en arrière-plan, le badge s'hydrate quand la donnée
+  // arrive (la fallback "non reçu" s'affiche en attendant).
   const [loadedFlags, setLoadedFlags] = useState({
     clients: false,
     livraisons: false,
     equipe: false,
     flotte: false,
-    bonsEnlevement: false,
   });
 
   // Snapshots temps réel
@@ -325,7 +330,6 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
       const rows: BonEnlevement[] = [];
       snap.forEach((doc) => rows.push(bonFromDoc(doc.id, doc.data())));
       setBonsEnlevement(rows);
-      setLoadedFlags((f) => ({ ...f, bonsEnlevement: true }));
     });
 
     return () => {

@@ -1284,9 +1284,13 @@ function TourneeModal({
   const changeDate = async () => {
     if (!newDate) return;
     setBusy("date");
-    for (const l of tournee.livraisons) {
-      await gasPost("updateLivraison", { id: l.id, data: { datePrevue: newDate } });
-    }
+    // Parallèle : N round-trips simultanés au lieu de N séquentiels.
+    // Une tournée a typiquement 1-8 arrêts → gain ~5× sur 4G.
+    await Promise.all(
+      tournee.livraisons.map((l) =>
+        gasPost("updateLivraison", { id: l.id, data: { datePrevue: newDate } }),
+      ),
+    );
     setEditingDate(false);
     onChanged();
     setBusy(null);
@@ -1320,17 +1324,21 @@ function TourneeModal({
     const label = action === "annulee" ? "annuler" : action === "livree" ? "marquer livrées" : "restaurer";
     if (!confirm(`${label.charAt(0).toUpperCase() + label.slice(1)} ${selected.size} livraison${selected.size > 1 ? "s" : ""} ?`)) return;
     setBusy("bulk");
-    for (const id of selected) {
-      const l = tournee.livraisons.find((x) => x.id === id);
-      if (!l) continue;
-      if (action === "annulee" && l.statut !== "annulee") {
-        await gasGet("deleteLivraison", { id });
-      } else if (action === "livree" && l.statut !== "livree") {
-        await gasPost("updateLivraison", { id, data: { statut: "livree", dateEffective: new Date().toISOString() } });
-      } else if (action === "planifiee" && l.statut === "annulee") {
-        await gasGet("restoreLivraison", { id });
-      }
-    }
+    const ids = Array.from(selected);
+    // Parallèle pour réduire la latence sur N livraisons (avant : N×latence, maintenant : 1×latence).
+    await Promise.all(
+      ids.map(async (id) => {
+        const l = tournee.livraisons.find((x) => x.id === id);
+        if (!l) return;
+        if (action === "annulee" && l.statut !== "annulee") {
+          await gasGet("deleteLivraison", { id });
+        } else if (action === "livree" && l.statut !== "livree") {
+          await gasPost("updateLivraison", { id, data: { statut: "livree", dateEffective: new Date().toISOString() } });
+        } else if (action === "planifiee" && l.statut === "annulee") {
+          await gasGet("restoreLivraison", { id });
+        }
+      }),
+    );
     setSelected(new Set());
     onChanged();
     setBusy(null);
@@ -1338,11 +1346,12 @@ function TourneeModal({
 
   const setAllLivrees = async () => {
     setBusy("all");
-    for (const l of tournee.livraisons) {
-      if (l.statut !== "livree") {
-        await gasPost("updateLivraison", { id: l.id, data: { statut: "livree", dateEffective: new Date().toISOString() } });
-      }
-    }
+    const now = new Date().toISOString();
+    await Promise.all(
+      tournee.livraisons
+        .filter((l) => l.statut !== "livree")
+        .map((l) => gasPost("updateLivraison", { id: l.id, data: { statut: "livree", dateEffective: now } })),
+    );
     onChanged();
     setBusy(null);
     onClose();
@@ -1354,11 +1363,11 @@ function TourneeModal({
     if (tournee.tourneeId) {
       await gasGet("cancelTournee", { tourneeId: tournee.tourneeId });
     } else {
-      for (const l of tournee.livraisons) {
-        if (l.statut !== "annulee") {
-          await gasGet("deleteLivraison", { id: l.id });
-        }
-      }
+      await Promise.all(
+        tournee.livraisons
+          .filter((l) => l.statut !== "annulee")
+          .map((l) => gasGet("deleteLivraison", { id: l.id })),
+      );
     }
     onChanged();
     setBusy(null);
