@@ -158,6 +158,12 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   // suggestTournee (vague 3) — algo pur côté frontend, pas de Cloud Function
   // (lit clients + livraisons direct Firestore, bin-packing local).
   "suggestTournee",
+  // parcelle cadastrale (vague 3) — APIs publiques, pas de Cloud Function
+  "fetchParcelle",
+  "autoFetchParcelles",
+  // diagnostic + routing (vague 3 — Cloud Functions)
+  "testGemini",
+  "getRouting",
 ]);
 
 export function isMigrated(action: string): boolean {
@@ -1718,6 +1724,36 @@ export async function runFirestoreAction(
       }
     }
 
+    case "testGemini": {
+      // Diagnostic admin (cf. functions/src/index.ts testGemini Cloud Function).
+      const callable = httpsCallable<Record<string, never>, Record<string, unknown>>(
+        functions,
+        "testGemini",
+      );
+      try {
+        const r = await callable({});
+        return r.data;
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
+    }
+
+    case "getRouting": {
+      // Distance Matrix Google Maps (cf. functions/src/index.ts getRouting CF).
+      // Body : { points: [{ lat, lng }, ...] } → { ok, segments, apiCalls, cached }
+      const points = (body.points as Array<{ lat?: number; lng?: number }>) || [];
+      const callable = httpsCallable<
+        { points: Array<{ lat?: number; lng?: number }> },
+        Record<string, unknown>
+      >(functions, "getRouting");
+      try {
+        const r = await callable({ points });
+        return r.data;
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e), segments: [] };
+      }
+    }
+
     case "extractFnuciFromImage": {
       // Proxifie vers la Cloud Function (nécessaire pour l'API key Gemini).
       // Le frontend (photo-gemini-capture) gère ensuite le mirror Firestore
@@ -1739,6 +1775,219 @@ export async function runFirestoreAction(
           error: e instanceof Error ? e.message : String(e),
         };
       }
+    }
+
+    case "fetchParcelle": {
+      // Migré depuis gas/Code.js:2145. Workflow :
+      //   1) Si déjà flaggé + lien stocké → renvoie cache (évite throttle apicarto).
+      //   2) Géocode l'adresse client via api-adresse.data.gouv.fr (public).
+      //   3) Récupère la parcelle via apicarto.ign.fr (Polygon GeoJSON).
+      //   4) Calcul centroid (plus précis que coords adresse pour zoom 20).
+      //   5) Construit l'URL cadastre.data.gouv.fr/parcelles/<id> (lien direct
+      //      qui encadre la parcelle EXACTE — important pour CEE).
+      //   6) Met à jour le doc client (parcelleCadastrale=true + lien).
+      const cidPrc = String(body.clientId || "");
+      if (!cidPrc) return { error: "ID client manquant" };
+
+      const cRefP = doc(db, "clients", cidPrc);
+      const cSnapP = await getDoc(cRefP);
+      if (!cSnapP.exists()) return { error: "Client non trouvé" };
+      const cDataP = cSnapP.data() as {
+        adresse?: string;
+        codePostal?: string;
+        ville?: string;
+        docLinks?: { parcelleCadastrale?: string };
+        docs?: { parcelleCadastrale?: boolean };
+      };
+
+      // Cache : si déjà flaggé + lien, on sort tout de suite.
+      const lienCacheP = String(cDataP.docLinks?.parcelleCadastrale || "").trim();
+      const flagCacheP = !!cDataP.docs?.parcelleCadastrale;
+      if (flagCacheP && lienCacheP) {
+        const refMatch = lienCacheP.match(/\/parcelles\/(\d{5})(\d{0,5}?)([A-Z]{1,3})(\d{1,4})$/);
+        return {
+          ok: true,
+          cached: true,
+          parcelle: refMatch ? `${refMatch[1]} ${refMatch[3]} ${refMatch[4]}` : "(stockée)",
+          commune: refMatch ? refMatch[1] : "",
+          section: refMatch ? refMatch[3] : "",
+          numero: refMatch ? refMatch[4] : "",
+          contenance: null,
+          lat: null,
+          lng: null,
+          parcelleLien: lienCacheP,
+          geoportailUrl: lienCacheP,
+        };
+      }
+
+      const adresseP = String(cDataP.adresse || "").trim();
+      const cpP = String(cDataP.codePostal || "").trim();
+      const villeP = String(cDataP.ville || "").trim();
+      const qP = [adresseP, cpP, villeP].filter(Boolean).join(" ");
+      if (!qP) return { error: "Adresse client vide — renseignez l'adresse, le code postal et la ville." };
+
+      // 1) Géocodage
+      let lat: number, lng: number;
+      try {
+        const geoRes = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(qP)}&limit=1`);
+        if (!geoRes.ok) return { error: `Erreur géocodage : HTTP ${geoRes.status}` };
+        const geoData = await geoRes.json() as { features?: Array<{ geometry?: { coordinates?: number[] } }> };
+        if (!geoData.features || geoData.features.length === 0) {
+          return { error: "Adresse introuvable sur api-adresse.data.gouv.fr" };
+        }
+        const coords = geoData.features[0].geometry?.coordinates;
+        if (!coords || coords.length < 2) return { error: "Coords manquantes dans réponse géocodage" };
+        lng = coords[0];
+        lat = coords[1];
+      } catch (e) {
+        return { error: `Erreur géocodage : ${e instanceof Error ? e.message : String(e)}` };
+      }
+
+      // 2) Parcelle via apicarto + récup géométrie pour centroid précis
+      type CadastreProps = { code_com?: string; commune?: string; section?: string; numero?: string; contenance?: string | number };
+      type CadastreFeature = { properties?: CadastreProps; geometry?: { coordinates?: number[][][] | number[][][][] } };
+      let props: CadastreProps | null = null;
+      let geom: CadastreFeature["geometry"] | null = null;
+      try {
+        const cadUrl = `https://apicarto.ign.fr/api/cadastre/parcelle?geom=${encodeURIComponent(`{"type":"Point","coordinates":[${lng},${lat}]}`)}&_limit=1`;
+        const cadRes = await fetch(cadUrl);
+        if (cadRes.ok) {
+          const cadData = await cadRes.json() as { features?: CadastreFeature[] };
+          if (cadData.features && cadData.features.length > 0) {
+            props = cadData.features[0].properties || null;
+            geom = cadData.features[0].geometry || null;
+          }
+        }
+      } catch {}
+
+      // Fallback : geo.api.gouv.fr pour au moins choper le code commune.
+      if (!props) {
+        try {
+          const fbRes = await fetch(`https://geo.api.gouv.fr/communes?lat=${lat}&lon=${lng}&fields=codeDepartement,codeCommune&limit=1`);
+          if (fbRes.ok) {
+            const communes = await fbRes.json() as Array<{ code?: string }>;
+            if (communes.length > 0) {
+              props = { code_com: communes[0].code, section: "", numero: "", contenance: "" };
+            }
+          }
+        } catch {}
+      }
+
+      if (!props) return { error: "API cadastre indisponible — réessayez plus tard." };
+
+      const codeCommune = String(props.code_com || props.commune || "");
+      const section = String(props.section || "");
+      const numero = String(props.numero || "");
+      const contenance = props.contenance != null ? Number(props.contenance) : null;
+      const refParcelle = `${codeCommune} ${section} ${numero}`.trim();
+
+      // Centroid de la géométrie si dispo (plus précis que coords adresse)
+      let centerLat = lat;
+      let centerLng = lng;
+      try {
+        if (geom?.coordinates) {
+          const raw = geom.coordinates as unknown as number[][][] | number[][][][];
+          let ring: number[][] | null = null;
+          // Polygon : coords[0] = anneau extérieur. MultiPolygon : coords[0][0].
+          const r0 = raw[0];
+          if (Array.isArray(r0) && Array.isArray(r0[0]) && Array.isArray((r0[0] as unknown[])[0])) {
+            ring = r0[0] as unknown as number[][];
+          } else {
+            ring = r0 as unknown as number[][];
+          }
+          if (ring && ring.length > 2) {
+            let sumX = 0;
+            let sumY = 0;
+            for (const p of ring) {
+              sumX += p[0];
+              sumY += p[1];
+            }
+            centerLng = sumX / ring.length;
+            centerLat = sumY / ring.length;
+          }
+        }
+      } catch {}
+
+      // Lien direct cadastre.data.gouv.fr (format ID fiscal : INSEE+SECTION_PAD5+NUMERO_PAD4)
+      const pad = (s: string, n: number) => {
+        let v = String(s || "");
+        while (v.length < n) v = `0${v}`;
+        return v;
+      };
+      let parcelleLien = "";
+      if (codeCommune && section && numero) {
+        parcelleLien = `https://cadastre.data.gouv.fr/parcelles/${codeCommune}${pad(section, 5)}${pad(numero, 4)}`;
+      } else {
+        // Fallback Géoportail centré sur centroid.
+        parcelleLien = `https://www.geoportail.gouv.fr/carte?c=${centerLng},${centerLat}&z=20&l0=GEOGRAPHICALGRIDSYSTEMS.MAPS.SCAN-EXPRESS-STANDARD::GEOPORTAIL:OGC:WMTS(1)&l1=CADASTRALPARCELS.PARCELLAIRE_EXPRESS::GEOPORTAIL:OGC:WMTS(0.7)&permalink=yes`;
+      }
+
+      // Persist sur le doc client
+      try {
+        await updateDoc(cRefP, {
+          "docs.parcelleCadastrale": true,
+          "docLinks.parcelleCadastrale": parcelleLien,
+          updatedAt: ts(),
+        });
+      } catch (e) {
+        return { error: `Échec persistance client : ${e instanceof Error ? e.message : String(e)}` };
+      }
+
+      return {
+        ok: true,
+        parcelle: refParcelle,
+        section,
+        numero,
+        commune: codeCommune,
+        contenance,
+        lat: centerLat,
+        lng: centerLng,
+        parcelleLien,
+        geoportailUrl: parcelleLien,
+      };
+    }
+
+    case "autoFetchParcelles": {
+      // Migré depuis gas/Code.js:2338. Boucle séquentielle (250ms entre appels)
+      // sur les clients sans flag parcelleCadastrale, avec adresse renseignée.
+      const limit = Math.max(1, Number(body.limit) || 50);
+      const cSnapAFP = await getDocs(collection(db, "clients"));
+      const report = {
+        processed: 0,
+        ok: 0,
+        skipped: 0,
+        failed: 0,
+        errors: [] as Array<{ clientId: string; error: string }>,
+      };
+      for (const d of cSnapAFP.docs) {
+        if (report.processed >= limit) break;
+        const o = d.data() as { docs?: { parcelleCadastrale?: boolean }; adresse?: string };
+        if (o.docs?.parcelleCadastrale) { report.skipped++; continue; }
+        if (!String(o.adresse || "").trim()) { report.skipped++; continue; }
+        report.processed++;
+        try {
+          const res = await runFirestoreAction("fetchParcelle", { clientId: d.id }) as {
+            ok?: boolean;
+            error?: string;
+          };
+          if (res?.ok) {
+            report.ok++;
+          } else {
+            report.failed++;
+            if (res?.error && report.errors.length < 10) {
+              report.errors.push({ clientId: d.id, error: res.error });
+            }
+          }
+        } catch (err) {
+          report.failed++;
+          if (report.errors.length < 10) {
+            report.errors.push({ clientId: d.id, error: err instanceof Error ? err.message : String(err) });
+          }
+        }
+        // Pause légère pour lisser apicarto (limite ~1000 req/jour)
+        await new Promise((r) => setTimeout(r, 250));
+      }
+      return report;
     }
 
     case "suggestTournee": {

@@ -27,6 +27,7 @@ setGlobalOptions({
 });
 
 const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
+const GOOGLE_MAPS_API_KEY = defineSecret("GOOGLE_MAPS_API_KEY");
 const GAS_URL = defineString("GAS_URL", {
   default: "https://script.google.com/macros/s/AKfycbxcR1mvhpSphNIjuS_mu5GPIaMhxYp1vT1OOPAoGEHNN8h7_iiFIq3Cu_SGR9upgwNgxg/exec",
   // ATTENTION : ce paramètre pointe sur le déploiement GAS PRINCIPAL (gas/),
@@ -879,3 +880,166 @@ export const extractFnuciFromImage = onCall<ExtractFnuciPayload>(
 
 // proposeTournee — vague 3 migration GAS → Cloud Function (cf. propose-tournee.ts).
 export { proposeTournee } from "./propose-tournee.js";
+
+// ---------- testGemini : diagnostic ping API ----------
+//
+// Migré depuis gas/Code.js:2092. Diagnostic admin : vérifie que la clé
+// GEMINI_API_KEY est bien configurée et que l'API répond. Renvoie le code HTTP
+// + un body tronqué pour debug. Pas d'auth (réservé via UI admin uniquement).
+
+export const testGemini = onCall<Record<string, never>>(
+  { secrets: [GEMINI_API_KEY], timeoutSeconds: 30 },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentification requise");
+    }
+    await ensureAdmin(request.auth.uid);
+    const apiKey = GEMINI_API_KEY.value();
+    const diag: Record<string, unknown> = {
+      apiKeyPresent: !!apiKey,
+      apiKeyLength: apiKey ? apiKey.length : 0,
+      model: "gemini-2.5-flash",
+      urlObfuscated: null as string | null,
+      testMode: "text-only",
+      httpCode: null as number | null,
+      body: null as string | null,
+      label: null as string | null,
+      error: null as string | null,
+    };
+    if (!apiKey) {
+      diag.error = "GEMINI_API_KEY absente";
+      return diag;
+    }
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+    diag.urlObfuscated = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=***${apiKey.slice(-4)}`;
+    try {
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: "Réponds uniquement par OK." }] }],
+          generationConfig: { temperature: 0, maxOutputTokens: 5 },
+        }),
+      });
+      diag.httpCode = res.status;
+      const body = await res.text();
+      diag.body = body.length > 1500 ? `${body.slice(0, 1500)}...` : body;
+      if (res.status === 200) {
+        try {
+          const data = JSON.parse(body);
+          const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (text) diag.label = String(text).trim();
+        } catch {}
+      }
+    } catch (err) {
+      diag.error = `fetch a planté : ${err instanceof Error ? err.message : String(err)}`;
+    }
+    return diag;
+  },
+);
+
+// ---------- getRouting : Distance Matrix Google Maps ----------
+//
+// Migré depuis gas/Code.js:5967. Calcule les segments routiers entre N points
+// successifs via Google Maps Distance Matrix. Cache mémoire 30 min (au lieu
+// du CacheService GAS 6h, mais le cold start étant rare et chaque appel
+// faisant 5-30 segments, l'impact coût est négligeable).
+//
+// Secret requis : GOOGLE_MAPS_API_KEY (à set via `firebase functions:secrets:set`).
+
+type RoutingPoint = { lat?: number; lng?: number };
+type RoutingPayload = { points?: RoutingPoint[] };
+type RoutingSegment = {
+  distKm: number;
+  trajetMin: number;
+  source: "skip" | "cache" | "api" | "api_error" | "fetch_error";
+  apiStatus?: string;
+  elemStatus?: string;
+  err?: string;
+};
+
+const routingCache = new Map<string, { distKm: number; trajetMin: number; expires: number }>();
+const ROUTING_CACHE_MS = 30 * 60 * 1000;
+
+export const getRouting = onCall<RoutingPayload>(
+  { secrets: [GOOGLE_MAPS_API_KEY], timeoutSeconds: 60 },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentification requise");
+    }
+    const points = Array.isArray(request.data?.points) ? request.data.points : [];
+    if (points.length < 2) {
+      return { ok: false, error: "Au moins 2 points requis", segments: [] as RoutingSegment[] };
+    }
+    const apiKey = GOOGLE_MAPS_API_KEY.value();
+    if (!apiKey) {
+      return {
+        ok: false,
+        error: "GOOGLE_MAPS_API_KEY non configurée (firebase functions:secrets:set GOOGLE_MAPS_API_KEY)",
+        segments: [] as RoutingSegment[],
+      };
+    }
+
+    const segments: RoutingSegment[] = [];
+    let apiCalls = 0;
+    let cachedCount = 0;
+    const now = Date.now();
+
+    for (let i = 0; i < points.length - 1; i++) {
+      const p1 = points[i];
+      const p2 = points[i + 1];
+      if (!p1 || !p2 || typeof p1.lat !== "number" || typeof p1.lng !== "number"
+          || typeof p2.lat !== "number" || typeof p2.lng !== "number"
+          || (p1.lat === 0 && p1.lng === 0) || (p2.lat === 0 && p2.lng === 0)) {
+        segments.push({ distKm: 0, trajetMin: 0, source: "skip" });
+        continue;
+      }
+
+      const key = `dm:${p1.lat.toFixed(5)},${p1.lng.toFixed(5)}->${p2.lat.toFixed(5)},${p2.lng.toFixed(5)}`;
+      const cached = routingCache.get(key);
+      if (cached && cached.expires > now) {
+        segments.push({ distKm: cached.distKm, trajetMin: cached.trajetMin, source: "cache" });
+        cachedCount++;
+        continue;
+      }
+
+      const url = `https://maps.googleapis.com/maps/api/distancematrix/json`
+        + `?origins=${p1.lat},${p1.lng}`
+        + `&destinations=${p2.lat},${p2.lng}`
+        + `&mode=driving&units=metric&language=fr&key=${apiKey}`;
+
+      try {
+        const resp = await fetch(url);
+        const data = await resp.json() as {
+          status?: string;
+          rows?: Array<{ elements?: Array<{ status?: string; distance?: { value?: number }; duration?: { value?: number } }> }>;
+        };
+        apiCalls++;
+        const el = data.rows?.[0]?.elements?.[0];
+        if (data.status === "OK" && el?.status === "OK" && el.distance?.value != null && el.duration?.value != null) {
+          const distKm = Math.round(el.distance.value / 100) / 10;
+          const trajetMin = Math.round(el.duration.value / 60);
+          segments.push({ distKm, trajetMin, source: "api" });
+          routingCache.set(key, { distKm, trajetMin, expires: now + ROUTING_CACHE_MS });
+        } else {
+          segments.push({
+            distKm: 0,
+            trajetMin: 0,
+            source: "api_error",
+            apiStatus: data.status,
+            elemStatus: el?.status || "NO_ELEMENT",
+          });
+        }
+      } catch (err) {
+        segments.push({
+          distKm: 0,
+          trajetMin: 0,
+          source: "fetch_error",
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return { ok: true, segments, apiCalls, cached: cachedCount };
+  },
+);
