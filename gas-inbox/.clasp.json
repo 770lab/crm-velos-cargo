@@ -1,6 +1,6 @@
 {
   "scriptId": "1voHxZU1E8IYqdQYIDaBCemshKPwbRVoJHrOoHPIIqxCSoP86w2raICU3",
-  "rootDir": "/Users/yoannluzzato/crm-velos-cargo/gas-inbox",
+  "rootDir": ".",
   "scriptExtensions": [".js", ".gs"],
   "jsonExtensions": [".json"]
 }
