@@ -53,6 +53,9 @@ interface Tournee {
   nbMonteurs: number;
   statutGlobal: "planifiee" | "en_cours" | "livree" | "annulee" | "mixte";
   numero?: number;
+  /** Si non null, le bouton "Envoyer commande à AXDIS" a déjà été cliqué.
+   *  Toutes les livraisons d'une tournée partagent la valeur (même write). */
+  bonCommandeEnvoyeAt?: string | null;
 }
 
 // Une livraison appartient au user si celui-ci y est affecté selon son rôle.
@@ -124,6 +127,7 @@ export default function LivraisonsPage() {
   const [search, setSearch] = useState("");
   const [showAddClient, setShowAddClient] = useState(false);
   const [showPlanner, setShowPlanner] = useState(false);
+  const [batchAxdis, setBatchAxdis] = useState<{ date: Date; tournees: Tournee[] } | null>(null);
 
   useEffect(() => {
     refresh("livraisons");
@@ -378,13 +382,29 @@ export default function LivraisonsPage() {
       )}
 
       {view === "jour" && (
-        <DayView refDate={refDate} tourneesByDate={tourneesByDate} onOpen={setOpenTournee} />
+        <DayView
+          refDate={refDate}
+          tourneesByDate={tourneesByDate}
+          onOpen={setOpenTournee}
+          onBatchAxdis={(d, ts) => setBatchAxdis({ date: d, tournees: ts })}
+        />
       )}
       {view === "3jours" && (
-        <MultiDayView refDate={refDate} tourneesByDate={tourneesByDate} onOpen={setOpenTournee} nbDays={3} />
+        <MultiDayView
+          refDate={refDate}
+          tourneesByDate={tourneesByDate}
+          onOpen={setOpenTournee}
+          nbDays={3}
+          onBatchAxdis={(d, ts) => setBatchAxdis({ date: d, tournees: ts })}
+        />
       )}
       {view === "semaine" && (
-        <WeekView refDate={refDate} tourneesByDate={tourneesByDate} onOpen={setOpenTournee} />
+        <WeekView
+          refDate={refDate}
+          tourneesByDate={tourneesByDate}
+          onOpen={setOpenTournee}
+          onBatchAxdis={(d, ts) => setBatchAxdis({ date: d, tournees: ts })}
+        />
       )}
       {view === "mois" && (
         <MonthView refDate={refDate} tourneesByDate={tourneesByDate} onOpen={setOpenTournee} />
@@ -425,6 +445,14 @@ export default function LivraisonsPage() {
             refresh("livraisons");
             refresh("carte");
           }}
+        />
+      )}
+      {batchAxdis && (
+        <BatchAxdisModal
+          date={batchAxdis.date}
+          tournees={batchAxdis.tournees}
+          onClose={() => setBatchAxdis(null)}
+          onChanged={() => refresh("livraisons")}
         />
       )}
     </div>
@@ -500,10 +528,12 @@ function DayView({
   refDate,
   tourneesByDate,
   onOpen,
+  onBatchAxdis,
 }: {
   refDate: Date;
   tourneesByDate: Map<string, Tournee[]>;
   onOpen: (t: Tournee) => void;
+  onBatchAxdis: (date: Date, tournees: Tournee[]) => void;
 }) {
   const iso = isoDate(refDate);
   const list = tourneesByDate.get(iso) || [];
@@ -512,16 +542,27 @@ function DayView({
 
   return (
     <div className="bg-white rounded-xl border overflow-hidden">
-      <div className={`px-4 py-3 border-b ${isToday ? "bg-blue-50 text-blue-800" : "bg-gray-50 text-gray-700"}`}>
-        <div className="text-sm font-medium capitalize">
-          {refDate.toLocaleDateString("fr-FR", { weekday: "long" })}
+      <div className={`px-4 py-3 border-b flex items-start justify-between gap-2 ${isToday ? "bg-blue-50 text-blue-800" : "bg-gray-50 text-gray-700"}`}>
+        <div>
+          <div className="text-sm font-medium capitalize">
+            {refDate.toLocaleDateString("fr-FR", { weekday: "long" })}
+          </div>
+          <div className="text-2xl font-bold">
+            {refDate.getDate()}{" "}
+            <span className="text-base font-normal text-gray-500 capitalize">
+              {refDate.toLocaleDateString("fr-FR", { month: "long" })}
+            </span>
+          </div>
         </div>
-        <div className="text-2xl font-bold">
-          {refDate.getDate()}{" "}
-          <span className="text-base font-normal text-gray-500 capitalize">
-            {refDate.toLocaleDateString("fr-FR", { month: "long" })}
-          </span>
-        </div>
+        {list.length > 0 && (
+          <button
+            onClick={() => onBatchAxdis(new Date(refDate), list)}
+            className="self-center px-3 py-1.5 text-xs bg-amber-600 text-white rounded-lg hover:bg-amber-700 whitespace-nowrap"
+            title={`Envoyer les ${list.length} commandes AXDIS du jour (1 mail par tournée)`}
+          >
+            📧 {list.length} commande{list.length > 1 ? "s" : ""} AXDIS
+          </button>
+        )}
       </div>
       <div className="p-3 space-y-2 min-h-[40vh]">
         {list.length === 0 ? (
@@ -545,11 +586,13 @@ function MultiDayView({
   tourneesByDate,
   onOpen,
   nbDays,
+  onBatchAxdis,
 }: {
   refDate: Date;
   tourneesByDate: Map<string, Tournee[]>;
   onOpen: (t: Tournee) => void;
   nbDays: number;
+  onBatchAxdis: (date: Date, tournees: Tournee[]) => void;
 }) {
   const days = Array.from({ length: nbDays }, (_, i) => {
     const d = new Date(refDate);
@@ -565,6 +608,7 @@ function MultiDayView({
         {days.map((d) => {
           const iso = isoDate(d);
           const isToday = iso === today;
+          const list = tourneesByDate.get(iso) || [];
           return (
             <div
               key={iso}
@@ -575,6 +619,15 @@ function MultiDayView({
                 {d.getDate()}
                 <span className="text-xs font-normal text-gray-500 ml-1">{d.toLocaleDateString("fr-FR", { month: "short" })}</span>
               </div>
+              {list.length > 0 && (
+                <button
+                  onClick={() => onBatchAxdis(new Date(d), list)}
+                  className="mt-1 w-full px-1.5 py-0.5 text-[10px] bg-amber-600 text-white rounded hover:bg-amber-700"
+                  title={`Envoyer les ${list.length} commandes AXDIS de ce jour`}
+                >
+                  📧 {list.length} AXDIS
+                </button>
+              )}
             </div>
           );
         })}
@@ -602,10 +655,12 @@ function WeekView({
   refDate,
   tourneesByDate,
   onOpen,
+  onBatchAxdis,
 }: {
   refDate: Date;
   tourneesByDate: Map<string, Tournee[]>;
   onOpen: (t: Tournee) => void;
+  onBatchAxdis: (date: Date, tournees: Tournee[]) => void;
 }) {
   const start = startOfWeek(refDate);
   const days = Array.from({ length: 7 }, (_, i) => {
@@ -621,6 +676,7 @@ function WeekView({
         {days.map((d) => {
           const iso = isoDate(d);
           const isToday = iso === today;
+          const list = tourneesByDate.get(iso) || [];
           return (
             <div
               key={iso}
@@ -631,6 +687,15 @@ function WeekView({
                 {d.getDate()}
                 <span className="text-xs font-normal text-gray-500 ml-1">{d.toLocaleDateString("fr-FR", { month: "short" })}</span>
               </div>
+              {list.length > 0 && (
+                <button
+                  onClick={() => onBatchAxdis(new Date(d), list)}
+                  className="mt-1 w-full px-1.5 py-0.5 text-[10px] bg-amber-600 text-white rounded hover:bg-amber-700"
+                  title={`Envoyer les ${list.length} commandes AXDIS de ce jour`}
+                >
+                  📧 {list.length} AXDIS
+                </button>
+              )}
             </div>
           );
         })}
@@ -850,14 +915,19 @@ function TourneeCard({
   const peutAjouter = libre >= SEUIL_2EME_TOURNEE && tournee.statutGlobal !== "livree" && tournee.statutGlobal !== "annulee";
   // Check affectation : on regarde la 1re livraison (les affectations sont
   // par tournée, donc toutes ses livraisons partagent les mêmes équipes via
-  // assignTournee). Manque = chauffeur OU chefs OU monteurs vide.
+  // assignTournee).
+  // Mode "retrait" (client vient chercher) : pas besoin de chauffeur.
+  // Préparateur requis sur TOUTES les tournées : les vélos doivent être
+  // préparés avant retrait/livraison (cf. retour Yoann 2026-04-28).
   const ref = tournee.livraisons[0];
   const missing: string[] = [];
   if (ref) {
-    if (!ref.chauffeurId) missing.push("chauffeur");
+    const isRetrait = tournee.mode === "retrait";
+    if (!isRetrait && !ref.chauffeurId) missing.push("chauffeur");
     const hasChef = !!ref.chefEquipeId || (ref.chefEquipeIds && ref.chefEquipeIds.length > 0);
     if (!hasChef) missing.push("chef");
     if (!ref.monteurIds || ref.monteurIds.length === 0) missing.push("monteur");
+    if (!ref.preparateurIds || ref.preparateurIds.length === 0) missing.push("préparateur");
   }
   const affectIncomplete = missing.length > 0 && tournee.statutGlobal !== "livree" && tournee.statutGlobal !== "annulee";
   return (
@@ -1499,6 +1569,30 @@ function TourneeModal({
               title="Envoie un rappel par mail à chaque client de la tournée avec sa fenêtre de passage estimée"
             >
               📧 Rappels veille
+            </button>
+            <button
+              onClick={async () => {
+                const { url } = buildAxdisCommandeMail(tournee);
+                window.open(url, "_blank");
+                try {
+                  await markBonCommandeEnvoye(tournee);
+                  onChanged();
+                } catch (e) {
+                  console.error("markBonCommandeEnvoye failed", e);
+                }
+              }}
+              className={`px-3 py-1 text-xs rounded-lg flex items-center gap-1 ${
+                tournee.bonCommandeEnvoyeAt
+                  ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-200"
+                  : "bg-amber-600 text-white hover:bg-amber-700"
+              }`}
+              title={
+                tournee.bonCommandeEnvoyeAt
+                  ? `Déjà envoyé le ${new Date(tournee.bonCommandeEnvoyeAt).toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}. Clique pour renvoyer.`
+                  : `Pré-remplit un mail à ${AXDIS_EMAIL} avec la commande de cette tournée`
+              }
+            >
+              {tournee.bonCommandeEnvoyeAt ? "✅ Commande AXDIS envoyée" : "📧 Commande AXDIS"}
             </button>
             <button
               onClick={() => setShowPrint(true)}
@@ -2218,6 +2312,9 @@ function groupByTournee(livraisons: LivraisonRow[]): Tournee[] {
     if (g.livraisons.length > 1) {
       g.livraisons = optimizeStopOrder(g.livraisons);
     }
+    // Toutes les livraisons d'une tournée partagent bonCommandeEnvoyeAt (write
+    // simultané sur tout le groupe). On expose la 1re valeur trouvée.
+    g.bonCommandeEnvoyeAt = g.livraisons.find((l) => l.bonCommandeEnvoyeAt)?.bonCommandeEnvoyeAt ?? null;
   }
 
   return Array.from(groups.values());
@@ -2438,6 +2535,168 @@ function EquipeAssignBlock({
 const FROM_EMAIL_RAPPEL = "velos-cargo@artisansverts.energy";
 const DEPART_DEPOT_HEURE = 9; // 9h00 du matin
 const FENETRE_HEURES = 2;
+
+// Mail sortant à AXDIS (Tiffany) pour passer la commande de la veille.
+// La référence textuelle "VELO CARGO - TOURNEE X" sert de clé de matching
+// quand le bon de commande reviendra par mail (à brancher plus tard).
+const AXDIS_EMAIL = "Tiffany@axdis.fr";
+
+function tourneeRefAxdis(numero: number | null | undefined, fallbackTourneeId: string | null): string {
+  if (typeof numero === "number") return `VELO CARGO - TOURNEE ${numero}`;
+  return `VELO CARGO - ${fallbackTourneeId || "SANS-NUMERO"}`;
+}
+
+function buildAxdisCommandeMail(tournee: Tournee): { subject: string; body: string; url: string } {
+  const ref = tourneeRefAxdis(tournee.numero ?? null, tournee.tourneeId);
+  const subject = `Commande ${ref}`;
+  const body = [
+    `Bonjour Tiffany,`,
+    ``,
+    `Merci de préparer la commande pour la tournée de demain :`,
+    ``,
+    `  → ${tournee.totalVelos} vélos`,
+    ``,
+    `Référence à reporter sur le bon de commande :`,
+    ref,
+    ``,
+    `Merci,`,
+    `Yoann`,
+  ].join("\n");
+  const url =
+    `https://mail.google.com/mail/?authuser=${encodeURIComponent(FROM_EMAIL_RAPPEL)}` +
+    `&view=cm&fs=1&to=${encodeURIComponent(AXDIS_EMAIL)}` +
+    `&su=${encodeURIComponent(subject)}` +
+    `&body=${encodeURIComponent(body)}`;
+  return { subject, body, url };
+}
+
+async function markBonCommandeEnvoye(tournee: Tournee): Promise<void> {
+  const now = new Date().toISOString();
+  await Promise.all(
+    tournee.livraisons.map((l) =>
+      gasPost("updateLivraison", { id: l.id, data: { bonCommandeEnvoyeAt: now } }),
+    ),
+  );
+}
+
+function BatchAxdisModal({
+  date,
+  tournees,
+  onClose,
+  onChanged,
+}: {
+  date: Date;
+  tournees: Tournee[];
+  onClose: () => void;
+  onChanged: () => void;
+}) {
+  const [busy, setBusy] = useState<string | null>(null);
+  const [sentLocal, setSentLocal] = useState<Set<string>>(() => {
+    const s = new Set<string>();
+    tournees.forEach((t) => {
+      if (t.bonCommandeEnvoyeAt) s.add(keyForTournee(t));
+    });
+    return s;
+  });
+  const dateLabel = date.toLocaleDateString("fr-FR", {
+    weekday: "long",
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+  });
+  const totalVelos = tournees.reduce((sum, t) => sum + t.totalVelos, 0);
+
+  const sendOne = async (t: Tournee) => {
+    const k = keyForTournee(t);
+    setBusy(k);
+    try {
+      const { url } = buildAxdisCommandeMail(t);
+      window.open(url, "_blank");
+      await markBonCommandeEnvoye(t);
+      setSentLocal((prev) => {
+        const next = new Set(prev);
+        next.add(k);
+        return next;
+      });
+      onChanged();
+    } catch (e) {
+      console.error("BatchAxdis sendOne failed", e);
+      alert(`Échec écriture Firestore pour tournée ${t.numero}. Le mail s'est ouvert quand même — réessaie pour marquer "envoyé".`);
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60] p-4" onClick={onClose}>
+      <div
+        className="bg-white rounded-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex justify-between items-start mb-4">
+          <div>
+            <h2 className="text-lg font-bold text-gray-900 capitalize">Commandes AXDIS — {dateLabel}</h2>
+            <p className="text-sm text-gray-600">
+              {tournees.length} tournée{tournees.length > 1 ? "s" : ""} · {totalVelos} vélos au total · 1 mail par tournée
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+        </div>
+
+        <div className="bg-amber-50 border border-amber-200 rounded p-2 text-[11px] text-amber-900 mb-3">
+          Clique <strong>Ouvrir le mail</strong> sur chaque ligne. Gmail s&apos;ouvre dans un nouvel onglet, tu cliques <strong>Envoyer</strong>, puis tu reviens ici pour la tournée suivante.
+        </div>
+
+        <ul className="space-y-2">
+          {tournees.map((t) => {
+            const k = keyForTournee(t);
+            const sent = sentLocal.has(k);
+            const ref = tourneeRefAxdis(t.numero ?? null, t.tourneeId);
+            return (
+              <li
+                key={k}
+                className={`flex items-center justify-between gap-3 border rounded-lg px-3 py-2 ${
+                  sent ? "bg-emerald-50 border-emerald-300" : "bg-white border-gray-200"
+                }`}
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="font-medium text-sm">
+                    {sent && <span className="mr-1">✅</span>}
+                    {ref}
+                  </div>
+                  <div className="text-xs text-gray-600">
+                    {t.totalVelos} vélos · {t.livraisons.length} arrêt{t.livraisons.length > 1 ? "s" : ""}
+                  </div>
+                </div>
+                <button
+                  onClick={() => sendOne(t)}
+                  disabled={busy === k}
+                  className={`px-3 py-1.5 text-xs rounded-lg whitespace-nowrap ${
+                    sent
+                      ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-200"
+                      : "bg-amber-600 text-white hover:bg-amber-700"
+                  } disabled:opacity-50`}
+                >
+                  {busy === k ? "..." : sent ? "📧 Renvoyer" : "📧 Ouvrir le mail"}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="px-4 py-1.5 bg-gray-100 text-gray-700 rounded-lg text-sm hover:bg-gray-200">
+            Fermer
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function keyForTournee(t: Tournee): string {
+  return (t.tourneeId || `solo-${t.livraisons[0]?.id || "x"}`) + "|" + (t.datePrevue || "no-date");
+}
 
 function fmtHM(totalMinutesFromMidnight: number): string {
   const h = Math.floor(totalMinutesFromMidnight / 60);

@@ -100,6 +100,10 @@ interface LivraisonRow {
    *  à la création et qui ne bouge plus, même si une tournée antérieure est
    *  annulée. null pour les livraisons importées avant la migration. */
   tourneeNumero?: number | null;
+  /** ISO timestamp du dernier click sur le bouton "Envoyer commande à AXDIS".
+   *  Sert à : (1) afficher un état "déjà envoyé" sur le bouton,
+   *  (2) servir de clé de matching quand on auto-importera les bons en retour. */
+  bonCommandeEnvoyeAt?: string | null;
   client: {
     entreprise: string;
     ville: string | null;
