@@ -940,8 +940,17 @@ function DocCell({
   const [showPreview, setShowPreview] = useState(false);
 
   const fileId = lien ? extractDriveId(lien) : null;
-  const previewUrl = fileId ? `https://drive.google.com/file/d/${fileId}/preview` : null;
-  const downloadUrl = fileId ? `https://drive.google.com/uc?export=download&id=${fileId}` : null;
+  const isFirebaseStorage = !!lien && /firebasestorage\.googleapis\.com/.test(lien);
+  const previewUrl = fileId
+    ? `https://drive.google.com/file/d/${fileId}/preview`
+    : isFirebaseStorage
+      ? lien
+      : null;
+  const downloadUrl = fileId
+    ? `https://drive.google.com/uc?export=download&id=${fileId}`
+    : isFirebaseStorage
+      ? lien
+      : null;
 
   if (!ok || !lien) {
     return (
@@ -1177,7 +1186,7 @@ function PreviewDocModal({
             <iframe src={previewUrl} className="w-full h-full border-0" allow="autoplay" />
           ) : (
             <div className="flex items-center justify-center h-full text-gray-500 text-sm">
-              Aperçu impossible (lien Drive non reconnu).{" "}
+              Aperçu impossible (lien non reconnu).{" "}
               <a className="text-blue-600 underline ml-1" href={openUrl} target="_blank" rel="noopener noreferrer">Ouvrir directement</a>
             </div>
           )}
@@ -1190,10 +1199,10 @@ function PreviewDocModal({
             href={openUrl}
             target="_blank"
             rel="noopener noreferrer"
-            title="Ouvre Drive — le bouton ⬇ natif te permet ensuite de télécharger"
+            title="Ouvre le document dans un nouvel onglet"
             className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700"
           >
-            Ouvrir dans Drive (puis ⬇)
+            Ouvrir dans un nouvel onglet
           </a>
         </div>
       </div>
