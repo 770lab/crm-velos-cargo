@@ -151,6 +151,8 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "bulkAutoValidate",
   "importClients",
   "setDisponibilites",
+  // gemini vision (vague 3 — proxifié via Cloud Function)
+  "extractFnuciFromImage",
 ]);
 
 export function isMigrated(action: string): boolean {
@@ -1339,6 +1341,29 @@ export async function runFirestoreAction(
       >(functions, "syncFromGasNow");
       try {
         const r = await callable({});
+        return r.data;
+      } catch (e) {
+        return {
+          ok: false,
+          error: e instanceof Error ? e.message : String(e),
+        };
+      }
+    }
+
+    case "extractFnuciFromImage": {
+      // Proxifie vers la Cloud Function (nécessaire pour l'API key Gemini).
+      // Le frontend (photo-gemini-capture) gère ensuite le mirror Firestore
+      // via les actions migrées (assignFnuciToClient + markVeloPrepare/...)
+      // — la Cloud Function ne fait QUE l'extraction OCR.
+      const imageBase64 = getString(body, "imageBase64");
+      const mimeType = getString(body, "mimeType") || "image/jpeg";
+      if (!imageBase64) return { ok: false, error: "imageBase64 requis" };
+      const callable = httpsCallable<
+        { imageBase64: string; mimeType: string },
+        Record<string, unknown>
+      >(functions, "extractFnuciFromImage");
+      try {
+        const r = await callable({ imageBase64, mimeType });
         return r.data;
       } catch (e) {
         return {

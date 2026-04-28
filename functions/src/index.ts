@@ -713,3 +713,146 @@ export const extractDocMetadata = onCall<ExtractPayload>(
     }
   },
 );
+
+// ---------- extraction FNUCI depuis photo (Gemini Vision) ----------
+//
+// Remplace l'action GAS extractFnuciFromImage. Le frontend envoie une
+// photo (base64) d'un sticker BicyCode (QR + texte clair), Gemini lit
+// les codes au format BC + 8 alphanums majuscules. La validation regex
+// côté serveur garde le contrôle contre toute hallucination.
+//
+// La Cloud Function fait UNIQUEMENT l'extraction. Le frontend mirroir
+// ensuite les FNUCI extraits dans Firestore via assignFnuciToClient +
+// markVeloPrepare/Charge/LivreScan (cf. mirrorGeminiResultsToFirestore
+// dans photo-gemini-capture.tsx). Cette séparation évite de dupliquer
+// la logique métier déjà dans firestore-actions.
+
+const FNUCI_PROMPT =
+  "Tu reçois une photo d'un ou plusieurs stickers BicyCode collés sur des vélos. " +
+  "Chaque sticker contient un code d'identification FNUCI au format STRICT 'BC' suivi " +
+  "de 8 caractères alphanumériques majuscules (exemples : BCZ9CANA4D, BCA24SN97A, BC38FKZZ7H). " +
+  "Le code apparaît soit en clair imprimé sur le sticker, soit encodé dans un QR code " +
+  "(qui contient une URL de la forme https://moncompte.bicycode.eu/<CODE>).\n\n" +
+  "TÂCHE : extrais TOUS les codes FNUCI lisibles dans l'image. Réponds uniquement par un JSON " +
+  'valide au format exact : {"fnucis":["BC...","BC..."]}. ' +
+  'Ne renvoie aucun texte hors du JSON. Si tu ne vois aucun code lisible, réponds {"fnucis":[]}. ' +
+  "Ne devine jamais : si un code est partiellement masqué, flou ou que tu n'es pas certain, ne le mets pas dans la liste.";
+
+const FNUCI_REGEX = /^BC[A-Z0-9]{8}$/;
+
+type ExtractFnuciPayload = {
+  imageBase64?: string;
+  mimeType?: string;
+};
+
+async function callGeminiVisionForFnuci(
+  apiKey: string,
+  base64: string,
+  mimeType: string,
+): Promise<{ ok: true; rawText: string } | { ok: false; error: string }> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{
+          parts: [
+            { text: FNUCI_PROMPT },
+            { inline_data: { mime_type: mimeType, data: base64 } },
+          ],
+        }],
+        generationConfig: {
+          temperature: 0,
+          responseMimeType: "application/json",
+          // OCR pur : pas de "thinking" → 1-2s gagnées par appel.
+          thinkingConfig: { thinkingBudget: 0 },
+          maxOutputTokens: 256,
+        },
+      }),
+    });
+  } catch (err) {
+    return { ok: false, error: `Gemini fetch failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  if (!res.ok) {
+    const body = await res.text();
+    return { ok: false, error: `Gemini HTTP ${res.status} : ${body.slice(0, 200)}` };
+  }
+  const data = await res.json();
+  const parts = data?.candidates?.[0]?.content?.parts || [];
+  const rawText = parts.map((p: { text?: string }) => p.text || "").join("");
+  return { ok: true, rawText };
+}
+
+export const extractFnuciFromImage = onCall<ExtractFnuciPayload>(
+  { secrets: [GEMINI_API_KEY], timeoutSeconds: 45, memory: "512MiB" },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentification requise");
+    }
+    const imageBase64 = request.data.imageBase64;
+    const mimeType = request.data.mimeType || "image/jpeg";
+    if (!imageBase64 || typeof imageBase64 !== "string") {
+      throw new HttpsError("invalid-argument", "imageBase64 requis");
+    }
+    const apiKey = GEMINI_API_KEY.value();
+    if (!apiKey) {
+      throw new HttpsError("failed-precondition", "GEMINI_API_KEY non configurée");
+    }
+
+    const callRes = await callGeminiVisionForFnuci(apiKey, imageBase64, mimeType);
+    if (!callRes.ok) {
+      logger.warn("extractFnuciFromImage Gemini KO", { error: callRes.error });
+      // On retourne une réponse "soft" plutôt qu'un throw : le frontend
+      // a un retry automatique + bouton "↻ Réessayer", il préfère lire
+      // un objet { error } qu'attraper une exception.
+      return { error: callRes.error };
+    }
+
+    const rawText = callRes.rawText;
+    let rawFnucis: string[] = [];
+    try {
+      // Gemini peut renvoyer du texte autour du JSON malgré le mime type forcé,
+      // on extrait le 1er bloc {...}.
+      const match = rawText.match(/\{[\s\S]*\}/);
+      const jsonStr = match ? match[0] : rawText;
+      const parsed = JSON.parse(jsonStr);
+      rawFnucis = (parsed.fnucis || []).map((f: unknown) => String(f).trim().toUpperCase());
+    } catch {
+      logger.warn("extractFnuciFromImage JSON KO", { rawText: rawText.slice(0, 200) });
+      return { error: "JSON Gemini invalide", rawText: rawText.slice(0, 500) };
+    }
+
+    const seen = new Set<string>();
+    const extracted: string[] = [];
+    const invalid: string[] = [];
+    for (const f of rawFnucis) {
+      if (!FNUCI_REGEX.test(f)) {
+        invalid.push(f);
+        continue;
+      }
+      if (seen.has(f)) continue;
+      seen.add(f);
+      extracted.push(f);
+    }
+
+    // Le frontend (mirrorGeminiResultsToFirestore) skip les results dont
+    // `result.ok !== true` → on met un OK factice sur chaque FNUCI valide
+    // pour que le marquage Firestore (assignFnuciToClient + markVelo*)
+    // s'enchaîne correctement. La logique métier reste côté client.
+    const results = extracted.map((fnuci) => ({
+      fnuci,
+      result: { ok: true as const },
+      assigned: null,
+    }));
+
+    return {
+      ok: true,
+      extracted,
+      invalid,
+      results,
+      rawGeminiText: rawText.slice(0, 500),
+    };
+  },
+);
