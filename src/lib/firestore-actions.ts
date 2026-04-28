@@ -294,15 +294,41 @@ export async function runFirestoreAction(
       // apporteurLower : dénormalisé depuis le client pour le RBAC apporteur
       // (cf. firestore.rules + scripts/backfill-apporteur-lower.mjs).
       let apporteurLowerLiv: string | null = null;
+      let clientSnapshotLiv: Body | null = null;
       const cidLiv = getString(body, "clientId");
       if (cidLiv) {
         try {
           const cSnap = await getDoc(doc(db, "clients", cidLiv));
           if (cSnap.exists()) {
-            const cData = cSnap.data() as { apporteur?: string; apporteurLower?: string };
+            const cData = cSnap.data() as {
+              apporteur?: string;
+              apporteurLower?: string;
+              entreprise?: string;
+              ville?: string;
+              adresse?: string;
+              codePostal?: string;
+              departement?: string;
+              telephone?: string;
+              lat?: number;
+              lng?: number;
+              latitude?: number;
+              longitude?: number;
+            };
             apporteurLowerLiv = cData.apporteurLower
               || (cData.apporteur ? String(cData.apporteur).trim().toLowerCase() : null)
               || null;
+            // Snapshot dénormalisé pour l'UI livraisons (cf. data-context-firebase.tsx
+            // qui lit d.clientSnapshot.entreprise — sans ça, l'UI affiche un tiret).
+            clientSnapshotLiv = {
+              entreprise: cData.entreprise || "",
+              ville: cData.ville || "",
+              adresse: cData.adresse || "",
+              codePostal: cData.codePostal || "",
+              departement: cData.departement || "",
+              telephone: cData.telephone || "",
+              lat: cData.lat ?? cData.latitude ?? null,
+              lng: cData.lng ?? cData.longitude ?? null,
+            };
           }
         } catch {}
       }
@@ -310,6 +336,7 @@ export async function runFirestoreAction(
         ...applyMaybeDates(body),
         tourneeNumero,
         apporteurLower: apporteurLowerLiv,
+        clientSnapshot: clientSnapshotLiv,
         statut: body.statut || "planifiee",
         createdAt: ts(),
       });
@@ -419,15 +446,39 @@ export async function runFirestoreAction(
           const nbVelos = Number(stop.nbVelos) || 0;
           if (!cid || nbVelos <= 0) continue;
 
-          // apporteurLower dénormalisé pour RBAC
+          // apporteurLower (RBAC) + clientSnapshot dénormalisé (affichage UI)
           let apporteurLowerLiv: string | null = null;
+          let clientSnapshotLiv: Body | null = null;
           try {
             const cSnap = await getDoc(doc(db, "clients", cid));
             if (cSnap.exists()) {
-              const cData = cSnap.data() as { apporteur?: string; apporteurLower?: string };
+              const cData = cSnap.data() as {
+                apporteur?: string;
+                apporteurLower?: string;
+                entreprise?: string;
+                ville?: string;
+                adresse?: string;
+                codePostal?: string;
+                departement?: string;
+                telephone?: string;
+                lat?: number;
+                lng?: number;
+                latitude?: number;
+                longitude?: number;
+              };
               apporteurLowerLiv = cData.apporteurLower
                 || (cData.apporteur ? String(cData.apporteur).trim().toLowerCase() : null)
                 || null;
+              clientSnapshotLiv = {
+                entreprise: cData.entreprise || "",
+                ville: cData.ville || "",
+                adresse: cData.adresse || "",
+                codePostal: cData.codePostal || "",
+                departement: cData.departement || "",
+                telephone: cData.telephone || "",
+                lat: cData.lat ?? cData.latitude ?? null,
+                lng: cData.lng ?? cData.longitude ?? null,
+              };
             }
           } catch {}
 
@@ -440,6 +491,7 @@ export async function runFirestoreAction(
             tourneeId: tRef.id,
             tourneeNumero,
             apporteurLower: apporteurLowerLiv,
+            clientSnapshot: clientSnapshotLiv,
             statut: "planifiee",
             createdAt: ts(),
           });
