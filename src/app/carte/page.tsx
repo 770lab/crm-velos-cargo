@@ -56,7 +56,7 @@ export default function CartePage() {
   //   du bandeau, pour qu'ils matchent /tableau-de-bord (sinon les clients sans
   //   coordonnées GPS étaient invisibles dans le total)
   // - `stats` : déjà calculé côté data context (même source que /tableau-de-bord)
-  const { carte: allClients, clients: allClientsFull, livraisons, stats, refresh } = useData();
+  const { carte: allClients, clients: allClientsFull, livraisons, stats, flotte, refresh } = useData();
   const [selected, setSelected] = useState<string | null>(null);
   const [mode, setMode] = useState<"gros" | "moyen" | "camionnette" | "retrait">("moyen");
   const [maxDistance, setMaxDistance] = useState(50);
@@ -242,12 +242,23 @@ export default function CartePage() {
               Type de camion
             </label>
             <div className="flex gap-1">
-              {([
-                { key: "gros", label: "Gros", cap: "165 v." },
-                { key: "moyen", label: "Moyen", cap: "54 v." },
-                { key: "camionnette", label: "Camion.", cap: "20 v." },
-                { key: "retrait", label: "Retrait", cap: "client" },
-              ] as const).map((opt) => (
+              {(() => {
+                // Capacités lues dynamiquement depuis Firestore (collection camions).
+                // Fallback sur les valeurs historiques si le doc est manquant.
+                const capByType = (t: string, fallback: string) => {
+                  // Le seed `camionnette` côté UI = type `petit` côté flotte (cf. day-planner-modal).
+                  const lookupType = t === "camionnette" ? "petit" : t;
+                  const c = flotte.find((f) => f.type === lookupType && f.actif);
+                  if (!c) return fallback;
+                  return c.capaciteVelos > 0 ? `${c.capaciteVelos} v.` : "client";
+                };
+                return [
+                  { key: "gros", label: "Gros", cap: capByType("gros", "165 v.") },
+                  { key: "moyen", label: "Moyen", cap: capByType("moyen", "54 v.") },
+                  { key: "camionnette", label: "Camion.", cap: capByType("camionnette", "20 v.") },
+                  { key: "retrait", label: "Retrait", cap: capByType("retrait", "client") },
+                ] as const;
+              })().map((opt) => (
                 <button
                   key={opt.key}
                   onClick={() => setMode(opt.key)}
