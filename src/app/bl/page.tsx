@@ -13,6 +13,7 @@ type Client = {
   codePostal: string;
   telephone: string | null;
   contact: string | null;
+  siren: string | null;
   numeroBL: string | null;
   velos: Velo[];
 };
@@ -589,6 +590,104 @@ function BlPage() {
                 <PageFooter pageNum={2} withMetaTable={true} />
               </div>{/* /dv-inner */}
             </div>
+
+            {/* ───── PAGE 3 conditionnelle : ATTESTATION 0 SALARIÉ ───────────
+                Imprimée AUTOMATIQUEMENT avec le BL quand le client n'a qu'1
+                vélo (= dirigeant seul, société probablement sans salariés).
+                Pré-remplie côté CRM avec entreprise/SIREN/adresse/date pour
+                que l'admin n'ait pas à recopier — il reste à compléter Nom +
+                qualité + tampon côté client. Sans ce papier joint au carton,
+                on oublie systématiquement et le dossier CEE TRA-EQ-131 reste
+                bloqué. Voir AGENTS.md / memoire crm_velos_cargo_admin_flow. */}
+            {nbVelos === 1 && (
+              <div className="dv-page">
+                <div className="dv-inner">
+                  <div className="dv-content" style={{ fontSize: "10.5pt", lineHeight: 1.55 }}>
+                    <div style={{ textAlign: "center", marginTop: "24mm", marginBottom: "10mm" }}>
+                      <div style={{ fontSize: "14pt", fontWeight: 700, letterSpacing: "0.5pt" }}>
+                        ATTESTATION SUR L&apos;HONNEUR
+                      </div>
+                      <div style={{ fontSize: "11pt", marginTop: "4mm", color: "#444" }}>
+                        Absence de registre unique du personnel — Société sans salarié
+                      </div>
+                    </div>
+
+                    <p>Je soussigné(e),</p>
+                    <p style={{ marginLeft: "8mm" }}>
+                      <span style={{ borderBottom: "1px dotted #777", display: "inline-block", minWidth: "70mm" }}>
+                        &nbsp;
+                      </span>{" "}
+                      <span style={{ color: "#888", fontStyle: "italic", fontSize: "9pt" }}>
+                        (Nom et prénom du président / gérant)
+                      </span>,
+                      agissant en qualité de{" "}
+                      <span style={{ borderBottom: "1px dotted #777", display: "inline-block", minWidth: "30mm" }}>
+                        &nbsp;
+                      </span>{" "}
+                      <span style={{ color: "#888", fontStyle: "italic", fontSize: "9pt" }}>(Président / Gérant)</span>{" "}
+                      de la société{" "}
+                      <strong>{c.entreprise || "—"}</strong>,
+                      {" "}immatriculée sous le numéro SIREN{" "}
+                      <strong>{c.siren || "—"}</strong>,
+                      {" "}dont le siège social est situé{" "}
+                      <strong>{adresseLivraison || "—"}</strong>,
+                    </p>
+
+                    <p style={{ textAlign: "center", fontWeight: 700, margin: "6mm 0" }}>atteste sur l&apos;honneur</p>
+
+                    <p>
+                      que la société ne dispose à ce jour d&apos;aucun salarié et n&apos;est donc pas tenue de
+                      mettre en place un registre unique du personnel, conformément aux dispositions légales
+                      applicables.
+                    </p>
+
+                    <p>
+                      La société est uniquement dirigée par son représentant légal, à savoir{" "}
+                      <span style={{ borderBottom: "1px dotted #777", display: "inline-block", minWidth: "70mm" }}>
+                        &nbsp;
+                      </span>{" "}
+                      <span style={{ color: "#888", fontStyle: "italic", fontSize: "9pt" }}>(Nom du dirigeant)</span>,
+                      exerçant les fonctions de{" "}
+                      <span style={{ borderBottom: "1px dotted #777", display: "inline-block", minWidth: "30mm" }}>
+                        &nbsp;
+                      </span>{" "}
+                      <span style={{ color: "#888", fontStyle: "italic", fontSize: "9pt" }}>(Président / Gérant)</span>.
+                    </p>
+
+                    <p>
+                      Dans ce cadre, la société procède à l&apos;acquisition d&apos;un vélo cargo destiné à
+                      l&apos;usage professionnel du représentant légal précité, dans le cadre de la valorisation
+                      d&apos;un Certificat d&apos;Économies d&apos;Énergie (CEE) au titre de la fiche
+                      d&apos;opération standardisée TRA-EQ-131.
+                    </p>
+
+                    <p>La présente attestation est établie pour servir et valoir ce que de droit.</p>
+
+                    <p style={{ marginTop: "10mm" }}>
+                      Fait à <strong>{c.ville || "—"}</strong>, le <strong>{dateStr}</strong>
+                    </p>
+
+                    <div style={{ marginTop: "16mm" }}>
+                      <div style={{ fontSize: "9.5pt", color: "#444" }}>Signature</div>
+                      <div style={{ fontSize: "9pt", color: "#888", fontStyle: "italic", marginTop: "1mm" }}>
+                        (Tampon, Nom, Prénom, qualité du signataire)
+                      </div>
+                      <div
+                        style={{
+                          marginTop: "4mm",
+                          height: "32mm",
+                          border: "1px dashed #bbb",
+                          borderRadius: "2mm",
+                        }}
+                      />
+                    </div>
+                  </div>
+                  <div className="dv-page-footer">
+                    <div className="dv-legal">{LEGAL_BANNER_2026}</div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         );
       })}

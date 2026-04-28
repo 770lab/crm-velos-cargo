@@ -3652,6 +3652,7 @@ export async function runFirestoreGet(
         codePostal: string;
         telephone: string | null;
         contact: string | null;
+        siren: string | null;
         numeroBL: string | null;
         velos: VeloOut[];
       };
@@ -3683,6 +3684,7 @@ export async function runFirestoreGet(
           codePostal: snap.codePostal || "",
           telephone: snap.telephone ?? null,
           contact: snap.contact ?? null,
+          siren: null, // hydraté plus bas depuis le doc client (pas dans clientSnapshot)
           numeroBL: l.numeroBL || null,
           velos: [],
         };
@@ -3697,14 +3699,14 @@ export async function runFirestoreGet(
       const clientChunks: string[][] = [];
       for (let i = 0; i < clientIds.length; i += 30) clientChunks.push(clientIds.slice(i, i + 30));
 
-      const clientHydrated: Record<string, { telephone?: string | null; contact?: string | null; adresse?: string | null }> = {};
+      const clientHydrated: Record<string, { telephone?: string | null; contact?: string | null; adresse?: string | null; siren?: string | null }> = {};
       for (const chunk of clientChunks) {
         if (!chunk.length) continue;
         const cSnap = await getDocs(
           query(collection(db, "clients"), where("__name__", "in", chunk)),
         );
         for (const cd of cSnap.docs) {
-          const c = cd.data() as { telephone?: string | null; contact?: string | null; adresse?: string | null };
+          const c = cd.data() as { telephone?: string | null; contact?: string | null; adresse?: string | null; siren?: string | null };
           clientHydrated[cd.id] = c;
         }
       }
@@ -3714,6 +3716,7 @@ export async function runFirestoreGet(
           if (item.client.telephone == null && h.telephone) item.client.telephone = h.telephone;
           if (item.client.contact == null && h.contact) item.client.contact = h.contact;
           if (!item.client.adresse && h.adresse) item.client.adresse = h.adresse;
+          if (h.siren) item.client.siren = String(h.siren).replace(/\s/g, "");
         }
       }
 
