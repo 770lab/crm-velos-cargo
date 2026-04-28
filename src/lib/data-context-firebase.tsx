@@ -246,7 +246,6 @@ function computeStats(
   for (const c of clients) {
     totalVelos += c.stats.totalVelos;
     velosLivres += c.stats.livres;
-    velosPlanifies += asInt(c.stats.planifies);
     certificatsRecus += c.stats.certificats;
     velosFacturables += c.stats.facturables;
     velosFactures += c.stats.factures;
@@ -254,9 +253,16 @@ function computeStats(
       clientsDocsComplets++;
     }
   }
+  // velosPlanifies = SOMME(nbVelos) des livraisons statut=planifiee.
+  // On NE prend PAS c.stats.planifies qui compte des livraisons (pas
+  // des vélos) — ça donnait des chiffres bidons type "39 planifiés"
+  // au lieu de ~312 quand 39 livraisons de 8 vélos étaient prévues.
   const livraisonsParStatut: Record<string, number> = {};
   for (const l of livraisons) {
     livraisonsParStatut[l.statut] = (livraisonsParStatut[l.statut] || 0) + 1;
+    if (l.statut === "planifiee") {
+      velosPlanifies += l.nbVelos || 0;
+    }
   }
   const progression =
     totalVelos > 0 ? Math.round((velosLivres / totalVelos) * 100) : 0;

@@ -1930,6 +1930,11 @@ function TourneeModal({
                       Apporteur : {clientInfo.get(l.clientId)!.apporteur}
                     </div>
                   )}
+                  {l.statut === "annulee" && l.raisonAnnulation && (
+                    <div className="mt-1 px-2 py-1 text-[11px] bg-amber-50 border border-amber-200 rounded text-amber-800">
+                      ⊘ Annulée : {l.raisonAnnulation}
+                    </div>
+                  )}
                   {tournee.tourneeId && (() => {
                     const cp = progression?.clients?.find((c) => c.clientId === l.clientId)?.totals;
                     const tot = cp?.total ?? l._count.velos;

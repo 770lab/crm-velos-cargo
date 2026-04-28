@@ -1389,24 +1389,54 @@ export async function runFirestoreAction(
     }
 
     case "uploadVeloPhoto": {
+      // 2 schémas d'appel coexistent :
+      //   - Préparation/Montage : { stage: "qr" | "etiquette", photoData }
+      //   - Livraison (tournee-execute) : { kind: "velo" | "fnuci", fileData }
+      // Avant : tout fallback sur `photos.montageQrVelo` parce que `stage`
+      // était undefined → écrasement de la photo de montage avec la photo de
+      // livraison. Bug 2026-04-28.
       const veloId = getRequired(body, "veloId");
-      const stage = getString(body, "stage") || "qr";
-      const photoData = getRequired(body, "photoData");
+      const kind = getString(body, "kind"); // livraison
+      const stage = getString(body, "stage"); // préparation/montage
+      const photoData = getString(body, "photoData") || getString(body, "fileData");
+      if (!photoData) throw new Error("photoData ou fileData requis");
+
+      // Détermine le "rôle" canonique de la photo
+      type Role = "qr" | "etiquette" | "veloLivraison" | "fnuciLivraison";
+      let role: Role;
+      if (kind === "velo") role = "veloLivraison";
+      else if (kind === "fnuci") role = "fnuciLivraison";
+      else if (stage === "etiquette") role = "etiquette";
+      else role = "qr";
+
+      const folder: Record<Role, string> = {
+        qr: "preparation",
+        etiquette: "preparation",
+        veloLivraison: "livraison",
+        fnuciLivraison: "livraison",
+      };
       const url = await uploadDataUrl(
-        `preparation/${veloId}/${stage}-${Date.now()}.jpg`,
+        `${folder[role]}/${veloId}/${role}-${Date.now()}.jpg`,
         photoData,
         "image/jpeg",
       );
-      const fieldMap: Record<string, string> = {
-        etiquette: "photos.montageEtiquette",
-        qr: "photos.montageQrVelo",
-      };
-      const field = fieldMap[stage] || "photos.montageQrVelo";
-      await updateDoc(doc(db, "velos", veloId), {
-        [field]: url,
-        photoQrPrise: stage === "qr" ? true : undefined,
-        updatedAt: ts(),
-      });
+
+      // Champ Firestore + side-effect par rôle
+      const updates: Body = { updatedAt: ts() };
+      if (role === "qr") {
+        updates["photos.montageQrVelo"] = url;
+        updates.photoQrPrise = true;
+      } else if (role === "etiquette") {
+        updates["photos.montageEtiquette"] = url;
+      } else if (role === "veloLivraison") {
+        updates["photos.veloLivraison"] = url;
+        updates.photoVeloUrl = url; // top-level lu par getTourneeExecution
+      } else if (role === "fnuciLivraison") {
+        updates["photos.fnuciLivraison"] = url;
+        updates.photoFnuciUrl = url;
+      }
+
+      await updateDoc(doc(db, "velos", veloId), updates);
       return { ok: true, url };
     }
 

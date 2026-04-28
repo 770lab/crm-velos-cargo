@@ -134,15 +134,30 @@ export default function CartePage() {
   const dashStats = useMemo(() => {
     const totalVelos = stats?.totalVelos ?? 0;
     const velosLivres = stats?.velosLivres ?? 0;
-    const velosPlanifies = stats?.velosPlanifies ?? 0;
-    const velosRestants = totalVelos - velosLivres - velosPlanifies;
+    // Vélos planifiés = SOMME(nbVelos) des livraisons statut=planifiee
+    // (et non count livraisons comme stats.planifies persisté). Sans ça,
+    // 39 livraisons de 8 vélos donnaient "39 planifiés" au lieu de ~312.
+    const velosPlanifiesLive = livraisons
+      .filter((l) => l.statut === "planifiee")
+      .reduce((s, l) => s + (l.nbVelos || 0), 0);
+    const velosRestants = totalVelos - velosLivres - velosPlanifiesLive;
+    // Clients restants (au moins 1 vélo non livré ni planifié) — calcul
+    // live aussi via Map clientId → nbVelosPlanifies(live).
+    const planifByClient = new Map<string, number>();
+    for (const l of livraisons) {
+      if (l.statut !== "planifiee") continue;
+      const cid = l.clientId;
+      if (!cid) continue;
+      planifByClient.set(cid, (planifByClient.get(cid) || 0) + (l.nbVelos || 0));
+    }
     const clientsRestants = allClientsFull.filter((c) => {
-      const rest = c.stats.totalVelos - c.stats.livres - (c.stats.planifies || 0);
+      const planif = planifByClient.get(c.id) || 0;
+      const rest = c.stats.totalVelos - c.stats.livres - planif;
       return rest > 0;
     }).length;
     const tourneeIds = new Set(livraisons.filter((l) => l.tourneeId && l.statut !== "annulee").map((l) => l.tourneeId));
-    const pct = totalVelos > 0 ? Math.round(((velosLivres + velosPlanifies) / totalVelos) * 100) : 0;
-    return { totalVelos, velosLivres, velosPlanifies, velosRestants, clientsRestants, nbTournees: tourneeIds.size, pct };
+    const pct = totalVelos > 0 ? Math.round(((velosLivres + velosPlanifiesLive) / totalVelos) * 100) : 0;
+    return { totalVelos, velosLivres, velosPlanifies: velosPlanifiesLive, velosRestants, clientsRestants, nbTournees: tourneeIds.size, pct };
   }, [stats, allClientsFull, livraisons]);
 
   const handleSelectClient = useCallback(
