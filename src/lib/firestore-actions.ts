@@ -486,13 +486,33 @@ export async function runFirestoreAction(
       // Yoann le 2026-04-28).
       const tourneeId = getString(body, "tourneeId");
       let tourneeNumero: number | undefined;
+      // Auto-attribution du champ `ordre` quand on ajoute un client à une
+      // tournée déjà existante (ex : bouton "+" UI livraisons). Sans ça, le
+      // verrou LIFO inter-clients se désactive pour TOUTE la tournée puisqu'au
+      // moins un client n'a pas d'ordre détectable. Cf. incident MANADVISE
+      // 2026-04-28 (tournée 818b8963 chargée le matin du 28-04). On lit le
+      // max ordre des siblings de la même tournée (champ direct OU regex
+      // "arrêt X/N" sur notes legacy) puis on attribue max+1.
+      let maxOrdreInTournee = 0;
+      const ordreFromNotesLiv = (notes: unknown): number | null => {
+        if (typeof notes !== "string") return null;
+        const m = notes.match(/arr[êe]t\s+(\d+)\s*\//i);
+        return m ? parseInt(m[1], 10) : null;
+      };
       if (tourneeId) {
         const sib = await getDocs(
           query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
         );
         for (const d of sib.docs) {
-          const n = (d.data() as { tourneeNumero?: number }).tourneeNumero;
-          if (typeof n === "number") { tourneeNumero = n; break; }
+          const data = d.data() as { tourneeNumero?: number; ordre?: number; notes?: string };
+          if (typeof data.tourneeNumero === "number" && tourneeNumero == null) {
+            tourneeNumero = data.tourneeNumero;
+          }
+          const o =
+            typeof data.ordre === "number"
+              ? data.ordre
+              : ordreFromNotesLiv(data.notes);
+          if (typeof o === "number" && o > maxOrdreInTournee) maxOrdreInTournee = o;
         }
       }
       if (tourneeNumero == null) {
@@ -565,9 +585,18 @@ export async function runFirestoreAction(
           bodyApplied.nbVelos = Math.max(0, cap);
         }
       }
+      // ordre final : explicite si fourni par l'appelant (rare), sinon max+1
+      // dans la tournée. Null si pas de tournée (livraison standalone).
+      const ordreFinal: number | null =
+        typeof body.ordre === "number"
+          ? body.ordre
+          : tourneeId
+            ? maxOrdreInTournee + 1
+            : null;
       const ref = await addDoc(collection(db, "livraisons"), {
         ...bodyApplied,
         tourneeNumero,
+        ordre: ordreFinal,
         apporteurLower: apporteurLowerLiv,
         clientSnapshot: clientSnapshotLiv,
         statut: body.statut || "planifiee",
