@@ -1517,6 +1517,259 @@ export async function runFirestoreGet(
       };
     }
 
+    case "getTourneeExecution": {
+      // Page mobile /tournee-execute (chauffeur). Shape attendue :
+      // { tourneeId, datePrevue, mode, livraisons[id, clientId, statut, nbVelos,
+      //   client{entreprise, ville, adresse, codePostal, telephone, contact, lat, lng},
+      //   velos[id, clientId, fnuci, photoVeloUrl, photoFnuciUrl, photoQrPrise, livre]],
+      //   equipe{chauffeur, chefEquipe, monteurs} }
+      const tourneeId = params.tourneeId;
+      if (!tourneeId) throw new Error("tourneeId requis");
+
+      const livSnap = await getDocs(
+        query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
+      );
+      if (livSnap.empty) {
+        return { error: "Tournée introuvable", tourneeId };
+      }
+
+      // Premiers métadonnées (datePrevue, mode, equipe IDs) prises sur la 1ère
+      // livraison : toutes les livraisons d'une tournée partagent ces champs.
+      const firstData = livSnap.docs[0].data() as {
+        datePrevue?: { toDate?: () => Date } | string;
+        mode?: string;
+        chauffeurId?: string;
+        chefEquipeId?: string;
+        chefEquipeIds?: string[];
+        monteurIds?: string[];
+      };
+      const datePrevue = (() => {
+        const dp = firstData.datePrevue;
+        if (!dp) return null;
+        if (typeof dp === "string") return dp;
+        return dp.toDate ? dp.toDate().toISOString() : null;
+      })();
+      const mode = firstData.mode || null;
+
+      // Construit la liste des livraisons et collecte les clientIds (pour bulk
+      // load des vélos en chunks de 30).
+      type ClientObj = {
+        id?: string;
+        entreprise: string;
+        ville: string | null;
+        adresse: string | null;
+        codePostal: string | null;
+        telephone: string | null;
+        contact: string | null;
+        lat: number | null;
+        lng: number | null;
+      };
+      type LivExec = {
+        id: string;
+        clientId: string;
+        statut: string;
+        nbVelos: number;
+        client: ClientObj | null;
+        velos: Array<{
+          id: string;
+          clientId: string;
+          fnuci: string | null;
+          photoVeloUrl: string | null;
+          photoFnuciUrl: string | null;
+          photoQrPrise: boolean;
+          livre: boolean;
+        }>;
+      };
+
+      const livraisons: LivExec[] = [];
+      const clientIds: string[] = [];
+      const seenClients = new Set<string>();
+      for (const d of livSnap.docs) {
+        const l = d.data() as {
+          clientId?: string;
+          statut?: string;
+          nbVelos?: number;
+          clientSnapshot?: Partial<ClientObj>;
+        };
+        const cid = l.clientId || "";
+        if (!cid) continue;
+        const snap = l.clientSnapshot || {};
+        livraisons.push({
+          id: d.id,
+          clientId: cid,
+          statut: l.statut || "planifiee",
+          nbVelos: typeof l.nbVelos === "number" ? l.nbVelos : 0,
+          client: {
+            id: cid,
+            entreprise: snap.entreprise || "",
+            ville: snap.ville ?? null,
+            adresse: snap.adresse ?? null,
+            codePostal: snap.codePostal ?? null,
+            telephone: snap.telephone ?? null,
+            contact: snap.contact ?? null,
+            lat: typeof snap.lat === "number" ? snap.lat : null,
+            lng: typeof snap.lng === "number" ? snap.lng : null,
+          },
+          velos: [],
+        });
+        if (!seenClients.has(cid)) {
+          seenClients.add(cid);
+          clientIds.push(cid);
+        }
+      }
+
+      // Hydratation contact/telephone manquants depuis le client doc
+      // (clientSnapshot peut être incomplet sur livraisons anciennes).
+      const livByClient: Record<string, LivExec[]> = {};
+      for (const l of livraisons) {
+        (livByClient[l.clientId] ||= []).push(l);
+      }
+      const clientChunks: string[][] = [];
+      for (let i = 0; i < clientIds.length; i += 30) {
+        clientChunks.push(clientIds.slice(i, i + 30));
+      }
+      for (const chunk of clientChunks) {
+        if (!chunk.length) continue;
+        const cSnap = await getDocs(
+          query(collection(db, "clients"), where("__name__", "in", chunk)),
+        );
+        for (const cd of cSnap.docs) {
+          const c = cd.data() as {
+            telephone?: string | null;
+            contact?: string | null;
+            adresse?: string | null;
+            latitude?: number;
+            longitude?: number;
+          };
+          for (const liv of livByClient[cd.id] || []) {
+            if (!liv.client) continue;
+            if (liv.client.telephone == null && c.telephone) liv.client.telephone = c.telephone;
+            if (liv.client.contact == null && c.contact) liv.client.contact = c.contact;
+            if (liv.client.adresse == null && c.adresse) liv.client.adresse = c.adresse;
+            if (liv.client.lat == null && typeof c.latitude === "number") liv.client.lat = c.latitude;
+            if (liv.client.lng == null && typeof c.longitude === "number") liv.client.lng = c.longitude;
+          }
+        }
+      }
+
+      // Vélos par clientId (bulk en chunks de 30, limite Firestore 'in')
+      for (const chunk of clientChunks) {
+        if (!chunk.length) continue;
+        const vSnap = await getDocs(
+          query(collection(db, "velos"), where("clientId", "in", chunk)),
+        );
+        for (const vd of vSnap.docs) {
+          const v = vd.data() as {
+            clientId?: string;
+            fnuci?: string | null;
+            photoQrPrise?: boolean | string;
+            dateLivraisonScan?: unknown;
+            dateLivraison?: unknown;
+            // photos livraison (best-effort multi-noms ; voir note bug uploadVeloPhoto)
+            photoVeloUrl?: string;
+            photoFnuciUrl?: string;
+            photos?: { veloLivraison?: string; fnuciLivraison?: string; montageQrVelo?: string; montageEtiquette?: string };
+            urlPhotoLivraisonVelo?: string;
+            urlPhotoLivraisonFnuci?: string;
+          };
+          const cid = v.clientId || "";
+          if (!cid) continue;
+          const photoVeloUrl =
+            v.photoVeloUrl ||
+            v.urlPhotoLivraisonVelo ||
+            v.photos?.veloLivraison ||
+            null;
+          const photoFnuciUrl =
+            v.photoFnuciUrl ||
+            v.urlPhotoLivraisonFnuci ||
+            v.photos?.fnuciLivraison ||
+            null;
+          const livre = !!v.dateLivraisonScan || !!v.dateLivraison;
+          const veloRow = {
+            id: vd.id,
+            clientId: cid,
+            fnuci: v.fnuci || null,
+            photoVeloUrl,
+            photoFnuciUrl,
+            photoQrPrise: !!v.photoQrPrise,
+            livre,
+          };
+          // Tous les vélos du client vont sur ses livraisons de cette tournée.
+          // Le modèle actuel ne distingue pas T1/T2 d'un même client (cf
+          // getTourneeProgression qui fait pareil).
+          for (const liv of livByClient[cid] || []) {
+            liv.velos.push(veloRow);
+          }
+        }
+      }
+
+      // Resolution équipe : chauffeur + chef + monteurs
+      const memberCache = new Map<string, { id: string; nom: string; role: string; telephone: string | null } | null>();
+      const loadMember = async (id: string | undefined | null) => {
+        if (!id) return null;
+        if (memberCache.has(id)) return memberCache.get(id) || null;
+        try {
+          const m = await getDoc(doc(db, "equipe", id));
+          if (!m.exists()) {
+            memberCache.set(id, null);
+            return null;
+          }
+          const md = m.data() as { nom?: string; role?: string; telephone?: string | null };
+          const obj = {
+            id: m.id,
+            nom: md.nom || "",
+            role: md.role || "",
+            telephone: md.telephone ?? null,
+          };
+          memberCache.set(id, obj);
+          return obj;
+        } catch {
+          memberCache.set(id, null);
+          return null;
+        }
+      };
+      const chauffeur = await loadMember(firstData.chauffeurId);
+      // chefEquipeId (singulier legacy) ou chefEquipeIds[0] (nouveau).
+      const chefId = firstData.chefEquipeId || firstData.chefEquipeIds?.[0];
+      const chefEquipe = await loadMember(chefId);
+      const monteurIds = firstData.monteurIds || [];
+      const monteurs = (
+        await Promise.all(monteurIds.map((id) => loadMember(id)))
+      ).filter((m): m is NonNullable<typeof m> => m !== null);
+
+      return {
+        tourneeId,
+        datePrevue,
+        mode,
+        livraisons,
+        equipe: { chauffeur, chefEquipe, monteurs },
+      };
+    }
+
+    case "lookupFnuci": {
+      // Page /reception-cartons : scan QR → cherche le vélo dont fnuci match,
+      // remonte le client courant pour permettre une réaffectation manuelle.
+      const fnuci = (params.fnuci || "").toUpperCase();
+      if (!fnuci) return { found: false, fnuci: "" };
+      const vSnap = await getDocs(
+        query(collection(db, "velos"), where("fnuci", "==", fnuci)),
+      );
+      if (vSnap.empty) return { found: false, fnuci };
+      const veloDoc = vSnap.docs[0];
+      const v = veloDoc.data() as { clientId?: string };
+      const clientId = v.clientId || "";
+      let clientName: string | null = null;
+      if (clientId) {
+        try {
+          const c = await getDoc(doc(db, "clients", clientId));
+          if (c.exists()) {
+            clientName = (c.data() as { entreprise?: string }).entreprise || null;
+          }
+        } catch {}
+      }
+      return { found: true, veloId: veloDoc.id, clientId, clientName, fnuci };
+    }
+
     case "listEquipe": {
       // includeInactifs="true" → tout le monde, sinon seuls les actifs.
       // Parité avec gas listEquipe (gas/Code.js) consommé par /equipe.
