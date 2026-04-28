@@ -143,7 +143,8 @@ async function main() {
       blSignes: livs.filter((l) => !!l.urlBlSigne).length,
       facturables: 0,
       planifies: livs.filter((l) => l.statut === "planifiee").length,
-      certificats: velos.filter((v) => !!v.fnuci).length,
+      // Flag manuel (aligné sur gas getStats), PAS !!v.fnuci.
+      certificats: velos.filter((v) => v.certificatRecu === true).length,
       factures: 0,
     };
     await db.collection("clients").doc(CLIENT_ID).update({

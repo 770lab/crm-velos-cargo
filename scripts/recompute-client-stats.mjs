@@ -54,7 +54,8 @@ function computeStats(velosDocs, livDocs) {
     blSignes: livs.filter((l) => !!l.urlBlSigne).length,
     facturables: 0,
     planifies: livs.filter((l) => l.statut === "planifiee").length,
-    certificats: velos.filter((v) => !!v.fnuci).length,
+    // Flag manuel certificatRecu (aligné sur gas getStats), PAS !!v.fnuci.
+    certificats: velos.filter((v) => v.certificatRecu === true).length,
     factures: 0,
   };
 }
