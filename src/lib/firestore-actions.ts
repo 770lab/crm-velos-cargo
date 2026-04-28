@@ -747,6 +747,21 @@ export async function runFirestoreAction(
       if (linkField[docType]) updates[linkField[docType]] = url;
       if (flagField[docType]) updates[flagField[docType]] = true;
       await updateDoc(doc(db, "clients", clientId), updates);
+      // Extraction asynchrone des métadonnées via Gemini Vision pour les
+      // documents qui contiennent une date + des infos métier (KBIS,
+      // liasse/registre du personnel). On ne bloque pas le retour pour
+      // garder la latence d'upload basse — l'UI rafraîchira les pastilles
+      // quand la date apparaîtra dans Firestore (~3-5s plus tard).
+      if (docType === "kbisRecu" || docType === "attestationRecue") {
+        const storagePath = `clients/${clientId}/documents/${fileName}`;
+        const extractCallable = httpsCallable<
+          { clientId: string; docType: string; storagePath: string },
+          { ok: boolean }
+        >(functions, "extractDocMetadata");
+        extractCallable({ clientId, docType, storagePath }).catch((err) => {
+          console.warn("extractDocMetadata KO (non bloquant)", err);
+        });
+      }
       return { ok: true, url };
     }
 

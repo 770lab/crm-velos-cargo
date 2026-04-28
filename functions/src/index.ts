@@ -15,6 +15,7 @@ import { setGlobalOptions, logger } from "firebase-functions/v2";
 import { initializeApp } from "firebase-admin/app";
 import { getAuth } from "firebase-admin/auth";
 import { getFirestore, FieldValue } from "firebase-admin/firestore";
+import { getStorage } from "firebase-admin/storage";
 
 initializeApp();
 const auth = getAuth();
@@ -525,3 +526,175 @@ export const syncFromGasNow = onCall(async (request) => {
 
   return { ok: true, ...result };
 });
+
+// ---------- extraction métadonnées doc client (Gemini Vision) ----------
+//
+// Déclenché à chaque upload dans clients/{clientId}/documents/{filename}.
+// Le filename est de la forme `${docType}-${timestamp}` (cf. uploadDoc côté
+// firestore-actions). On extrait la date de fraîcheur du document + flags
+// métier (ex: effectifMentionne pour la liasse) via Gemini 2.5 Flash en
+// inline_data, puis on update le client. La pastille passe au vert si tout
+// est complet et dans les seuils de validité.
+
+const FR_MONTHS: Record<string, string> = {
+  janvier: "01", février: "02", fevrier: "02", mars: "03", avril: "04",
+  mai: "05", juin: "06", juillet: "07", août: "08", aout: "08",
+  septembre: "09", octobre: "10", novembre: "11", décembre: "12", decembre: "12",
+};
+
+function normalizeDate(raw: string | null | undefined): string | null {
+  if (!raw || typeof raw !== "string") return null;
+  const s = raw.trim().toLowerCase();
+  // déjà ISO YYYY-MM-DD
+  let m = s.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return `${m[1]}-${m[2]}-${m[3]}`;
+  // DD/MM/YYYY ou DD-MM-YYYY
+  m = s.match(/^(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{4})$/);
+  if (m) return `${m[3]}-${m[2].padStart(2, "0")}-${m[1].padStart(2, "0")}`;
+  // "11 février 2026" / "11 fevrier 2026"
+  m = s.match(/^(\d{1,2})\s+([a-zéûôîàèç]+)\s+(\d{4})$/);
+  if (m && FR_MONTHS[m[2]]) return `${m[3]}-${FR_MONTHS[m[2]]}-${m[1].padStart(2, "0")}`;
+  return null;
+}
+
+const EXTRACTION_PROMPTS: Record<string, string> = {
+  kbisRecu: `Tu analyses un extrait Kbis français. Renvoie UNIQUEMENT un JSON :
+{
+  "date": "AAAA-MM-JJ" ou null,
+  "raisonSociale": "..." ou null
+}
+La "date" est la date de fraîcheur du Kbis (souvent introduite par "à jour au" ou "extrait certifié conforme du"), PAS la date d'immatriculation ni de RCS.`,
+  attestationRecue: `Tu analyses un document RH français (registre du personnel, liasse fiscale, attestation URSSAF, DPAE, etc.) qui sert à prouver l'effectif d'une entreprise. Renvoie UNIQUEMENT un JSON :
+{
+  "date": "AAAA-MM-JJ" ou null,
+  "effectifMentionne": true|false,
+  "nbSalaries": <nombre> ou null,
+  "typeDocument": "registre_personnel" | "liasse_fiscale" | "attestation_urssaf" | "dpae" | "autre"
+}
+La "date" est la date d'édition / d'arrêté du document. "effectifMentionne" est true si on voit clairement un nombre de salariés ou une liste de salariés, false sinon.`,
+};
+
+// Map docType → champs Firestore à mettre à jour
+function buildUpdates(docType: string, parsed: Record<string, unknown>): Record<string, unknown> | null {
+  const updates: Record<string, unknown> = {};
+  if (docType === "kbisRecu") {
+    const d = normalizeDate(parsed.date as string);
+    if (d) updates.kbisDate = d;
+  } else if (docType === "attestationRecue") {
+    const d = normalizeDate(parsed.date as string);
+    if (d) updates.liasseFiscaleDate = d;
+    if (typeof parsed.effectifMentionne === "boolean") {
+      updates.effectifMentionne = parsed.effectifMentionne;
+    }
+    if (typeof parsed.nbSalaries === "number") {
+      updates.nbSalariesDetecte = parsed.nbSalaries;
+    }
+  }
+  if (Object.keys(updates).length === 0) return null;
+  updates.updatedAt = FieldValue.serverTimestamp();
+  return updates;
+}
+
+async function extractWithGemini(
+  apiKey: string,
+  base64Pdf: string,
+  mimeType: string,
+  prompt: string,
+): Promise<Record<string, unknown> | null> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{
+        parts: [
+          { inline_data: { mime_type: mimeType, data: base64Pdf } },
+          { text: prompt },
+        ],
+      }],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: "application/json",
+        maxOutputTokens: 2048,
+        thinkingConfig: { thinkingBudget: 0 },
+      },
+    }),
+  });
+  if (!res.ok) {
+    logger.warn("Gemini extract HTTP non-200", { status: res.status, body: (await res.text()).slice(0, 200) });
+    return null;
+  }
+  const data = await res.json();
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+  if (!text) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    logger.warn("Gemini extract JSON parse KO", { text: text.slice(0, 200) });
+    return null;
+  }
+}
+
+/**
+ * Appelé par le client juste après un uploadDoc réussi. Le client passe
+ * le chemin Storage du fichier qui vient d'être uploadé + le clientId +
+ * le docType. La fonction télécharge le PDF, l'envoie à Gemini, et
+ * update le client avec la date détectée + flag effectif.
+ *
+ * On a tenté un trigger Storage (onObjectFinalized) mais le bucket est
+ * en europe-west3 et nécessite des permissions Eventarc supplémentaires.
+ * Le onCall en europe-west1 marche cross-region pour Storage download.
+ */
+type ExtractPayload = {
+  clientId?: string;
+  docType?: string;
+  storagePath?: string;
+};
+
+export const extractDocMetadata = onCall<ExtractPayload>(
+  { secrets: [GEMINI_API_KEY], timeoutSeconds: 60, memory: "512MiB" },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentification requise");
+    }
+    const clientId = request.data.clientId;
+    const docType = request.data.docType;
+    const storagePath = request.data.storagePath;
+    if (!clientId || !docType || !storagePath) {
+      throw new HttpsError("invalid-argument", "clientId, docType, storagePath requis");
+    }
+    if (!EXTRACTION_PROMPTS[docType]) {
+      // Pas de prompt configuré pour ce type — pas une erreur, juste skip.
+      return { ok: true, skipped: true };
+    }
+    const apiKey = GEMINI_API_KEY.value();
+    if (!apiKey) {
+      throw new HttpsError("failed-precondition", "GEMINI_API_KEY non configurée");
+    }
+
+    try {
+      const file = getStorage().bucket().file(storagePath);
+      const [meta] = await file.getMetadata();
+      const mimeType = meta.contentType || "application/pdf";
+      if (!/^application\/pdf$|^image\//.test(mimeType)) {
+        return { ok: true, skipped: true, reason: "mime non supporté" };
+      }
+      const [buffer] = await file.download();
+      const base64 = buffer.toString("base64");
+      const parsed = await extractWithGemini(apiKey, base64, mimeType, EXTRACTION_PROMPTS[docType]);
+      if (!parsed) {
+        return { ok: true, extracted: false };
+      }
+      const updates = buildUpdates(docType, parsed);
+      if (!updates) {
+        return { ok: true, extracted: true, updates: null, parsed };
+      }
+      await db.collection("clients").doc(clientId).update(updates);
+      logger.info("extractDocMetadata OK", { clientId, docType, updates });
+      return { ok: true, extracted: true, updates, parsed };
+    } catch (err) {
+      logger.error("extractDocMetadata KO", { clientId, docType, err: err instanceof Error ? err.message : String(err) });
+      throw new HttpsError("internal", err instanceof Error ? err.message : "Erreur extraction");
+    }
+  },
+);
