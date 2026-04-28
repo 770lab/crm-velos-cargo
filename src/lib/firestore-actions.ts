@@ -27,6 +27,7 @@ import {
   orderBy,
   limit,
   getDocs,
+  runTransaction,
   Timestamp,
   type FieldValue,
 } from "firebase/firestore";
@@ -1743,6 +1744,342 @@ export async function runFirestoreGet(
         mode,
         livraisons,
         equipe: { chauffeur, chefEquipe, monteurs },
+      };
+    }
+
+    case "getBlForTournee": {
+      // Page /bl : génère + retourne les bons de livraison d'une tournée.
+      // Numéro BL séquentiel par année : BL-YYYY-NNNNN, persisté sur la
+      // livraison (champ numeroBL) à la 1ère consultation. Counter Firestore
+      // dans counters/bl-YYYY (transaction pour éviter doublons concurrents).
+      const tourneeId = params.tourneeId;
+      if (!tourneeId) return { error: "tourneeId requis" };
+
+      const livSnap = await getDocs(
+        query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
+      );
+      if (livSnap.empty) return { error: "Tournée introuvable", tourneeId };
+
+      // datePrevue (toutes égales sur une tournée)
+      const firstData = livSnap.docs[0].data() as { datePrevue?: unknown };
+      const isoOf = (x: unknown): string | null => {
+        if (!x) return null;
+        if (typeof x === "string") return x;
+        const t = x as { toDate?: () => Date };
+        return t?.toDate ? t.toDate().toISOString() : null;
+      };
+      const datePrevue = isoOf(firstData.datePrevue);
+      const year = datePrevue
+        ? datePrevue.slice(0, 4)
+        : String(new Date().getFullYear());
+      const counterRef = doc(db, "counters", `bl-${year}`);
+
+      // Génération de numéro BL : transaction garantie atomique sur le counter.
+      const allocateBlNumber = async (): Promise<string> => {
+        return runTransaction(db, async (tx) => {
+          const snap = await tx.get(counterRef);
+          const current = snap.exists() ? Number((snap.data() as { next?: number }).next) || 0 : 0;
+          const next = current + 1;
+          tx.set(counterRef, { next, year }, { merge: true });
+          return `BL-${year}-${String(next).padStart(5, "0")}`;
+        });
+      };
+
+      // Construit clients[]. clientSnapshot peut manquer contact/tel : on
+      // hydrate depuis le doc client. Persiste numeroBL sur livraison si absent.
+      type VeloOut = { veloId: string; fnuci: string | null };
+      type ClientOut = {
+        clientId: string;
+        entreprise: string;
+        ville: string;
+        adresse: string;
+        codePostal: string;
+        telephone: string | null;
+        contact: string | null;
+        numeroBL: string | null;
+        velos: VeloOut[];
+      };
+      // 1 livraison = 1 client (fonctionnellement). On garde l'ordre Firestore.
+      const clientsByLiv: Array<{ livraisonId: string; clientId: string; client: ClientOut; numeroBL: string | null }> = [];
+      const clientIds: string[] = [];
+      const seenClients = new Set<string>();
+      for (const d of livSnap.docs) {
+        const l = d.data() as {
+          clientId?: string;
+          numeroBL?: string;
+          clientSnapshot?: {
+            entreprise?: string;
+            ville?: string;
+            adresse?: string;
+            codePostal?: string;
+            telephone?: string | null;
+            contact?: string | null;
+          };
+        };
+        const cid = l.clientId || "";
+        if (!cid) continue;
+        const snap = l.clientSnapshot || {};
+        const out: ClientOut = {
+          clientId: cid,
+          entreprise: snap.entreprise || "",
+          ville: snap.ville || "",
+          adresse: snap.adresse || "",
+          codePostal: snap.codePostal || "",
+          telephone: snap.telephone ?? null,
+          contact: snap.contact ?? null,
+          numeroBL: l.numeroBL || null,
+          velos: [],
+        };
+        clientsByLiv.push({ livraisonId: d.id, clientId: cid, client: out, numeroBL: out.numeroBL });
+        if (!seenClients.has(cid)) {
+          seenClients.add(cid);
+          clientIds.push(cid);
+        }
+      }
+
+      // Hydratation client (contact/tel manquants) + vélos par chunks de 30
+      const clientChunks: string[][] = [];
+      for (let i = 0; i < clientIds.length; i += 30) clientChunks.push(clientIds.slice(i, i + 30));
+
+      const clientHydrated: Record<string, { telephone?: string | null; contact?: string | null; adresse?: string | null }> = {};
+      for (const chunk of clientChunks) {
+        if (!chunk.length) continue;
+        const cSnap = await getDocs(
+          query(collection(db, "clients"), where("__name__", "in", chunk)),
+        );
+        for (const cd of cSnap.docs) {
+          const c = cd.data() as { telephone?: string | null; contact?: string | null; adresse?: string | null };
+          clientHydrated[cd.id] = c;
+        }
+      }
+      for (const item of clientsByLiv) {
+        const h = clientHydrated[item.clientId];
+        if (h) {
+          if (item.client.telephone == null && h.telephone) item.client.telephone = h.telephone;
+          if (item.client.contact == null && h.contact) item.client.contact = h.contact;
+          if (!item.client.adresse && h.adresse) item.client.adresse = h.adresse;
+        }
+      }
+
+      // Vélos
+      const velosByClient: Record<string, VeloOut[]> = {};
+      for (const chunk of clientChunks) {
+        if (!chunk.length) continue;
+        const vSnap = await getDocs(
+          query(collection(db, "velos"), where("clientId", "in", chunk)),
+        );
+        for (const vd of vSnap.docs) {
+          const v = vd.data() as { clientId?: string; fnuci?: string | null };
+          const cid = v.clientId || "";
+          if (!cid) continue;
+          (velosByClient[cid] ||= []).push({ veloId: vd.id, fnuci: v.fnuci || null });
+        }
+      }
+      for (const item of clientsByLiv) {
+        item.client.velos = velosByClient[item.clientId] || [];
+      }
+
+      // Génération + persistence des numéros BL manquants. Séquentiel volontaire :
+      // évite les collisions sur le counter (transactions concurrentes possibles
+      // mais inutile vu qu'on est sur une seule requête utilisateur).
+      for (const item of clientsByLiv) {
+        if (!item.client.numeroBL) {
+          try {
+            const blNum = await allocateBlNumber();
+            item.client.numeroBL = blNum;
+            await updateDoc(doc(db, "livraisons", item.livraisonId), {
+              numeroBL: blNum,
+              updatedAt: ts(),
+            });
+          } catch (e) {
+            // Si l'attribution échoue (contention extrême ou rules), on
+            // laisse null et l'UI utilise son fallback hash.
+            console.error("[getBlForTournee] allocateBlNumber failed", e);
+          }
+        }
+      }
+
+      return {
+        tourneeId,
+        datePrevue,
+        clients: clientsByLiv.map((x) => x.client),
+      };
+    }
+
+    case "getFinancesSummary": {
+      // Page /finances (super-admin). Calcul du coût main d'œuvre sur [from, to].
+      //
+      // Hypothèses (à confirmer vs GAS si écart) :
+      // - tournée comptée si datePrevue ∈ [from, to] ET au moins 1 livraison
+      //   livrée (statut=livree). Pas de comptage des tournées vides.
+      // - jours par membre = nb de dates DISTINCTES de tournées où il apparaît
+      //   dans chauffeurId, chefEquipeIds (ou chefEquipeId), monteurIds,
+      //   preparateurIds.
+      // - velosPrimes par membre = somme des vélos livrés (statut=livree,
+      //   nbVelos sommé) sur les tournées où il apparaît.
+      // - coutSalaire = jours × salaireJournalier (depuis fiche equipe)
+      // - coutPrime = velosPrimes × primeVelo
+      // - apporteurs : NON inclus ici (commissions calculées ailleurs).
+      const from = params.from || "";
+      const to = params.to || "";
+      if (!from || !to) {
+        return { ok: false, error: "from et to requis (format YYYY-MM-DD)" };
+      }
+      // Bornes inclusives. Compare sur date locale en string ISO yyyy-mm-dd.
+      const inRange = (iso: string | null) => {
+        if (!iso) return false;
+        const day = iso.slice(0, 10);
+        return day >= from && day <= to;
+      };
+
+      // Parcourt toutes les livraisons (collection size raisonnable, < 10k).
+      const livSnap = await getDocs(collection(db, "livraisons"));
+      // Group par tourneeId : { tourneeId, datePrevue (YYYY-MM-DD), nbVelosLivres,
+      // chauffeurId, chefIds[], monteurIds[], preparateurIds[] }
+      type TourneeAgg = {
+        tourneeId: string;
+        date: string;
+        nbVelosLivres: number;
+        chauffeurId: string | null;
+        chefIds: string[];
+        monteurIds: string[];
+        preparateurIds: string[];
+      };
+      const tourneesById: Record<string, TourneeAgg> = {};
+      const isoOf = (x: unknown): string | null => {
+        if (!x) return null;
+        if (typeof x === "string") return x;
+        const t = x as { toDate?: () => Date };
+        return t?.toDate ? t.toDate().toISOString() : null;
+      };
+      for (const d of livSnap.docs) {
+        const l = d.data() as {
+          tourneeId?: string;
+          datePrevue?: unknown;
+          statut?: string;
+          nbVelos?: number;
+          chauffeurId?: string;
+          chefEquipeId?: string;
+          chefEquipeIds?: string[];
+          monteurIds?: string[];
+          preparateurIds?: string[];
+        };
+        const tid = l.tourneeId || "";
+        if (!tid) continue;
+        const dpIso = isoOf(l.datePrevue);
+        if (!dpIso || !inRange(dpIso)) continue;
+
+        let agg = tourneesById[tid];
+        if (!agg) {
+          agg = tourneesById[tid] = {
+            tourneeId: tid,
+            date: dpIso.slice(0, 10),
+            nbVelosLivres: 0,
+            chauffeurId: l.chauffeurId || null,
+            chefIds: [
+              ...(l.chefEquipeId ? [l.chefEquipeId] : []),
+              ...(l.chefEquipeIds || []),
+            ].filter((v, i, a) => v && a.indexOf(v) === i),
+            monteurIds: [...new Set(l.monteurIds || [])],
+            preparateurIds: [...new Set(l.preparateurIds || [])],
+          };
+        }
+        if ((l.statut || "") === "livree") {
+          agg.nbVelosLivres += typeof l.nbVelos === "number" ? l.nbVelos : 0;
+        }
+      }
+
+      // Filtre tournées effectives (≥1 vélo livré)
+      const tourneesActives = Object.values(tourneesById).filter(
+        (t) => t.nbVelosLivres > 0,
+      );
+
+      // Aggrégation par membre
+      type MemAgg = { joursSet: Set<string>; velosPrimes: number };
+      const byMemberId: Record<string, MemAgg> = {};
+      const touchMember = (id: string | null | undefined, t: TourneeAgg) => {
+        if (!id) return;
+        const m = (byMemberId[id] ||= { joursSet: new Set(), velosPrimes: 0 });
+        m.joursSet.add(t.date);
+        m.velosPrimes += t.nbVelosLivres;
+      };
+      for (const t of tourneesActives) {
+        touchMember(t.chauffeurId, t);
+        for (const id of t.chefIds) touchMember(id, t);
+        for (const id of t.monteurIds) touchMember(id, t);
+        for (const id of t.preparateurIds) touchMember(id, t);
+      }
+
+      // Hydratation fiches équipe pour récup salaire/prime/nom/role
+      const memberIds = Object.keys(byMemberId);
+      const byMember: Array<{
+        id: string;
+        nom: string;
+        role: string;
+        salaireJournalier: number;
+        primeVelo: number;
+        jours: number;
+        velosPrimes: number;
+        coutSalaire: number;
+        coutPrime: number;
+        coutTotal: number;
+      }> = [];
+      const totals = { coutSalaires: 0, coutPrimes: 0, coutTotal: 0, jours: 0 };
+      // Chunks de 30 (limite Firestore "in")
+      for (let i = 0; i < memberIds.length; i += 30) {
+        const chunk = memberIds.slice(i, i + 30);
+        if (!chunk.length) continue;
+        const eSnap = await getDocs(
+          query(collection(db, "equipe"), where("__name__", "in", chunk)),
+        );
+        for (const ed of eSnap.docs) {
+          const e = ed.data() as {
+            nom?: string;
+            role?: string;
+            salaireJournalier?: number;
+            primeVelo?: number;
+          };
+          const agg = byMemberId[ed.id];
+          if (!agg) continue;
+          const salaireJournalier = typeof e.salaireJournalier === "number" ? e.salaireJournalier : 0;
+          const primeVelo = typeof e.primeVelo === "number" ? e.primeVelo : 0;
+          const jours = agg.joursSet.size;
+          const velosPrimes = agg.velosPrimes;
+          const coutSalaire = Math.round(jours * salaireJournalier * 100) / 100;
+          const coutPrime = Math.round(velosPrimes * primeVelo * 100) / 100;
+          const coutTotal = Math.round((coutSalaire + coutPrime) * 100) / 100;
+          byMember.push({
+            id: ed.id,
+            nom: e.nom || "",
+            role: e.role || "",
+            salaireJournalier,
+            primeVelo,
+            jours,
+            velosPrimes,
+            coutSalaire,
+            coutPrime,
+            coutTotal,
+          });
+          totals.coutSalaires += coutSalaire;
+          totals.coutPrimes += coutPrime;
+          totals.coutTotal += coutTotal;
+          totals.jours += jours;
+        }
+      }
+      // Arrondi des totaux
+      totals.coutSalaires = Math.round(totals.coutSalaires * 100) / 100;
+      totals.coutPrimes = Math.round(totals.coutPrimes * 100) / 100;
+      totals.coutTotal = Math.round(totals.coutTotal * 100) / 100;
+      // Tri : par coutTotal desc pour mettre en avant les contributeurs.
+      byMember.sort((a, b) => b.coutTotal - a.coutTotal);
+
+      return {
+        ok: true,
+        from,
+        to,
+        nbTournees: tourneesActives.length,
+        byMember,
+        totals,
       };
     }
 
