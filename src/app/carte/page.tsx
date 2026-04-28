@@ -250,7 +250,34 @@ export default function CartePage() {
               className="w-full px-3 py-2 border-2 border-green-300 rounded-lg text-sm focus:border-green-500 focus:outline-none"
             />
             {searchQuery && (
-              <p className="text-xs text-gray-400 mt-1">{clients.length} résultat{clients.length !== 1 ? "s" : ""}</p>
+              <>
+                <p className="text-xs text-gray-400 mt-1">{clients.length} résultat{clients.length !== 1 ? "s" : ""}</p>
+                {clients.length > 0 && (
+                  <ul className="mt-1 max-h-64 overflow-auto border border-gray-200 rounded-lg divide-y divide-gray-100 bg-white">
+                    {clients.slice(0, 20).map((c) => {
+                      const reste = c.nbVelos - c.velosLivres - (c.velosPlanifies || 0);
+                      return (
+                        <li key={c.id}>
+                          <button
+                            type="button"
+                            onClick={() => { handleSelectClient(c.id); setSearch(""); }}
+                            className="w-full text-left px-3 py-2 hover:bg-green-50 focus:bg-green-50 focus:outline-none"
+                          >
+                            <div className="text-sm font-medium text-gray-900 truncate">{c.entreprise}</div>
+                            <div className="text-xs text-gray-500 truncate">
+                              {c.ville ?? "—"}{c.codePostal ? ` · ${c.codePostal}` : ""} · {reste}v à planifier
+                              {c.apporteur ? ` · ${c.apporteur}` : ""}
+                            </div>
+                          </button>
+                        </li>
+                      );
+                    })}
+                    {clients.length > 20 && (
+                      <li className="px-3 py-1.5 text-xs text-gray-400 italic">+ {clients.length - 20} autres — affine la recherche</li>
+                    )}
+                  </ul>
+                )}
+              </>
             )}
           </div>
           <div className="grid grid-cols-2 gap-2">
