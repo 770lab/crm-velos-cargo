@@ -1200,6 +1200,274 @@ export async function runFirestoreGet(
         velos,
       };
     }
+    case "auditEffectifs": {
+      // Migration de gas/Code.js:auditEffectifs vers Firestore. Croise les
+      // verifications (collection mirrorée depuis GAS via syncFromGas) avec les
+      // clients Firestore pour détecter les écarts entre nb vélos commandés et
+      // effectif déclaré (règle CEE : 1 vélo max / salarié).
+      // Source de vérité : `verifications` Firestore + `clients` Firestore.
+      // Fallback GAS retiré : si Firestore est vide, on retourne 0 incohérence
+      // (mieux que de planter sur un GAS down).
+      const DOCS_AVEC_EFFECTIF: Record<string, true> = {
+        DSN: true,
+        LIASSE: true,
+        ATTESTATION_URSSAF: true,
+        URSSAF: true,
+        ATTESTATION: true,
+      };
+
+      const verifSnap = await getDocs(collection(db, "verifications"));
+      const clientSnap = await getDocs(collection(db, "clients"));
+
+      type VerifAgg = {
+        clientId: string;
+        entreprise: string;
+        effectifMax: number;
+        effectifSource: string;
+        verifIds: string[];
+        nbDocs: number;
+      };
+      type DevisAgg = { nbVelosMax: number; sourceVerifId: string; nbDevis: number };
+
+      const byClient: Record<string, VerifAgg> = {};
+      const devisByClient: Record<string, DevisAgg> = {};
+
+      for (const d of verifSnap.docs) {
+        const v = d.data() as Record<string, unknown>;
+        const cid = String(v.clientId || "");
+        if (!cid) continue;
+        const docType = String(v.docType || "").toUpperCase();
+
+        if (docType === "DEVIS") {
+          const vRaw = v.nbVelosDevis;
+          if (vRaw != null && vRaw !== "") {
+            const nbV = Number(vRaw);
+            if (Number.isFinite(nbV) && nbV >= 0 && nbV < 10000) {
+              const cur = devisByClient[cid];
+              if (!cur) {
+                devisByClient[cid] = { nbVelosMax: nbV, sourceVerifId: d.id, nbDevis: 1 };
+              } else {
+                cur.nbDevis++;
+                if (nbV > cur.nbVelosMax) {
+                  cur.nbVelosMax = nbV;
+                  cur.sourceVerifId = d.id;
+                }
+              }
+            }
+          }
+        }
+
+        if (!DOCS_AVEC_EFFECTIF[docType]) continue;
+        const effRaw = v.effectifDetected;
+        if (effRaw == null || effRaw === "") continue;
+        const eff = Number(effRaw);
+        if (!Number.isFinite(eff) || eff < 0 || eff > 10000) continue;
+
+        const ent = String(v.entreprise || "");
+        if (!byClient[cid]) {
+          byClient[cid] = {
+            clientId: cid,
+            entreprise: ent,
+            effectifMax: eff,
+            effectifSource: docType,
+            verifIds: [d.id],
+            nbDocs: 1,
+          };
+        } else {
+          const b = byClient[cid];
+          b.nbDocs++;
+          b.verifIds.push(d.id);
+          if (eff > b.effectifMax) {
+            b.effectifMax = eff;
+            b.effectifSource = docType;
+          }
+        }
+      }
+
+      type ClientAgg = { clientId: string; nbVelosCommandes: number; entreprise: string; siren: string };
+      const clientById: Record<string, ClientAgg> = {};
+      const allClients: ClientAgg[] = [];
+      for (const d of clientSnap.docs) {
+        const c = d.data() as Record<string, unknown>;
+        const nbV = Number(c.nbVelosCommandes || 0);
+        const ent = String(c.entreprise || "");
+        const siren = String(c.siren || "").replace(/\s/g, "");
+        const entry = { clientId: d.id, nbVelosCommandes: nbV, entreprise: ent, siren };
+        clientById[d.id] = entry;
+        allClients.push(entry);
+      }
+
+      // Incohérences par établissement
+      const incoherences: Array<{
+        clientId: string;
+        entreprise: string;
+        nbVelosCommandes: number;
+        nbVelosDevis: number | null;
+        nbDevis: number;
+        effectifMax: number;
+        effectifSource: string;
+        ecart: number;
+        nbDocs: number;
+        verifIds: string[];
+        suggestedTarget: number;
+        sens: "trop_velos" | "pas_assez_velos";
+      }> = [];
+
+      for (const cid of Object.keys(byClient)) {
+        const b = byClient[cid];
+        const c = clientById[cid];
+        if (!c) continue;
+        const ecart = c.nbVelosCommandes - b.effectifMax;
+        if (ecart === 0) continue;
+        const dInfo = devisByClient[cid] || null;
+        incoherences.push({
+          clientId: cid,
+          entreprise: c.entreprise || b.entreprise,
+          nbVelosCommandes: c.nbVelosCommandes,
+          nbVelosDevis: dInfo ? dInfo.nbVelosMax : null,
+          nbDevis: dInfo ? dInfo.nbDevis : 0,
+          effectifMax: b.effectifMax,
+          effectifSource: b.effectifSource,
+          ecart,
+          nbDocs: b.nbDocs,
+          verifIds: b.verifIds,
+          suggestedTarget: b.effectifMax,
+          sens: ecart > 0 ? "trop_velos" : "pas_assez_velos",
+        });
+      }
+      incoherences.sort((a, b) => Math.abs(b.ecart) - Math.abs(a.ecart));
+
+      // Agrégation par SIREN (multi-établissements)
+      type SirenAgg = {
+        siren: string;
+        entreprise: string;
+        totalVelos: number;
+        etablissements: Array<{ clientId: string; entreprise: string; nbVelos: number }>;
+        effectifMax: number;
+        effectifSource: string;
+        nbDocs: number;
+        verifIds: string[];
+      };
+      const sirenAgg: Record<string, SirenAgg> = {};
+      for (const c of allClients) {
+        if (!c.siren || c.siren === "0") continue;
+        if (!sirenAgg[c.siren]) {
+          sirenAgg[c.siren] = {
+            siren: c.siren,
+            entreprise: c.entreprise,
+            totalVelos: 0,
+            etablissements: [],
+            effectifMax: 0,
+            effectifSource: "",
+            nbDocs: 0,
+            verifIds: [],
+          };
+        }
+        const s = sirenAgg[c.siren];
+        s.totalVelos += c.nbVelosCommandes;
+        s.etablissements.push({ clientId: c.clientId, entreprise: c.entreprise, nbVelos: c.nbVelosCommandes });
+        const b = byClient[c.clientId];
+        if (b) {
+          s.nbDocs += b.nbDocs;
+          s.verifIds = s.verifIds.concat(b.verifIds);
+          if (b.effectifMax > s.effectifMax) {
+            s.effectifMax = b.effectifMax;
+            s.effectifSource = b.effectifSource;
+          }
+        }
+      }
+
+      const incoherencesParSiren: Array<{
+        siren: string;
+        entreprise: string;
+        totalVelos: number;
+        effectifMax: number;
+        effectifSource: string;
+        ecart: number;
+        sens: "trop_velos" | "pas_assez_velos";
+        nbEtablissements: number;
+        etablissements: Array<{ clientId: string; entreprise: string; nbVelos: number }>;
+        nbDocs: number;
+        verifIds: string[];
+      }> = [];
+      for (const siren of Object.keys(sirenAgg)) {
+        const s = sirenAgg[siren];
+        if (s.etablissements.length < 2) continue;
+        if (s.effectifMax === 0) continue;
+        const ecart = s.totalVelos - s.effectifMax;
+        if (ecart === 0) continue;
+        incoherencesParSiren.push({
+          siren,
+          entreprise: s.entreprise,
+          totalVelos: s.totalVelos,
+          effectifMax: s.effectifMax,
+          effectifSource: s.effectifSource,
+          ecart,
+          sens: ecart > 0 ? "trop_velos" : "pas_assez_velos",
+          nbEtablissements: s.etablissements.length,
+          etablissements: s.etablissements,
+          nbDocs: s.nbDocs,
+          verifIds: s.verifIds,
+        });
+      }
+      incoherencesParSiren.sort((a, b) => Math.abs(b.ecart) - Math.abs(a.ecart));
+
+      // Clients sans pièce d'effectif (groupés par SIREN)
+      const sansPieceParSiren: Record<string, {
+        siren: string;
+        entreprise: string;
+        totalVelos: number;
+        etablissements: Array<{ clientId: string; entreprise: string; nbVelos: number }>;
+      }> = {};
+      const sansPieceSansSiren: Array<{ clientId: string; entreprise: string; nbVelos: number }> = [];
+      for (const c of allClients) {
+        if (c.nbVelosCommandes <= 0) continue;
+        if (byClient[c.clientId]) continue;
+        if (c.siren && c.siren !== "0") {
+          if (!sansPieceParSiren[c.siren]) {
+            sansPieceParSiren[c.siren] = {
+              siren: c.siren,
+              entreprise: c.entreprise,
+              totalVelos: 0,
+              etablissements: [],
+            };
+          }
+          const sp = sansPieceParSiren[c.siren];
+          sp.totalVelos += c.nbVelosCommandes;
+          sp.etablissements.push({ clientId: c.clientId, entreprise: c.entreprise, nbVelos: c.nbVelosCommandes });
+        } else {
+          sansPieceSansSiren.push({ clientId: c.clientId, entreprise: c.entreprise, nbVelos: c.nbVelosCommandes });
+        }
+      }
+      // Si un SIREN a déjà au moins 1 établissement scanné, retirer le groupe
+      for (const siren of Object.keys(sansPieceParSiren)) {
+        if (sirenAgg[siren] && sirenAgg[siren].effectifMax > 0) {
+          delete sansPieceParSiren[siren];
+        }
+      }
+      const clientsSansPieceEffectif = Object.values(sansPieceParSiren);
+      for (const c of sansPieceSansSiren) {
+        clientsSansPieceEffectif.push({
+          siren: "",
+          entreprise: c.entreprise,
+          totalVelos: c.nbVelos,
+          etablissements: [c],
+        });
+      }
+      clientsSansPieceEffectif.sort((a, b) => b.totalVelos - a.totalVelos);
+
+      return {
+        ok: true,
+        total: incoherences.length,
+        incoherences,
+        incoherencesParSiren,
+        totalSiren: incoherencesParSiren.length,
+        clientsSansPieceEffectif,
+        totalSansPiece: clientsSansPieceEffectif.length,
+        nbClientsAvecEffectifDetecte: Object.keys(byClient).length,
+      };
+    }
+
     default:
       return null; // signal "fallback GAS"
   }

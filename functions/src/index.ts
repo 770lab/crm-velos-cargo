@@ -28,7 +28,12 @@ setGlobalOptions({
 const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
 const GAS_URL = defineString("GAS_URL", {
   default: "https://script.google.com/macros/s/AKfycbxcR1mvhpSphNIjuS_mu5GPIaMhxYp1vT1OOPAoGEHNN8h7_iiFIq3Cu_SGR9upgwNgxg/exec",
-  description: "URL du déploiement GAS qui traite les emails (gas-inbox)",
+  // ATTENTION : ce paramètre pointe sur le déploiement GAS PRINCIPAL (gas/),
+  // pas sur gas-inbox. Le Cloud Function syncFromGas appelle uniquement les
+  // endpoints du gas/ principal (getBonsEnlevement, listVerifications, etc.).
+  // gas-inbox tourne en autonome via triggers temporels GAS — pas d'appel HTTP
+  // depuis le Cloud Function.
+  description: "URL du déploiement GAS principal (gas/, sert aussi à NEXT_PUBLIC_GAS_URL côté front)",
 });
 
 const ALLOWED_ORIGINS = [
