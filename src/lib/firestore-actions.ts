@@ -415,12 +415,136 @@ export async function runFirestoreAction(
 
     // ---------- tournees ----------
     case "createTournee": {
-      const ref = await addDoc(collection(db, "tournees"), {
-        ...applyMaybeDates(body),
+      // Réplique la logique GAS createTournee : crée la tournée + les livraisons
+      // depuis `stops` + les vélos cibles + incrémente stats.planifies.
+      // Utilisé par le panneau Retrait dans /carte (mode="retrait") et autres.
+      // Sans la création des livraisons, le user voit "rien ne se passe" — la
+      // tournée existe en base mais n'a aucun client → invisible UI.
+      const stops = (body.stops as Body[]) || [];
+
+      // Numéro tournée global : max(tourneeNumero) + 1
+      let tourneeNumero = 1;
+      try {
+        const top = await getDocs(
+          query(collection(db, "livraisons"), orderBy("tourneeNumero", "desc"), limit(1)),
+        );
+        if (!top.empty) {
+          const n = (top.docs[0].data() as { tourneeNumero?: number }).tourneeNumero;
+          if (typeof n === "number") tourneeNumero = n + 1;
+        }
+      } catch {}
+
+      const tRef = await addDoc(collection(db, "tournees"), {
+        datePrevue: body.datePrevue || "",
+        mode: body.mode || "",
+        notes: body.notes || "",
         statut: body.statut || "planifiee",
         createdAt: ts(),
       });
-      return { ok: true, id: ref.id };
+
+      const incParClient = new Map<string, number>();
+      let livCount = 0;
+      for (const stop of stops) {
+        const cid = String(stop.clientId || "");
+        const nbVelos = Number(stop.nbVelos) || 0;
+        if (!cid || nbVelos <= 0) continue;
+
+        let apporteurLowerLiv: string | null = null;
+        let clientSnapshotLiv: Body | null = null;
+        try {
+          const cSnap = await getDoc(doc(db, "clients", cid));
+          if (cSnap.exists()) {
+            const cData = cSnap.data() as {
+              apporteur?: string;
+              apporteurLower?: string;
+              entreprise?: string;
+              ville?: string;
+              adresse?: string;
+              codePostal?: string;
+              departement?: string;
+              telephone?: string;
+              lat?: number;
+              lng?: number;
+              latitude?: number;
+              longitude?: number;
+            };
+            apporteurLowerLiv = cData.apporteurLower
+              || (cData.apporteur ? String(cData.apporteur).trim().toLowerCase() : null)
+              || null;
+            clientSnapshotLiv = {
+              entreprise: cData.entreprise || "",
+              ville: cData.ville || "",
+              adresse: cData.adresse || "",
+              codePostal: cData.codePostal || "",
+              departement: cData.departement || "",
+              telephone: cData.telephone || "",
+              lat: cData.lat ?? cData.latitude ?? null,
+              lng: cData.lng ?? cData.longitude ?? null,
+            };
+          }
+        } catch {}
+
+        await addDoc(collection(db, "livraisons"), {
+          clientId: cid,
+          nbVelos,
+          ordre: Number(stop.ordre) || livCount + 1,
+          datePrevue: body.datePrevue || "",
+          mode: body.mode || "",
+          tourneeId: tRef.id,
+          tourneeNumero,
+          apporteurLower: apporteurLowerLiv,
+          clientSnapshot: clientSnapshotLiv,
+          statut: "planifiee",
+          createdAt: ts(),
+        });
+
+        // Vélos cibles (Modèle A, idempotent)
+        try {
+          const existingSnap = await getDocs(
+            query(collection(db, "velos"), where("clientId", "==", cid)),
+          );
+          const aCreer = Math.max(0, nbVelos - existingSnap.size);
+          if (aCreer > 0) {
+            const batch = writeBatch(db);
+            for (let i = 0; i < aCreer; i++) {
+              const veloRef = doc(collection(db, "velos"));
+              batch.set(veloRef, {
+                clientId: cid,
+                apporteurLower: apporteurLowerLiv,
+                fnuci: null,
+                datePreparation: null,
+                dateChargement: null,
+                dateLivraisonScan: null,
+                dateMontage: null,
+                createdAt: ts(),
+                updatedAt: ts(),
+              });
+            }
+            await batch.commit();
+          }
+        } catch (e) {
+          console.error("[createTournee] velos backfill KO", e);
+        }
+
+        incParClient.set(cid, (incParClient.get(cid) || 0) + 1);
+        livCount++;
+      }
+
+      // Incrémente stats.planifies par client
+      for (const [cid, n] of incParClient.entries()) {
+        try {
+          const cRef = doc(db, "clients", cid);
+          const cSnap = await getDoc(cRef);
+          if (!cSnap.exists()) continue;
+          const stats = (cSnap.data() as { stats?: { planifies?: number } }).stats || {};
+          const cur = Number(stats.planifies) || 0;
+          await updateDoc(cRef, { "stats.planifies": cur + n });
+        } catch (e) {
+          console.error("[createTournee] increment planifies KO", cid, e);
+        }
+      }
+
+      return { ok: true, id: tRef.id, tourneeId: tRef.id, livraisonsCount: livCount };
     }
 
     case "createTournees": {
