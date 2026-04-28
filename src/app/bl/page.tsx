@@ -243,30 +243,44 @@ function BlPage() {
         <button
           disabled={isLoading || hasError || clients.length === 0}
           onClick={async () => {
-            const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+            const ua = navigator.userAgent;
+            const isMobile =
+              /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ||
+              (ua.includes("Macintosh") && "ontouchend" in document);
             if (!isMobile) {
               window.print();
               return;
             }
-            // iOS Safari : window.print() rate sur les BL multi-pages → PDF
-            // client via html2pdf.js, fichier téléchargé puis ouvert dans le
-            // viewer PDF natif (Imprimer / Partager / Airdrop).
-            const html2pdf = (await import("html2pdf.js")).default;
-            const pages = document.querySelectorAll(".dv-page");
-            if (!pages.length) return;
-            const wrapper = document.createElement("div");
-            pages.forEach((p) => wrapper.appendChild(p.cloneNode(true)));
-            const refLabel = clients[0] ? blRef(clients[0]) : tourneeId;
-            await html2pdf()
-              .from(wrapper)
-              .set({
-                filename: `BL-${refLabel}.pdf`,
-                margin: 0,
-                image: { type: "jpeg", quality: 0.95 },
-                html2canvas: { scale: 2, useCORS: true },
-                jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
-              })
-              .save();
+            // iOS Safari : window.print() rate sur les BL multi-pages.
+            // html2pdf.js bundle un html2canvas qui ne parse pas oklch/lab
+            // (Tailwind v4) → erreur "unsupported color function". On utilise
+            // html2canvas-pro (compatible oklch) + jsPDF direct. Format A4
+            // 210×297mm en mm.
+            try {
+              const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+                import("html2canvas-pro"),
+                import("jspdf"),
+              ]);
+              const pageEls = Array.from(document.querySelectorAll<HTMLElement>(".dv-page"));
+              if (!pageEls.length) return;
+              const refLabel = clients[0] ? blRef(clients[0]) : tourneeId;
+              const A4_W = 210;
+              const A4_H = 297;
+              const pdf = new jsPDF({ unit: "mm", format: "a4", orientation: "portrait" });
+              for (let i = 0; i < pageEls.length; i++) {
+                const canvas = await html2canvas(pageEls[i], {
+                  scale: 2,
+                  useCORS: true,
+                  backgroundColor: "#ffffff",
+                });
+                const imgData = canvas.toDataURL("image/jpeg", 0.95);
+                if (i > 0) pdf.addPage("a4", "portrait");
+                pdf.addImage(imgData, "JPEG", 0, 0, A4_W, A4_H);
+              }
+              pdf.save(`BL-${refLabel}.pdf`);
+            } catch (e) {
+              alert("Erreur génération PDF : " + (e instanceof Error ? e.message : String(e)));
+            }
           }}
           className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
         >

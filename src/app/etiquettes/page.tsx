@@ -161,31 +161,39 @@ function EtiquettesPage() {
             // Bluetooth) ou AirPrint. C'est le flux que les utilisateurs
             // d'imprimantes thermiques connaissent déjà.
             try {
-              const html2pdf = (await import("html2pdf.js")).default;
-              const sheets = document.querySelectorAll(".sheet");
+              // html2pdf.js bundle un html2canvas qui ne sait pas parser les
+              // couleurs CSS modernes (oklch / lab / lch) que Tailwind v4
+              // utilise par défaut → erreur "unsupported color function lab".
+              // On utilise html2canvas-pro (fork compatible oklch) + jsPDF
+              // direct au lieu de html2pdf.
+              const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+                import("html2canvas-pro"),
+                import("jspdf"),
+              ]);
+              const sheets = Array.from(document.querySelectorAll<HTMLElement>(".sheet"));
               if (!sheets.length) return;
-              const wrapper = document.createElement("div");
-              sheets.forEach((s) => wrapper.appendChild(s.cloneNode(true)));
-              await html2pdf()
-                .from(wrapper)
-                .set({
-                  filename: `etiquettes-${tourneeId}.pdf`,
-                  margin: 0,
-                  image: { type: "jpeg", quality: 0.95 },
-                  html2canvas: { scale: 2, useCORS: true },
-                  jsPDF: {
-                    unit: "mm",
-                    // Format custom 100×150mm (rouleau thermique). Doit matcher
-                    // exactement le @page CSS pour que la mise en page soit
-                    // pixel-perfect entre l'aperçu écran et le PDF.
-                    format: [LABEL_WIDTH_MM, LABEL_HEIGHT_MM],
-                    orientation: "portrait",
-                  },
-                })
-                // .save() de html2pdf déclenche un download natif avec le bon
-                // MIME application/pdf et l'extension .pdf — iOS Safari
-                // l'identifie comme PDF et l'ouvre dans son viewer.
-                .save();
+              const pdf = new jsPDF({
+                unit: "mm",
+                // Format custom 100×150mm (rouleau thermique). Doit matcher
+                // exactement le @page CSS pour que la mise en page soit
+                // pixel-perfect entre l'aperçu écran et le PDF.
+                format: [LABEL_WIDTH_MM, LABEL_HEIGHT_MM],
+                orientation: "portrait",
+              });
+              for (let i = 0; i < sheets.length; i++) {
+                const canvas = await html2canvas(sheets[i], {
+                  scale: 2,
+                  useCORS: true,
+                  backgroundColor: "#ffffff",
+                });
+                const imgData = canvas.toDataURL("image/jpeg", 0.95);
+                if (i > 0) pdf.addPage([LABEL_WIDTH_MM, LABEL_HEIGHT_MM], "portrait");
+                pdf.addImage(imgData, "JPEG", 0, 0, LABEL_WIDTH_MM, LABEL_HEIGHT_MM);
+              }
+              // .save() jsPDF déclenche un download natif avec MIME
+              // application/pdf et extension .pdf — iOS Safari l'identifie
+              // correctement et l'ouvre dans son viewer PDF natif.
+              pdf.save(`etiquettes-${tourneeId}.pdf`);
             } catch (e) {
               alert("Erreur génération PDF : " + (e instanceof Error ? e.message : String(e)));
             }
