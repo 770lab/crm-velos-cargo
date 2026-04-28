@@ -286,6 +286,13 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
     equipe: false,
     flotte: false,
   });
+  // bootError = un des onSnapshot a renvoyé une erreur Firestore. Affiché en
+  // banner plutôt que de laisser l'utilisateur sur le loader infini.
+  const [bootError, setBootError] = useState<string | null>(null);
+  // bootTimeout = au bout de 15s sans avoir tout chargé, on suppose que la
+  // connexion Firestore est lente ou cassée. On débloque l'UI quand même
+  // (avec ce qu'on a) pour ne pas bloquer le terrain sur 4G très instable.
+  const [bootTimedOut, setBootTimedOut] = useState(false);
 
   // Snapshots temps réel
   useEffect(() => {
@@ -304,13 +311,21 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
       setLoadedFlags((f) => ({ ...f, clients: true }));
     };
 
-    const unsubClients = onSnapshot(collection(db, "clients"), handleClients);
+    // Helper pour capturer les erreurs Firestore en banner plutôt que de
+    // laisser silencieusement le loader tourner pour toujours.
+    const onErr = (label: string) => (err: unknown) => {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[Firestore ${label}]`, msg);
+      setBootError(`Lecture Firestore "${label}" en échec : ${msg.slice(0, 120)}`);
+    };
+
+    const unsubClients = onSnapshot(collection(db, "clients"), handleClients, onErr("clients"));
     const unsubLivraisons = onSnapshot(collection(db, "livraisons"), (snap) => {
       const rows: LivraisonRow[] = [];
       snap.forEach((doc) => rows.push(livraisonFromDoc(doc.id, doc.data())));
       setLivraisons(rows);
       setLoadedFlags((f) => ({ ...f, livraisons: true }));
-    });
+    }, onErr("livraisons"));
     const unsubEquipe = onSnapshot(
       query(collection(db, "equipe"), where("actif", "==", true)),
       (snap) => {
@@ -319,20 +334,28 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
         setEquipe(rows);
         setLoadedFlags((f) => ({ ...f, equipe: true }));
       },
+      onErr("equipe"),
     );
     const unsubCamions = onSnapshot(collection(db, "camions"), (snap) => {
       const rows: Camion[] = [];
       snap.forEach((doc) => rows.push(camionFromDoc(doc.id, doc.data())));
       setFlotte(rows);
       setLoadedFlags((f) => ({ ...f, flotte: true }));
-    });
+    }, onErr("camions"));
     const unsubBons = onSnapshot(collection(db, "bonsEnlevement"), (snap) => {
       const rows: BonEnlevement[] = [];
       snap.forEach((doc) => rows.push(bonFromDoc(doc.id, doc.data())));
       setBonsEnlevement(rows);
-    });
+    }, onErr("bonsEnlevement"));
+
+    // Filet de sécurité : si après 15s on n'a toujours pas tout chargé, on
+    // débloque l'UI avec ce qu'on a. Le terrain sur 4G très instable mérite
+    // de pouvoir au moins lire les données déjà arrivées plutôt que d'être
+    // bloqué sur un loader infini.
+    const tid = setTimeout(() => setBootTimedOut(true), 15000);
 
     return () => {
+      clearTimeout(tid);
       unsubClients();
       unsubLivraisons();
       unsubEquipe();
@@ -348,7 +371,11 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const stats = computeStats(clients, livraisons);
-  const loading = !Object.values(loadedFlags).every(Boolean);
+  const allLoaded = Object.values(loadedFlags).every(Boolean);
+  // Loading bloque l'UI seulement si rien n'a chargé ET pas de timeout ET pas
+  // d'erreur. Sinon on rend l'app avec ce qu'on a + un banner pour signaler
+  // l'état dégradé. Évite de coincer un livreur sur un loader infini.
+  const loading = !allLoaded && !bootTimedOut && !bootError;
 
   if (loading) {
     return (
@@ -378,6 +405,22 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
     );
   }
 
+  const degradedBanner = bootError ? (
+    <div className="fixed top-0 inset-x-0 z-[80] bg-red-600 text-white text-xs px-3 py-2 text-center shadow-lg">
+      ⚠️ Connexion Firestore en échec — données potentiellement incomplètes. {bootError}
+      <button onClick={() => window.location.reload()} className="ml-2 underline font-medium">
+        Recharger
+      </button>
+    </div>
+  ) : !allLoaded && bootTimedOut ? (
+    <div className="fixed top-0 inset-x-0 z-[80] bg-amber-500 text-white text-xs px-3 py-2 text-center shadow-lg">
+      ⚠️ Chargement lent (réseau dégradé) — l&apos;app fonctionne avec les données déjà reçues.
+      <button onClick={() => window.location.reload()} className="ml-2 underline font-medium">
+        Recharger
+      </button>
+    </div>
+  ) : null;
+
   return (
     <DataContext.Provider
       value={{
@@ -392,6 +435,7 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
         refresh,
       }}
     >
+      {degradedBanner}
       {children}
     </DataContext.Provider>
   );
