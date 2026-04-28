@@ -704,26 +704,44 @@ export async function runFirestoreAction(
       const clientId = getRequired(body, "clientId");
       const docType = getRequired(body, "docType");
       const fileData = getRequired(body, "fileData");
+      const mimeType = getString(body, "mimeType");
       const fileName = getString(body, "fileName") || `${docType}-${Date.now()}`;
       const url = await uploadDataUrl(
         `clients/${clientId}/documents/${fileName}`,
         fileData,
+        mimeType,
       );
+      // Le composant UI envoie docType au format "flat" (attestationRecue,
+      // kbisRecu, devisSignee, signatureOk, inscriptionBicycle…). On accepte
+      // aussi les anciens noms courts (attestation, kbis, devis…) au cas où.
       const linkField: Record<string, string> = {
+        // noms flat UI
+        devisSignee: "docLinks.devis",
+        kbisRecu: "docLinks.kbis",
+        attestationRecue: "docLinks.attestation",
+        signatureOk: "docLinks.signature",
+        inscriptionBicycle: "docLinks.bicycle",
+        parcelleCadastrale: "docLinks.parcelleCadastrale",
+        // alias courts (rétro-compat)
         devis: "docLinks.devis",
         kbis: "docLinks.kbis",
         attestation: "docLinks.attestation",
         signature: "docLinks.signature",
         bicycle: "docLinks.bicycle",
-        parcelleCadastrale: "docLinks.parcelleCadastrale",
       };
       const flagField: Record<string, string> = {
+        devisSignee: "docs.devisSignee",
+        kbisRecu: "docs.kbisRecu",
+        attestationRecue: "docs.attestationRecue",
+        signatureOk: "docs.signatureOk",
+        inscriptionBicycle: "docs.inscriptionBicycle",
+        parcelleCadastrale: "docs.parcelleCadastrale",
+        // alias courts
         devis: "docs.devisSignee",
         kbis: "docs.kbisRecu",
         attestation: "docs.attestationRecue",
         signature: "docs.signatureOk",
         bicycle: "docs.inscriptionBicycle",
-        parcelleCadastrale: "docs.parcelleCadastrale",
       };
       const updates: Body = { updatedAt: ts() };
       if (linkField[docType]) updates[linkField[docType]] = url;
