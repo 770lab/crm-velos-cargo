@@ -526,43 +526,85 @@ function RappelMailModal({
     ? `Vélos Cargo — livraison du ${shortDateLabel} : documents à fournir sous 48h`
     : `Vélos Cargo — finalisation de votre dossier`;
 
-  const blocManquants = missing.length > 0
+  // Date d'engagement = date de signature du contrat (devis). Sert à dater
+  // les pièces d'effectif demandées au client (exigence CEE : la situation
+  // de l'entreprise doit être attestée à la date de signature).
+  const dateEngObj = client.dateEngagement ? new Date(client.dateEngagement) : null;
+  const dateEngLabel = dateEngObj && !isNaN(dateEngObj.getTime())
+    ? dateEngObj.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })
+    : null;
+  // Année fiscale demandée pour la liasse / DSN : par défaut, l'année
+  // précédant la signature du contrat (ex contrat signé en 2026 → liasse
+  // 2025). Fallback sur l'année courante - 1 si pas de date.
+  const refYear = dateEngObj && !isNaN(dateEngObj.getTime())
+    ? dateEngObj.getFullYear() - 1
+    : new Date().getFullYear() - 1;
+
+  // Si on a déjà une liasse/registre en main mais qu'il faut une version
+  // plus récente, on mentionne la date du document existant pour que le
+  // client comprenne pourquoi on en redemande une.
+  const existingLiasseObj = client.liasseFiscaleDate ? new Date(client.liasseFiscaleDate) : null;
+  const existingLiasseLabel = existingLiasseObj && !isNaN(existingLiasseObj.getTime())
+    ? existingLiasseObj.toLocaleDateString("fr-FR", { month: "long", year: "numeric" })
+    : null;
+
+  const needKbis = !client.kbisRecu;
+  const needAttestation = !client.attestationRecue;
+  const needDevis = !client.devisSignee;
+  const needSignature = !client.signatureOk;
+
+  // Construction du bloc "pièces manquantes" — version longue alignée sur
+  // le ton défini par Yoann le 2026-04-28 (mention propriété CEE, années
+  // fiscales explicites, document existant rappelé si plus à jour).
+  const missingBullets: string[] = [];
+  if (needDevis) missingBullets.push(`Devis signé`);
+  if (needKbis) missingBullets.push(`KBIS de moins de 3 mois`);
+  if (needAttestation) {
+    missingBullets.push(
+      `Document permettant de justifier l'effectif et les fonctions de chaque collaborateur de l'entreprise à la date de signature du contrat`,
+    );
+  }
+  if (needSignature) missingBullets.push(`Signature de l'engagement`);
+
+  const blocManquants = missingBullets.length > 0
     ? [
         ``,
-        `Pour que nous puissions la maintenir, votre dossier CEE doit être complet.`,
-        `Il nous manque à ce jour les documents suivants :`,
+        `Afin de finaliser votre dossier CEE, il nous manque encore les pièces suivantes :`,
         ``,
-        ...missing.map((m) => `  • ${m.label}`),
+        ...missingBullets.map((b) => `  • ${b}`),
       ]
     : [
         ``,
         `Votre dossier est à ce jour complet de notre côté. Aucune action n'est requise, nous vous confirmerons la fenêtre de passage la veille.`,
       ];
 
-  const blocDeadline = (dateObj && missing.length > 0)
+  const blocEffectifDetail = needAttestation
     ? [
         ``,
-        `⚠ Ces pièces doivent impérativement nous parvenir au plus tard 48 heures avant la date de livraison, soit le ${deadlineLabel}.`,
+        `Pour ce${needKbis ? " second" : ""} point, il nous faudrait nous transmettre l'un des documents suivants :`,
         ``,
-        `Sans réception de l'intégralité des documents dans ce délai, la livraison sera automatiquement reportée — sans exception, et la nouvelle date ne pourra être repositionnée qu'en fonction de nos tournées disponibles. Ce délai nous est imposé par le montage du dossier CEE, il n'est pas négociable.`,
+        `  • Liasse fiscale ${refYear}`,
+        existingLiasseLabel
+          ? `  • Registre du personnel en date du mois de ${existingLiasseLabel}`
+          : `  • Registre du personnel actualisé`,
+        `  • DSN ${refYear} – Déclaration Sociale Nominative`,
         ``,
-        `Vous pouvez nous répondre directement à ce mail en y joignant les documents, ou les déposer sur votre espace Drive habituel.`,
+        `Ces documents doivent permettre de justifier la situation de l'entreprise à la date de signature du contrat${dateEngLabel ? `, soit le ${dateEngLabel}` : ""}.`,
       ]
     : [];
 
-  // Bloc effectif CEE : la pièce d'effectif doit être contemporaine du devis
-  // signé (date d'engagement de l'opération) — exigence de l'instruction CEE.
-  const dateEngObj = client.dateEngagement ? new Date(client.dateEngagement) : null;
-  const dateEngLabel = dateEngObj && !isNaN(dateEngObj.getTime())
-    ? dateEngObj.toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })
-    : null;
-  const blocEffectif = [
-    ``,
-    `Document permettant de justifier l'effectif et les fonctions de chaque collaborateur de l'entreprise :`,
-    `  ➢ Liasse fiscale ou DSN (Déclaration Sociale Nominative).`,
-    `  ➢ Registre du personnel de moins d'un an.`,
-    `Ces documents doivent correspondre à ceux de la date d'engagement de l'opération, c'est-à-dire de la date du devis signé${dateEngLabel ? ` soit le ${dateEngLabel}` : ""}.`,
-  ];
+  const blocDeadline = (dateObj && missingBullets.length > 0)
+    ? [
+        ``,
+        `⚠️ Les pièces manquantes doivent impérativement nous parvenir au plus tard 48 heures avant la livraison, soit le ${deadlineLabel}.`,
+        ``,
+        `Sans réception de l'intégralité des documents dans ce délai, la livraison sera automatiquement reportée, sans exception. Une nouvelle date pourra ensuite être proposée uniquement en fonction de nos prochaines tournées disponibles.`,
+        ``,
+        `Ce délai nous est imposé par le montage du dossier CEE et n'est donc pas négociable.`,
+        ``,
+        `Vous pouvez nous répondre directement à ce mail en y joignant les documents.`,
+      ]
+    : [];
 
   const defaultBody = [
     `Bonjour${client.contact ? " " + client.contact : ""},`,
@@ -571,15 +613,18 @@ function RappelMailModal({
       ? `Votre livraison de ${delivery!.nbVelos} vélo${delivery!.nbVelos > 1 ? "s" : ""} cargo est programmée le ${dateLabel}.`
       : `Nous finalisons la préparation de votre dossier Vélos Cargo en vue de la livraison.`,
     ...blocManquants,
-    ...blocEffectif,
+    ...blocEffectifDetail,
     ...blocDeadline,
     ``,
-    `Rappel du process :`,
+    `Pour rappel, le process est le suivant :`,
+    ``,
     `  1. Livraison des vélos sur votre site et vérification contradictoire.`,
-    `  2. Signature du procès-verbal de livraison — le tampon de l'entreprise est impératif sur le PV au moment de la livraison.`,
+    `  2. Signature du procès-verbal de livraison. Le tampon de l'entreprise est impératif sur le PV au moment de la livraison.`,
     `  3. Inscription sur la plateforme Bicycle et transmission de votre certificat d'économies d'énergie.`,
     ``,
-    `Si un document manquant pose question (pièce introuvable, besoin d'un modèle, doute sur la version demandée), appelez-nous dès aujourd'hui : il est toujours plus simple d'anticiper que de décaler une tournée.`,
+    `Il est également rappelé que les vélos cargo qui vous sont alloués bénéficient d'un dispositif financé par des aides d'État dans le cadre du montage CEE. Ils deviennent la propriété de votre société, mais ne peuvent en aucun cas être remis en vente, revendus ou cédés à un tiers dans le cadre de cette opération.`,
+    ``,
+    `Si un document manquant pose question, ou si vous avez un doute sur la pièce à transmettre, nous vous invitons à nous contacter dès aujourd'hui. Il est toujours plus simple d'anticiper que de devoir décaler une tournée.`,
     ``,
     `Cordialement,`,
     `L'équipe Artisans Verts Energy`,

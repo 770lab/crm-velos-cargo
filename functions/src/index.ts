@@ -563,26 +563,41 @@ const EXTRACTION_PROMPTS: Record<string, string> = {
   "date": "AAAA-MM-JJ" ou null,
   "raisonSociale": "..." ou null
 }
-La "date" est la date de fraîcheur du Kbis (souvent introduite par "à jour au" ou "extrait certifié conforme du"), PAS la date d'immatriculation ni de RCS.`,
-  attestationRecue: `Tu analyses un document RH français (registre du personnel, liasse fiscale, attestation URSSAF, DPAE, etc.) qui sert à prouver l'effectif d'une entreprise. Renvoie UNIQUEMENT un JSON :
+La "date" est la date de fraîcheur du Kbis, généralement introduite par "à jour au", "extrait certifié conforme du" ou "RCS de ... en date du" — PAS la date d'immatriculation, PAS la date de début d'activité, PAS la date d'origine.`,
+  attestationRecue: `Tu analyses un document RH français qui sert à prouver l'effectif d'une entreprise (registre du personnel, liasse fiscale, attestation URSSAF, DPAE, DSN…).
+
+Pour la compliance CEE, ce qui compte est la date à laquelle la situation de l'entreprise est attestée — PAS la date d'édition du PDF.
+
+Règles d'extraction de la "date" :
+  • Registre du personnel "Du JJ/MM/AAAA au JJ/MM/AAAA" → renvoyer la date de FIN de période (la deuxième date), pas le "Edité le".
+  • Liasse fiscale → date de clôture de l'exercice fiscal.
+  • Attestation URSSAF / DSN → date de la période ou du dernier mois couvert.
+  • Si vraiment aucune date de période n'est lisible, fallback sur la date d'édition.
+
+"effectifMentionne" est true si on voit un nombre de salariés ou une liste nominative, false sinon.
+
+Renvoie UNIQUEMENT un JSON :
 {
   "date": "AAAA-MM-JJ" ou null,
   "effectifMentionne": true|false,
   "nbSalaries": <nombre> ou null,
-  "typeDocument": "registre_personnel" | "liasse_fiscale" | "attestation_urssaf" | "dpae" | "autre"
-}
-La "date" est la date d'édition / d'arrêté du document. "effectifMentionne" est true si on voit clairement un nombre de salariés ou une liste de salariés, false sinon.`,
+  "typeDocument": "registre_personnel" | "liasse_fiscale" | "attestation_urssaf" | "dsn" | "dpae" | "autre"
+}`,
 };
 
-// Map docType → champs Firestore à mettre à jour
+// Map docType → champs Firestore à mettre à jour.
+// Les chemins exacts sont ceux lus par data-context-firebase + firestore-actions :
+//   - kbisDate                 → docDates.kbis
+//   - liasseFiscaleDate        → docDates.liasseFiscale
+//   - effectifMentionne        → top-level (avec fallback docs.effectifMentionne lu)
 function buildUpdates(docType: string, parsed: Record<string, unknown>): Record<string, unknown> | null {
   const updates: Record<string, unknown> = {};
   if (docType === "kbisRecu") {
     const d = normalizeDate(parsed.date as string);
-    if (d) updates.kbisDate = d;
+    if (d) updates["docDates.kbis"] = d;
   } else if (docType === "attestationRecue") {
     const d = normalizeDate(parsed.date as string);
-    if (d) updates.liasseFiscaleDate = d;
+    if (d) updates["docDates.liasseFiscale"] = d;
     if (typeof parsed.effectifMentionne === "boolean") {
       updates.effectifMentionne = parsed.effectifMentionne;
     }
