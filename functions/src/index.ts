@@ -62,6 +62,15 @@ type GeminiBody = { prompt?: string; models?: string[] };
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Jitter ±30% pour éviter le thundering herd : si plusieurs users se prennent
+// un 429 en même temps, sans jitter ils retentent tous au même instant et
+// reçoivent un nouveau 429. Le jitter étale la charge.
+function jittered(ms: number): number {
+  if (ms <= 0) return 0;
+  const variance = ms * 0.3;
+  return Math.max(0, ms + (Math.random() * 2 - 1) * variance);
+}
+
 async function callGemini(
   model: string,
   prompt: string,
@@ -132,7 +141,7 @@ export const gemini = onRequest(
     let lastBody = "";
     for (const model of models) {
       for (const delay of RETRY_DELAYS_MS) {
-        if (delay > 0) await sleep(delay);
+        if (delay > 0) await sleep(jittered(delay));
         try {
           const r = await callGemini(model, prompt, apiKey);
           if (r.code === 200 && r.text) {
@@ -147,6 +156,7 @@ export const gemini = onRequest(
         }
       }
     }
+    logger.warn("gemini exhausted all retries", { lastCode, lastBodyHead: lastBody.slice(0, 200) });
     res.status(502).json({
       ok: false,
       error: `Gemini HTTP ${lastCode ?? "??"} (épuisé après tous les modèles)`,

@@ -43,6 +43,13 @@ async function callGemini(model: string, prompt: string, apiKey: string): Promis
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Jitter ±30% pour éviter thundering herd sur 429.
+function jittered(ms: number): number {
+  if (ms <= 0) return 0;
+  const variance = ms * 0.3;
+  return Math.max(0, ms + (Math.random() * 2 - 1) * variance);
+}
+
 export async function POST(request: Request): Promise<Response> {
   const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
@@ -68,7 +75,7 @@ export async function POST(request: Request): Promise<Response> {
   let lastBody = "";
   for (const model of models) {
     for (const delay of RETRY_DELAYS_MS) {
-      if (delay > 0) await sleep(delay);
+      if (delay > 0) await sleep(jittered(delay));
       try {
         const res = await callGemini(model, prompt, apiKey);
         if (res.code === 200 && res.text) {

@@ -446,6 +446,16 @@ export default function DayPlannerModal({
                 {proposition.body && (
                   <pre className="mt-2 text-xs whitespace-pre-wrap text-red-700 bg-red-100 p-2 rounded max-h-40 overflow-y-auto">{proposition.body}</pre>
                 )}
+                <button
+                  onClick={() => {
+                    setProposition(null);
+                    void propose();
+                  }}
+                  disabled={proposing}
+                  className="mt-3 px-3 py-1.5 bg-red-600 text-white rounded-lg text-sm hover:bg-red-700 disabled:opacity-50"
+                >
+                  🔄 Relancer Gemini
+                </button>
               </div>
             ) : (
               <PropositionView proposition={proposition} equipe={equipe} onApply={applyProposition} applying={applying} />
