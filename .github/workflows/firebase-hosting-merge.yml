@@ -9,11 +9,13 @@ on:
     branches:
       - main
 
-# Un push plus récent annule le build précédent → on évite qu'un build
-# obsolète (ex : code buggé) écrase un déploiement plus récent.
+# Queue série : un seul deploy live à la fois, dans l'ordre des commits.
+# Évite qu'un vieux build finisse APRÈS un plus récent et écrase la prod
+# avec du code obsolète. cancel-in-progress: false → aucun build perdu,
+# chaque commit attend son tour (plus lent en rafale mais zéro perte).
 concurrency:
   group: firebase-hosting-live
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   build_and_deploy:
