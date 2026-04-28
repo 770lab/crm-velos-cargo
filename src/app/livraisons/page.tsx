@@ -2817,17 +2817,31 @@ function RappelVeilleModal({
     return match?.email || null;
   };
 
-  // Chef d'équipe joignable le jour J — on prend le 1er chef de la tournée.
-  // Mail veille : on l'expose au client pour qu'il puisse appeler en direct
-  // en cas d'imprévu, plutôt qu'un vague "appelez-nous".
+  // Chef d'équipe joignable le jour J — on cherche dans l'ordre des
+  // chefEquipeIds le premier qui (a) existe encore dans /equipe (b) a un
+  // téléphone renseigné. NB : chefEquipeIds peut contenir des IDs orphelins
+  // (anciens membres supprimés non purgés de la liste) — on les saute. Si
+  // on ne trouve personne avec un tél, on retombe sur le wording générique.
   const chefEquipeRef = (() => {
     const liv0 = tournee.livraisons[0];
     if (!liv0) return null;
-    const chefId = liv0.chefEquipeIds?.[0] || liv0.chefEquipeId;
-    if (!chefId) return null;
-    const m = equipe.find((x) => x.id === chefId);
-    if (!m) return null;
-    return { nom: m.nom || "", telephone: m.telephone || "" };
+    const candidateIds: string[] = [
+      ...(liv0.chefEquipeIds || []),
+      ...(liv0.chefEquipeId ? [liv0.chefEquipeId] : []),
+    ];
+    // 1er passage : chercher quelqu'un qui existe ET a un téléphone
+    for (const id of candidateIds) {
+      const m = equipe.find((x) => x.id === id);
+      if (m && m.telephone) {
+        return { nom: m.nom || "", telephone: m.telephone };
+      }
+    }
+    // 2e passage : prendre le 1er chef qui existe (au moins on peut le nommer)
+    for (const id of candidateIds) {
+      const m = equipe.find((x) => x.id === id);
+      if (m) return { nom: m.nom || "", telephone: "" };
+    }
+    return null;
   })();
 
   const buildMail = (st: typeof stops[number]) => {
