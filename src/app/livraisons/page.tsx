@@ -2386,10 +2386,18 @@ function EquipeAssignBlock({
   onMonteurCountChange?: (count: number) => void;
 }) {
   const { equipe } = useData();
-  const [chauffeurId, setChauffeurId] = useState<string>(initialChauffeurId || "");
-  const [chefEquipeIds, setChefEquipeIds] = useState<string[]>(initialChefEquipeIds);
-  const [monteurIds, setMonteurIds] = useState<string[]>(initialMonteurIds);
-  const [preparateurIds, setPreparateurIds] = useState<string[]>(initialPreparateurIds);
+  // Filtre les IDs orphelins (anciens membres supprimés ou jamais migrés)
+  // dès l'initialisation : sinon le compteur affiche "1 sélectionné" sans
+  // qu'aucun pill ne soit highlighté → l'utilisateur ne peut pas le retirer.
+  // Au prochain save, la liste nettoyée écrasera la version Firestore.
+  const validIds = new Set(equipe.map((m) => m.id));
+  const cleanArr = (arr: string[]) => arr.filter((id) => validIds.has(id));
+  const [chauffeurId, setChauffeurId] = useState<string>(
+    initialChauffeurId && validIds.has(initialChauffeurId) ? initialChauffeurId : "",
+  );
+  const [chefEquipeIds, setChefEquipeIds] = useState<string[]>(cleanArr(initialChefEquipeIds));
+  const [monteurIds, setMonteurIds] = useState<string[]>(cleanArr(initialMonteurIds));
+  const [preparateurIds, setPreparateurIds] = useState<string[]>(cleanArr(initialPreparateurIds));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState<Date | null>(null);
@@ -2400,11 +2408,14 @@ function EquipeAssignBlock({
   const preparateurs = equipe.filter((m) => m.role === "preparateur" && m.actif !== false);
 
   const hasEquipe = equipe.length > 0;
+  // Compare contre les versions nettoyées des props initiales : si la liste
+  // Firestore contient un ID orphelin, on veut que le bouton "Enregistrer"
+  // s'active automatiquement pour que l'user puisse purger d'un clic.
   const dirty =
-    chauffeurId !== (initialChauffeurId || "") ||
-    JSON.stringify([...chefEquipeIds].sort()) !== JSON.stringify([...initialChefEquipeIds].sort()) ||
-    JSON.stringify([...monteurIds].sort()) !== JSON.stringify([...initialMonteurIds].sort()) ||
-    JSON.stringify([...preparateurIds].sort()) !== JSON.stringify([...initialPreparateurIds].sort());
+    chauffeurId !== (initialChauffeurId && validIds.has(initialChauffeurId) ? initialChauffeurId : "") ||
+    JSON.stringify([...chefEquipeIds].sort()) !== JSON.stringify(cleanArr(initialChefEquipeIds).sort()) ||
+    JSON.stringify([...monteurIds].sort()) !== JSON.stringify(cleanArr(initialMonteurIds).sort()) ||
+    JSON.stringify([...preparateurIds].sort()) !== JSON.stringify(cleanArr(initialPreparateurIds).sort());
 
   const save = async () => {
     setSaving(true);
