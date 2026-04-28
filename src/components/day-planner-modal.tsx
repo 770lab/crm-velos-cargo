@@ -85,6 +85,21 @@ export default function DayPlannerModal({
   const [geminiStartedAt, setGeminiStartedAt] = useState<number | null>(null);
   const [tick, setTick] = useState(0);
   const [proposition, setProposition] = useState<ProposeResponse | null>(null);
+  // Mode rapide : force gemini-2.5-flash-lite (2-3× plus rapide mais moins fin
+  // sur les contraintes complexes). Persisté en localStorage pour que la
+  // préférence soit gardée entre sessions. À activer sur les planifs simples
+  // (1-3 tournées, pas de contrainte multi-établissement compliquée).
+  const [fastMode, setFastMode] = useState(false);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    setFastMode(window.localStorage.getItem("planner.fastMode") === "1");
+  }, []);
+  const toggleFastMode = (next: boolean) => {
+    setFastMode(next);
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem("planner.fastMode", next ? "1" : "0");
+    }
+  };
 
   // Tick toutes les 200ms pendant que Gemini réfléchit, pour faire avancer
   // visuellement la barre de progression sans connaître la durée exacte
@@ -177,7 +192,13 @@ export default function DayPlannerModal({
       }
       setProposeStep("gemini");
       setGeminiStartedAt(Date.now());
-      const apiJson = await callGemini(built.prompt);
+      // En mode rapide on force flash-lite directement (pas de fallback flash
+      // au cas où). En mode normal on laisse le Cloud Function essayer flash
+      // d'abord puis flash-lite si saturation.
+      const apiJson = await callGemini(
+        built.prompt,
+        fastMode ? ["gemini-2.5-flash-lite"] : undefined,
+      );
       if (!apiJson.ok) {
         setProposition({ error: "Gemini : " + apiJson.error });
         return;
@@ -214,7 +235,9 @@ export default function DayPlannerModal({
     idle: "",
     savingDispo: "💾 Sauvegarde des dispositions du jour…",
     buildingPrompt: "📝 Construction du prompt avec les clients à livrer…",
-    gemini: "🧠 Gemini ventile les tournées (15-90 s)…",
+    gemini: fastMode
+      ? "🚀 Gemini Flash-Lite ventile (mode rapide, 5-30 s)…"
+      : "🧠 Gemini ventile les tournées (15-90 s)…",
     parsing: "✅ Validation des règles métier…",
   };
 
@@ -368,6 +391,14 @@ export default function DayPlannerModal({
               onChange={() => setMode("fromScratch")}
             />
             Repartir de zéro
+          </label>
+          <label className="flex items-center gap-1.5 text-xs text-gray-600 cursor-pointer select-none" title="Force gemini-2.5-flash-lite (2-3× plus rapide mais moins fin). À utiliser sur des planifs simples (1-3 tournées). Décoche pour les journées chargées.">
+            <input
+              type="checkbox"
+              checked={fastMode}
+              onChange={(e) => toggleFastMode(e.target.checked)}
+            />
+            🚀 Mode rapide
           </label>
           <button
             onClick={propose}
