@@ -105,6 +105,13 @@ function EtiquettesPage() {
         <button
           disabled={isLoading || hasError || pages.length === 0}
           onClick={async () => {
+            // iPad moderne : UA = "Macintosh" mais ontouchend existe.
+            // iPhone : UA contient "iPhone". On combine les deux pour détecter.
+            const ua = navigator.userAgent;
+            const isMobile =
+              /Mobi|Android|iPhone|iPad|iPod/i.test(ua) ||
+              (ua.includes("Macintosh") && "ontouchend" in document);
+
             // 1) Précharge tous les QR codes en data URL via fetch+Blob.
             //    Sans ça, l'image <img src="api.qrserver.com..."> est encore
             //    en train de charger quand window.print() ou html2canvas
@@ -137,43 +144,51 @@ function EtiquettesPage() {
               }),
             );
 
-            const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
             if (!isMobile) {
               window.print();
               return;
             }
-            // Mobile (iOS Safari notamment) : window.print() est souvent no-op
-            // sur les pages d'impression complexes. On génère le PDF côté
-            // client via html2pdf.js puis on l'ouvre dans un nouvel onglet :
-            // iOS affiche son viewer PDF natif avec bouton Partager →
-            // Imprimer (AirPrint) qui marche bien mieux que le download.
-            const html2pdf = (await import("html2pdf.js")).default;
-            const sheets = document.querySelectorAll(".sheet");
-            if (!sheets.length) return;
-            const wrapper = document.createElement("div");
-            sheets.forEach((s) => wrapper.appendChild(s.cloneNode(true)));
-            const pdfBlob: Blob = await html2pdf()
-              .from(wrapper)
-              .set({
-                filename: `etiquettes-${tourneeId}.pdf`,
-                margin: 0,
-                image: { type: "jpeg", quality: 0.95 },
-                html2canvas: { scale: 2, useCORS: true },
-                jsPDF: {
-                  unit: "mm",
-                  // Format custom 100×150mm (rouleau thermique). Doit matcher
-                  // exactement le @page CSS pour que la mise en page soit
-                  // pixel-perfect entre l'aperçu écran et le PDF.
-                  format: [LABEL_WIDTH_MM, LABEL_HEIGHT_MM],
-                  orientation: "portrait",
-                },
-              })
-              .output("blob");
-            const url = URL.createObjectURL(pdfBlob);
-            // Nouvelle fenêtre / onglet → iOS Safari ouvre le viewer PDF
-            // natif avec Partager → Imprimer / Enregistrer dans Fichiers /
-            // AirDrop. Bien plus fluide que le téléchargement direct.
-            window.open(url, "_blank");
+            // iOS / mobile : window.print() est cassé sur les pages complexes,
+            // et window.open(blob:) après await est bloqué par le popup
+            // blocker (Safari sort de la stack d'event click pendant l'await).
+            // window.open(blob:) qui passe peut aussi rendre le PDF comme du
+            // texte/HTML selon la version iOS — comportement non fiable.
+            //
+            // Stratégie : déclencher un VRAI download de fichier .pdf. iOS
+            // Safari affiche alors la bannière "Télécharger" → tap → ouvre
+            // dans le viewer PDF natif → bouton Partager → app de
+            // l'imprimante thermique (Phomemo / Bytecintia / etc. en
+            // Bluetooth) ou AirPrint. C'est le flux que les utilisateurs
+            // d'imprimantes thermiques connaissent déjà.
+            try {
+              const html2pdf = (await import("html2pdf.js")).default;
+              const sheets = document.querySelectorAll(".sheet");
+              if (!sheets.length) return;
+              const wrapper = document.createElement("div");
+              sheets.forEach((s) => wrapper.appendChild(s.cloneNode(true)));
+              await html2pdf()
+                .from(wrapper)
+                .set({
+                  filename: `etiquettes-${tourneeId}.pdf`,
+                  margin: 0,
+                  image: { type: "jpeg", quality: 0.95 },
+                  html2canvas: { scale: 2, useCORS: true },
+                  jsPDF: {
+                    unit: "mm",
+                    // Format custom 100×150mm (rouleau thermique). Doit matcher
+                    // exactement le @page CSS pour que la mise en page soit
+                    // pixel-perfect entre l'aperçu écran et le PDF.
+                    format: [LABEL_WIDTH_MM, LABEL_HEIGHT_MM],
+                    orientation: "portrait",
+                  },
+                })
+                // .save() de html2pdf déclenche un download natif avec le bon
+                // MIME application/pdf et l'extension .pdf — iOS Safari
+                // l'identifie comme PDF et l'ouvre dans son viewer.
+                .save();
+            } catch (e) {
+              alert("Erreur génération PDF : " + (e instanceof Error ? e.message : String(e)));
+            }
           }}
           className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
         >
