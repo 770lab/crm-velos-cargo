@@ -819,6 +819,24 @@ function DayStaffingSummary({ tournees }: { tournees: Tournee[] }) {
   const active = tournees.filter((t) => t.statutGlobal !== "annulee" && t.statutGlobal !== "livree");
   if (active.length === 0) return null;
 
+  // Compte les chefs d'équipe distincts sur la journée (union de chefEquipeId
+  // legacy + chefEquipeIds[]). Avant : on mettait juste "+1 chef admin" si une
+  // tournée était en retrait, ce qui était faux (3 chefs distincts pouvaient
+  // être assignés sans qu'aucun ne s'affiche, cf. retour Yoann 2026-04-29).
+  const chefsSet = new Set<string>();
+  for (const t of active) {
+    for (const l of t.livraisons) {
+      if (l.chefEquipeId) chefsSet.add(l.chefEquipeId);
+      for (const cid of l.chefEquipeIds || []) {
+        if (cid) chefsSet.add(cid);
+      }
+    }
+  }
+  const nbChefs = chefsSet.size;
+
+  // Une "ligne" du résumé regroupe les tournées par TYPE (gros / moyen /
+  // camionnette / retrait). Sert à voir d'un coup d'œil la charge par
+  // catégorie de véhicule. Une vraie tournée = un camion = un chauffeur.
   type Groupe = { mode: string; tournees: Tournee[]; totalMin: number; totalVelos: number; capacite: number };
   const byMode = new Map<string, Groupe>();
   for (const t of active) {
@@ -841,20 +859,42 @@ function DayStaffingSummary({ tournees }: { tournees: Tournee[] }) {
 
   const ORDER: Record<string, number> = { gros: 0, moyen: 1, camionnette: 2, retrait: 3, autre: 4 };
   const groupes = Array.from(byMode.values()).sort((a, b) => (ORDER[a.mode] ?? 99) - (ORDER[b.mode] ?? 99));
-  const nbEquipes = groupes.length;
   const nbMonteurs = active.reduce((sum, t) => sum + (t.nbMonteurs > 0 ? t.nbMonteurs : MONTEURS_PAR_EQUIPE), 0);
-  const hasRetrait = groupes.some((g) => g.mode === "retrait");
-  const plafond = nbEquipes > 2;
+  const nbCamions = active.filter((t) => t.mode !== "retrait").length;
+  const nbRetraits = active.filter((t) => t.mode === "retrait").length;
+
+  const MODE_EMOJI: Record<string, string> = {
+    gros: "🚚",
+    moyen: "🚐",
+    camionnette: "🚙",
+    retrait: "📍",
+    autre: "🚛",
+  };
+  const MODE_HUMAN: Record<string, string> = {
+    gros: "Gros camion",
+    moyen: "Camion moyen",
+    camionnette: "Camionnette",
+    retrait: "Retrait au dépôt",
+    autre: "Tournée",
+  };
+
+  // Ligne d'en-tête en français normal — pas de jargon "É1 / É2".
+  const tourneeWord = nbCamions > 1 ? "tournées" : "tournée";
+  const retraitWord = nbRetraits > 1 ? "retraits" : "retrait";
+  const headParts: string[] = [];
+  if (nbCamions > 0) headParts.push(`${nbCamions} ${tourneeWord} en route`);
+  if (nbRetraits > 0) headParts.push(`${nbRetraits} ${retraitWord} au dépôt`);
 
   return (
     <div className="mt-2 pt-2 border-t border-gray-200 space-y-1.5 text-[10px] leading-tight">
       <div className="font-semibold text-gray-700">
-        {nbEquipes} équipe{nbEquipes > 1 ? "s" : ""} · {nbMonteurs} monteurs{hasRetrait ? " + 1 chef admin" : ""}
-        {plafond && <span className="ml-1 text-red-700">⚠ dépasse 2 équipes</span>}
+        {headParts.join(" + ")}
+      </div>
+      <div className="text-[10px] text-gray-500">
+        {nbChefs} chef{nbChefs > 1 ? "s" : ""} d&apos;équipe · {nbMonteurs} monteur{nbMonteurs > 1 ? "s" : ""}
       </div>
       {groupes.map((g, idx) => {
         const isRetrait = g.mode === "retrait";
-        const label = MODE_SHORT_LABELS[g.mode] || g.mode;
         const reste8h = JOURNEE_MIN - g.totalMin;
         const depasse10h = g.totalMin > JOURNEE_MAX;
         const capaLibre = g.capacite > 0 ? g.capacite - g.totalVelos : 0;
@@ -866,32 +906,38 @@ function DayStaffingSummary({ tournees }: { tournees: Tournee[] }) {
           : isRetrait
           ? "text-purple-700"
           : "text-gray-700";
+        const emoji = MODE_EMOJI[g.mode] || MODE_EMOJI.autre;
+        const human = MODE_HUMAN[g.mode] || MODE_HUMAN.autre;
+        const veloWord = g.totalVelos > 1 ? "vélos" : "vélo";
         return (
           <div key={g.mode + idx} className="space-y-0.5">
             <div className={tightPalette}>
-              <span className="font-semibold">É{idx + 1} · {label}</span>
-              <span className="opacity-75"> · {g.totalVelos}v · ~{formatDureeShort(g.totalMin)}</span>
+              <span className="font-semibold">{emoji} {human}</span>
+              <span className="opacity-75"> · {g.totalVelos} {veloWord} · environ {formatDureeShort(g.totalMin)}</span>
             </div>
             <ul className="pl-2 space-y-0.5 text-gray-600">
-              {g.tournees.map((t) => (
-                <li key={t.tourneeId || t.livraisons[0].id} className="truncate">
-                  · {t.livraisons[0]?.client.entreprise}
-                  {t.livraisons.length > 1 ? ` +${t.livraisons.length - 1}` : ""}
-                  <span className="opacity-60"> ({t.totalVelos}v)</span>
-                </li>
-              ))}
+              {g.tournees.map((t) => {
+                const nbAutres = t.livraisons.length - 1;
+                return (
+                  <li key={t.tourneeId || t.livraisons[0].id} className="truncate">
+                    → {t.livraisons[0]?.client.entreprise}
+                    {nbAutres > 0 && ` + ${nbAutres} autre${nbAutres > 1 ? "s client(s)" : " client"}`}
+                    <span className="opacity-60"> ({t.totalVelos} {t.totalVelos > 1 ? "vélos" : "vélo"})</span>
+                  </li>
+                );
+              })}
             </ul>
             {peutAjouter && (
               <div className="text-green-700 font-medium">
-                + ~{formatDureeShort(reste8h)} libre → 2e tournée possible
+                Il reste environ {formatDureeShort(reste8h)} libres — on peut caler une 2e tournée
               </div>
             )}
             {!peutAjouter && !depasse10h && !isRetrait && reste8h < 60 && reste8h >= 0 && (
-              <div className="text-amber-700">journée pleine (~8h)</div>
+              <div className="text-amber-700">Journée pleine (8h chargées)</div>
             )}
             {depasse10h && (
               <div className="text-red-700 font-medium">
-                ⚠ dépasse 10h{isRetrait ? " — ajouter 1 monteur" : " — à split"}
+                ⚠ Dépasse 10h — {isRetrait ? "ajoute un monteur en plus" : "il faudrait splitter cette tournée"}
               </div>
             )}
           </div>
