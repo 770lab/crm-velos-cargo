@@ -149,6 +149,8 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "syncBonsNow",
   // batch admin
   "bulkAutoValidate",
+  "importClients",
+  "setDisponibilites",
 ]);
 
 export function isMigrated(action: string): boolean {
@@ -888,6 +890,143 @@ export async function runFirestoreAction(
         updatedAt: ts(),
       });
       return { ok: true, url };
+    }
+
+    case "setDisponibilites": {
+      // Miroir gas/Code.js setDisponibilites (5196). Pour la date donnée,
+      // on bascule actif=true pour les ressources demandées, actif=false
+      // pour les autres dispos existantes de cette date.
+      const date = getString(body, "date");
+      if (!date) return { error: "date requise (YYYY-MM-DD)" };
+      const desired = {
+        camion: (body.camionIds as string[]) || [],
+        chauffeur: (body.chauffeurIds as string[]) || [],
+        chef: (body.chefIds as string[]) || [],
+        monteur: (body.monteurIds as string[]) || [],
+      };
+
+      const snap = await getDocs(
+        query(collection(db, "disponibilites"), where("date", "==", date)),
+      );
+      const existing: Record<string, { ref: ReturnType<typeof doc>; actif: boolean }> = {};
+      for (const d of snap.docs) {
+        const o = d.data() as { ressourceType?: string; ressourceId?: string; actif?: boolean };
+        const key = `${o.ressourceType}|${o.ressourceId}`;
+        existing[key] = { ref: d.ref, actif: o.actif !== false };
+      }
+
+      let added = 0;
+      let reactivated = 0;
+      let archived = 0;
+      // Phase 1 : ajouter ou réactiver
+      const batch = writeBatch(db);
+      const desiredKeys = new Set<string>();
+      for (const [type, ids] of Object.entries(desired)) {
+        for (const rid of ids) {
+          if (!rid) continue;
+          const key = `${type}|${rid}`;
+          desiredKeys.add(key);
+          const ex = existing[key];
+          if (ex) {
+            if (!ex.actif) {
+              batch.update(ex.ref, { actif: true, updatedAt: ts() });
+              reactivated++;
+            }
+          } else {
+            // Doc id stable : YYYY-MM-DD_type_rid → idempotent en cas de retry.
+            const newId = `${date}_${type}_${rid}`;
+            batch.set(doc(db, "disponibilites", newId), {
+              date,
+              ressourceType: type,
+              ressourceId: rid,
+              actif: true,
+              createdAt: ts(),
+              updatedAt: ts(),
+            });
+            added++;
+          }
+        }
+      }
+      // Phase 2 : archiver ce qui n'est plus voulu
+      for (const [key, ex] of Object.entries(existing)) {
+        if (!desiredKeys.has(key) && ex.actif) {
+          batch.update(ex.ref, { actif: false, updatedAt: ts() });
+          archived++;
+        }
+      }
+      await batch.commit();
+      return { ok: true, added, reactivated, archived };
+    }
+
+    case "importClients": {
+      // Import CSV : crée des clients depuis des rows {entreprise, contact,
+      // email, telephone, adresse, ville, codePostal, nbVelos}. GAS n'a
+      // jamais implémenté cette action — bouton no-op aujourd'hui.
+      // On crée 1 client par row, sans dédoublonnage agressif (l'utilisateur
+      // est responsable de ne pas réimporter le même CSV).
+      const rows = (body.rows as Array<Record<string, unknown>>) || [];
+      if (!Array.isArray(rows) || rows.length === 0) {
+        return { ok: false, error: "rows vide", created: 0 };
+      }
+      let created = 0;
+      const errors: Array<{ entreprise: string; error: string }> = [];
+      for (let i = 0; i < rows.length; i += 400) {
+        const batch = writeBatch(db);
+        for (const row of rows.slice(i, i + 400)) {
+          try {
+            const entreprise = String(row.entreprise || "").trim();
+            if (!entreprise) continue;
+            const apporteur = String(row.apporteur || "").trim() || null;
+            const apporteurLower = apporteur ? apporteur.toLowerCase() : null;
+            const nbVelosRaw = row.nbVelos;
+            const nbVelos = Math.max(
+              0,
+              Math.round(
+                typeof nbVelosRaw === "number" ? nbVelosRaw : Number(nbVelosRaw) || 0,
+              ),
+            );
+            const ref = doc(collection(db, "clients"));
+            batch.set(ref, {
+              entreprise,
+              contact: String(row.contact || "").trim() || null,
+              email: String(row.email || "").trim() || null,
+              telephone: String(row.telephone || "").trim() || null,
+              adresse: String(row.adresse || "").trim() || null,
+              ville: String(row.ville || "").trim() || null,
+              codePostal: String(row.codePostal || "").trim() || null,
+              departement:
+                String(row.codePostal || "").slice(0, 2) || null,
+              apporteur,
+              apporteurLower,
+              nbVelosCommandes: nbVelos,
+              docs: {},
+              docLinks: {},
+              docDates: {},
+              stats: {
+                totalVelos: 0,
+                montes: 0,
+                livres: 0,
+                totalLivraisonsLivrees: 0,
+                blSignes: 0,
+                facturables: 0,
+                planifies: 0,
+                certificats: 0,
+                factures: 0,
+              },
+              createdAt: ts(),
+              updatedAt: ts(),
+            });
+            created++;
+          } catch (e) {
+            errors.push({
+              entreprise: String(row.entreprise || ""),
+              error: e instanceof Error ? e.message : String(e),
+            });
+          }
+        }
+        await batch.commit();
+      }
+      return { ok: true, created, errors, total: rows.length };
     }
 
     case "bulkAutoValidate": {
@@ -2377,6 +2516,25 @@ export async function runFirestoreGet(
       }
       await deleteDoc(doc(db, "clients", id));
       return { ok: true, cascadeCount };
+    }
+
+    case "listDisponibilites": {
+      // /day-planner-modal : lecture des dispos existantes pour une date.
+      // Stockage : collection disponibilites, doc { date, ressourceType,
+      // ressourceId, actif, createdAt, notes }.
+      const date = params.date;
+      const ressourceType = params.ressourceType;
+      if (!date) return { items: [] };
+      const baseQ = query(collection(db, "disponibilites"), where("date", "==", date));
+      const snap = await getDocs(baseQ);
+      const items: Array<Record<string, unknown>> = [];
+      for (const d of snap.docs) {
+        const o = d.data() as { actif?: boolean; ressourceType?: string };
+        if (o.actif === false) continue;
+        if (ressourceType && o.ressourceType !== ressourceType) continue;
+        items.push({ id: d.id, ...o });
+      }
+      return { items };
     }
 
     case "lookupFnuci": {
