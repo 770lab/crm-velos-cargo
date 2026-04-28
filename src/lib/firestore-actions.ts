@@ -475,8 +475,22 @@ export async function runFirestoreAction(
           }
         } catch {}
       }
+      // Cap nbVelos au reste à planifier (= nbVelosCommandes du devis − livrés
+      // − déjà planifiés ailleurs). Sans ça, Gemini peut sur-allouer (ex :
+      // OPEN SOURCING 6v commandés mais livraison à 16 — bug 2026-04-28).
+      // Règle métier user : « C'EST LE NOMBRE DE VÉLO SUR DEVIS QUI COMPTE
+      // SAUF QUAND JE MODIFIE MANUELLEMENT » → on ne cap PAS si l'appelant
+      // a explicitement passé `forceNbVelos: true` (édition manuelle UI).
+      const bodyApplied = applyMaybeDates(body) as Body;
+      if (cidLiv && !body.forceNbVelos && Number(bodyApplied.nbVelos) > 0) {
+        const cap = await computeRemainingVelos(cidLiv);
+        const requested = Number(bodyApplied.nbVelos);
+        if (cap !== null && requested > cap) {
+          bodyApplied.nbVelos = Math.max(0, cap);
+        }
+      }
       const ref = await addDoc(collection(db, "livraisons"), {
-        ...applyMaybeDates(body),
+        ...bodyApplied,
         tourneeNumero,
         apporteurLower: apporteurLowerLiv,
         clientSnapshot: clientSnapshotLiv,
@@ -511,7 +525,7 @@ export async function runFirestoreAction(
       // une livraison pour un client neuf donne `total=0` côté préparation
       // → impossible d'imprimer étiquettes ou scanner FNUCI (cf. bug
       // ALYSSAR du 2026-04-28).
-      const nbVelosLiv = Number(body.nbVelos) || 0;
+      const nbVelosLiv = Number(bodyApplied.nbVelos) || 0;
       if (cidLiv && nbVelosLiv > 0) {
         try {
           const existingSnap = await getDocs(
@@ -586,11 +600,24 @@ export async function runFirestoreAction(
       });
 
       const incParClient = new Map<string, number>();
+      // Cap par client (cf. computeRemainingVelos) — décrémenté à chaque stop
+      // accepté pour ne pas dépasser le devis sur un même appel.
+      const remainingByClient = new Map<string, number>();
       let livCount = 0;
       for (const stop of stops) {
         const cid = String(stop.clientId || "");
-        const nbVelos = Number(stop.nbVelos) || 0;
+        let nbVelos = Number(stop.nbVelos) || 0;
         if (!cid || nbVelos <= 0) continue;
+        if (!stop.forceNbVelos) {
+          if (!remainingByClient.has(cid)) {
+            const r = await computeRemainingVelos(cid);
+            remainingByClient.set(cid, r ?? Number.POSITIVE_INFINITY);
+          }
+          const remaining = remainingByClient.get(cid) ?? Number.POSITIVE_INFINITY;
+          if (nbVelos > remaining) nbVelos = Math.max(0, remaining);
+          if (nbVelos <= 0) continue;
+          remainingByClient.set(cid, remaining - nbVelos);
+        }
 
         let apporteurLowerLiv: string | null = null;
         let clientSnapshotLiv: Body | null = null;
@@ -726,11 +753,25 @@ export async function runFirestoreAction(
         // 2) Livraisons depuis stops
         const stops = (t.stops as Body[]) || [];
         const tourneeNumero = nextNumero++;
+        // Cap par client (cf. computeRemainingVelos) — décrémenté à chaque
+        // stop accepté pour ne pas dépasser le devis (bug OPEN SOURCING
+        // 2026-04-28 : Gemini avait alloué 16v à un client de 6v).
+        const remainingByClient = new Map<string, number>();
         let livCount = 0;
         for (const stop of stops) {
           const cid = String(stop.clientId || "");
-          const nbVelos = Number(stop.nbVelos) || 0;
+          let nbVelos = Number(stop.nbVelos) || 0;
           if (!cid || nbVelos <= 0) continue;
+          if (!stop.forceNbVelos) {
+            if (!remainingByClient.has(cid)) {
+              const r = await computeRemainingVelos(cid);
+              remainingByClient.set(cid, r ?? Number.POSITIVE_INFINITY);
+            }
+            const remaining = remainingByClient.get(cid) ?? Number.POSITIVE_INFINITY;
+            if (nbVelos > remaining) nbVelos = Math.max(0, remaining);
+            if (nbVelos <= 0) continue;
+            remainingByClient.set(cid, remaining - nbVelos);
+          }
 
           // apporteurLower (RBAC) + clientSnapshot dénormalisé (affichage UI)
           let apporteurLowerLiv: string | null = null;
@@ -2363,6 +2404,33 @@ export async function runFirestoreAction(
  * Quelques lectures qui pourraient appeler GAS aujourd'hui.
  * Pas exhaustif — on étend si besoin.
  */
+// Calcule le nombre de vélos qu'on peut encore planifier pour un client :
+//   nbVelosCommandes (devis) − stats.livres − sum(nbVelos) des livraisons
+//   actives (planifiee). Retourne null si client introuvable (le caller
+//   laisse passer la valeur demandée). Cf. bug OPEN SOURCING 2026-04-28.
+async function computeRemainingVelos(clientId: string): Promise<number | null> {
+  try {
+    const cSnap = await getDoc(doc(db, "clients", clientId));
+    if (!cSnap.exists()) return null;
+    const c = cSnap.data() as { nbVelosCommandes?: number; stats?: { livres?: number } };
+    const totalCommande = Number(c.nbVelosCommandes) || 0;
+    const livres = Number(c.stats?.livres) || 0;
+    const livSnap = await getDocs(
+      query(collection(db, "livraisons"), where("clientId", "==", clientId)),
+    );
+    let planifies = 0;
+    for (const d of livSnap.docs) {
+      const o = d.data() as { statut?: string; nbVelos?: number };
+      if (String(o.statut || "").toLowerCase() === "planifiee") {
+        planifies += Number(o.nbVelos) || 0;
+      }
+    }
+    return Math.max(0, totalCommande - livres - planifies);
+  } catch {
+    return null;
+  }
+}
+
 // Géocode une adresse client via api-adresse.data.gouv.fr (public, sans clé).
 // "PARIS 01..20" doit être normalisé en "PARIS" (l'API ne reconnaît pas les
 // arrondissements en suffixe ville). Retourne null en cas d'échec — le caller
