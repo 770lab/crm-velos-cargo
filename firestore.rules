@@ -33,6 +33,14 @@ service cloud.firestore {
       ];
     }
 
+    function isApporteur() {
+      return isSignedIn() && isActive() && role() == "apporteur";
+    }
+
+    function apporteurName() {
+      return memberDoc().data.nom;
+    }
+
     // equipe : un membre peut lire son propre doc; admin lit/écrit tout.
     match /equipe/{uid} {
       allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
@@ -40,10 +48,15 @@ service cloud.firestore {
     }
 
     // Données métier : tout le staff actif lit, admin écrit.
-    // Pour les opérations terrain (livraisons, vélos), on ouvrira l'écriture
-    // par rôle plus tard quand la migration sera plus avancée.
+    // Cas spécial apporteur (RBAC commercial 2026-04-28) : un apporteur ne
+    // voit QUE les clients dont le champ `apporteur` matche son nom (ses
+    // propres dossiers commerciaux). Les autres rôles staff voient tout.
+    // Le frontend doit query avec where("apporteur","==",userName) sinon
+    // Firestore rejette le snapshot global. Cf. memory crm_velos_cargo_apporteurs.
     match /clients/{id} {
-      allow read: if isStaff();
+      allow read: if isAdmin()
+                  || (isStaff() && !isApporteur())
+                  || (isApporteur() && resource.data.apporteur == apporteurName());
       allow write: if isAdmin();
     }
 

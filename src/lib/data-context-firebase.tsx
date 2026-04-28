@@ -43,6 +43,7 @@ import {
   type Camion,
   type BonEnlevement,
 } from "./data-context";
+import { useCurrentUser } from "./current-user";
 
 // ---------- mappers Firestore → API existante ----------
 
@@ -268,6 +269,7 @@ function computeStats(
 // ---------- provider ----------
 
 export function FirebaseDataProvider({ children }: { children: ReactNode }) {
+  const currentUser = useCurrentUser();
   const [clients, setClients] = useState<ClientRow[]>([]);
   const [carte, setCarte] = useState<ClientPoint[]>([]);
   const [livraisons, setLivraisons] = useState<LivraisonRow[]>([]);
@@ -319,7 +321,16 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
       setBootError(`Lecture Firestore "${label}" en échec : ${msg.slice(0, 120)}`);
     };
 
-    const unsubClients = onSnapshot(collection(db, "clients"), handleClients, onErr("clients"));
+    // RBAC apporteur côté listener : un apporteur ne reçoit que ses propres
+    // clients (filtre Firestore = compatible avec la rule serveur). Sans ce
+    // filtre, un apporteur loggé verrait son onSnapshot rejeté par les rules
+    // (il essaierait de lire la collection entière). Les autres rôles
+    // (admin/superadmin/chauffeur/chef/monteur/preparateur) gardent l'accès
+    // global. Si pas de currentUser (cas SSR ou logout), pas de listener.
+    const clientsQuery = currentUser?.role === "apporteur" && currentUser.nom
+      ? query(collection(db, "clients"), where("apporteur", "==", currentUser.nom))
+      : collection(db, "clients");
+    const unsubClients = onSnapshot(clientsQuery, handleClients, onErr("clients"));
     const unsubLivraisons = onSnapshot(collection(db, "livraisons"), (snap) => {
       const rows: LivraisonRow[] = [];
       snap.forEach((doc) => rows.push(livraisonFromDoc(doc.id, doc.data())));
@@ -362,7 +373,12 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
       unsubCamions();
       unsubBons();
     };
-  }, []);
+    // currentUser dans les deps : à chaque (re)login, on doit relancer les
+    // listeners — la query clients change selon que l'user est apporteur ou
+    // non. Sans ce dep, un apporteur qui se loggue après un admin garderait
+    // l'ancien snapshot global et se ferait rejeter par les rules.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentUser?.id, currentUser?.role, currentUser?.nom]);
 
   // Pas de refresh manuel : Firestore est déjà temps réel.
   // On garde un no-op compatible avec l'API existante.
