@@ -98,6 +98,7 @@ function clientFromDoc(id: string, d: DocumentData): ClientRow {
     kbisDate: d.docDates?.kbis ?? null,
     dateEngagement: d.docDates?.engagement ?? null,
     liasseFiscaleDate: d.docDates?.liasseFiscale ?? null,
+    mailRappelEnvoyeAt: tsToIso(d.mailRappelEnvoyeAt),
     nbVelosCommandes: asInt(d.nbVelosCommandes),
     stats: {
       totalVelos: asInt(d.stats?.totalVelos),

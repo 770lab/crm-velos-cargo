@@ -43,6 +43,10 @@ interface ClientRow {
   kbisDate?: string | null;
   dateEngagement?: string | null;
   liasseFiscaleDate?: string | null;
+  /** ISO date du dernier clic "Ouvrir dans Gmail" depuis le bouton enveloppe
+   *  /clients. Pas une preuve d'envoi (Gmail s'ouvre dans un onglet séparé)
+   *  mais un signal "rappel composé / envoyé" pour colorer l'icône en vert. */
+  mailRappelEnvoyeAt?: string | null;
   nbVelosCommandes: number;
   stats: {
     totalVelos: number;

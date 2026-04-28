@@ -360,9 +360,19 @@ export default function ClientsPage() {
                     type="button"
                     onClick={() => setMailClient(c)}
                     disabled={!c.email}
-                    title={c.email ? `Envoyer un mail de rappel à ${c.email}` : "Pas d'email"}
-                    className="text-gray-500 hover:text-blue-600 disabled:opacity-30 disabled:cursor-not-allowed"
-                    aria-label="Envoyer un mail"
+                    title={
+                      c.email
+                        ? c.mailRappelEnvoyeAt
+                          ? `Rappel envoyé le ${new Date(c.mailRappelEnvoyeAt).toLocaleString("fr-FR")} — clic pour renvoyer`
+                          : `Envoyer un mail de rappel à ${c.email}`
+                        : "Pas d'email"
+                    }
+                    className={`disabled:opacity-30 disabled:cursor-not-allowed ${
+                      c.mailRappelEnvoyeAt
+                        ? "text-emerald-600 hover:text-emerald-700"
+                        : "text-gray-500 hover:text-blue-600"
+                    }`}
+                    aria-label={c.mailRappelEnvoyeAt ? "Rappel envoyé — renvoyer" : "Envoyer un mail"}
                   >
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="3" y="5" width="18" height="14" rx="2" />
@@ -534,6 +544,20 @@ function RappelMailModal({
     } catch {}
   };
 
+  // Marque le rappel comme envoyé : Gmail ne nous renvoie pas de webhook,
+  // donc le clic sur "Ouvrir dans Gmail" est notre meilleur proxy. Persiste
+  // l'ISO sur le client pour colorer l'enveloppe en vert dans la liste.
+  const markSent = async () => {
+    try {
+      await gasPost("updateClient", {
+        id: client.id,
+        data: { mailRappelEnvoyeAt: new Date().toISOString() },
+      });
+    } catch {
+      // non bloquant : si l'écriture échoue, le mail s'ouvre quand même.
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div className="bg-white rounded-xl p-6 w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
@@ -595,7 +619,10 @@ function RappelMailModal({
               href={gmailUrl}
               target="_blank"
               rel="noopener noreferrer"
-              onClick={() => setTimeout(onClose, 200)}
+              onClick={() => {
+                markSent();
+                setTimeout(onClose, 200);
+              }}
               title={`Ouvre Gmail sur ${FROM_EMAIL}. Si non connecté, Google demandera la connexion.`}
               className={`px-4 py-2 text-sm rounded-lg text-white ${client.email ? "bg-blue-600 hover:bg-blue-700" : "bg-gray-400 pointer-events-none"}`}
             >
