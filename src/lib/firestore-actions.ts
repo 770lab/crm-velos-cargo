@@ -380,20 +380,102 @@ export async function runFirestoreAction(
     }
 
     case "createTournees": {
-      const tournees = (body.tournees as Body[]) || [];
-      const batch = writeBatch(db);
-      const ids: string[] = [];
-      for (const t of tournees) {
-        const ref = doc(collection(db, "tournees"));
-        ids.push(ref.id);
-        batch.set(ref, {
-          ...applyMaybeDates(t),
+      // Format de retour aligné GAS : `{ tournees: [{tourneeId, livraisonsCount}], count }`
+      // — le frontend (day-planner-modal.applyProposition) attend `created.tournees`.
+      // Crée aussi les livraisons depuis `stops` (clientId/nbVelos/ordre) ; sans ça
+      // les tournées sont orphelines (pas de clients dedans) — bug 2026-04-28.
+      const tourneesIn = (body.tournees as Body[]) || [];
+      if (tourneesIn.length === 0) return { tournees: [], count: 0 };
+
+      // Numéro tournée global : max(tourneeNumero) + 1 puis incrément local pour le batch.
+      let nextNumero = 1;
+      try {
+        const top = await getDocs(
+          query(collection(db, "livraisons"), orderBy("tourneeNumero", "desc"), limit(1)),
+        );
+        if (!top.empty) {
+          const n = (top.docs[0].data() as { tourneeNumero?: number }).tourneeNumero;
+          if (typeof n === "number") nextNumero = n + 1;
+        }
+      } catch {}
+
+      const results: { tourneeId: string; livraisonsCount: number }[] = [];
+      for (const t of tourneesIn) {
+        // 1) Doc tournée
+        const tRef = await addDoc(collection(db, "tournees"), {
+          datePrevue: t.datePrevue || "",
+          mode: t.mode || body.mode || "",
+          notes: t.notes || body.notes || "",
           statut: t.statut || "planifiee",
           createdAt: ts(),
         });
+
+        // 2) Livraisons depuis stops
+        const stops = (t.stops as Body[]) || [];
+        const tourneeNumero = nextNumero++;
+        let livCount = 0;
+        for (const stop of stops) {
+          const cid = String(stop.clientId || "");
+          const nbVelos = Number(stop.nbVelos) || 0;
+          if (!cid || nbVelos <= 0) continue;
+
+          // apporteurLower dénormalisé pour RBAC
+          let apporteurLowerLiv: string | null = null;
+          try {
+            const cSnap = await getDoc(doc(db, "clients", cid));
+            if (cSnap.exists()) {
+              const cData = cSnap.data() as { apporteur?: string; apporteurLower?: string };
+              apporteurLowerLiv = cData.apporteurLower
+                || (cData.apporteur ? String(cData.apporteur).trim().toLowerCase() : null)
+                || null;
+            }
+          } catch {}
+
+          await addDoc(collection(db, "livraisons"), {
+            clientId: cid,
+            nbVelos,
+            ordre: Number(stop.ordre) || livCount + 1,
+            datePrevue: t.datePrevue || "",
+            mode: t.mode || body.mode || "",
+            tourneeId: tRef.id,
+            tourneeNumero,
+            apporteurLower: apporteurLowerLiv,
+            statut: "planifiee",
+            createdAt: ts(),
+          });
+
+          // Vélos cibles (Modèle A, idempotent — cf. createLivraison)
+          try {
+            const existingSnap = await getDocs(
+              query(collection(db, "velos"), where("clientId", "==", cid)),
+            );
+            const aCreer = Math.max(0, nbVelos - existingSnap.size);
+            if (aCreer > 0) {
+              const batch = writeBatch(db);
+              for (let i = 0; i < aCreer; i++) {
+                const veloRef = doc(collection(db, "velos"));
+                batch.set(veloRef, {
+                  clientId: cid,
+                  apporteurLower: apporteurLowerLiv,
+                  fnuci: null,
+                  datePreparation: null,
+                  dateChargement: null,
+                  dateLivraisonScan: null,
+                  dateMontage: null,
+                  createdAt: ts(),
+                  updatedAt: ts(),
+                });
+              }
+              await batch.commit();
+            }
+          } catch (e) {
+            console.error("[createTournees] velos backfill KO", e);
+          }
+          livCount++;
+        }
+        results.push({ tourneeId: tRef.id, livraisonsCount: livCount });
       }
-      await batch.commit();
-      return { ok: true, ids };
+      return { tournees: results, count: results.length };
     }
 
     case "assignTournee": {
