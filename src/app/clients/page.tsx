@@ -592,10 +592,19 @@ function RappelMailModal({
   const apporteurEmail = (() => {
     const apporteurName = (client.apporteur || "").trim().toLowerCase();
     if (!apporteurName) return null;
-    const match = equipe.find(
+    // 1. Priorité : un membre dont le rôle est explicitement "apporteur".
+    // 2. Fallback : n'importe quel membre actif portant ce nom (cas d'un
+    //    admin/superadmin qui apporte aussi des affaires sans avoir de
+    //    fiche "apporteur" dupliquée). Sans ce fallback, l'apporteur
+    //    n'apparaît pas en CC quand il est aussi salarié interne.
+    const byApporteurRole = equipe.find(
       (m) => m.role === "apporteur" && m.actif !== false && (m.nom || "").trim().toLowerCase() === apporteurName,
     );
-    return match?.email || null;
+    if (byApporteurRole?.email) return byApporteurRole.email;
+    const byName = equipe.find(
+      (m) => m.actif !== false && (m.nom || "").trim().toLowerCase() === apporteurName,
+    );
+    return byName?.email || null;
   })();
 
   const FROM_EMAIL = "velos-cargo@artisansverts.energy";
