@@ -187,6 +187,12 @@ function Inner({ mode }: { mode: ScanMode }) {
         if (err.code === "HORS_TOURNEE") {
           status = "hors-tournee";
           msg = `⚠ Pas dans cette tournée — ${err.veloClientName || "autre client"}`;
+        } else if (err.code === "ETAPE_PRECEDENTE_MANQUANTE") {
+          // Verrouillage d'ordre : l'étape précédente n'a pas été faite.
+          // Backend renvoie `missing` (ex: ["préparation","chargement"]).
+          status = "error";
+          const miss = (err as { missing?: string[] }).missing || [];
+          msg = `⛔ Manque ${miss.join(" + ") || "étape précédente"}`;
         } else if (err.code === "FNUCI_INCONNU") {
           if (mode === "preparation") {
             // Fusion réception+préparation : on demande à quel client assigner.

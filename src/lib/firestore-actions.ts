@@ -1072,9 +1072,28 @@ export async function runFirestoreAction(
       const userId = getString(body, "userId");
 
       const stageMap = {
-        markVeloPrepare: { dateField: "datePreparation", userField: "preparateurId" },
-        markVeloCharge: { dateField: "dateChargement", userField: "chargeurId" },
-        markVeloLivreScan: { dateField: "dateLivraisonScan", userField: "livreurId" },
+        markVeloPrepare: {
+          dateField: "datePreparation",
+          userField: "preparateurId",
+          // Préparation = étape 1 (assignation FNUCI). Aucun prérequis.
+          requires: [] as string[],
+          requiresLabels: [] as string[],
+        },
+        markVeloCharge: {
+          dateField: "dateChargement",
+          userField: "chargeurId",
+          requires: ["datePreparation"],
+          requiresLabels: ["préparation"],
+        },
+        markVeloLivreScan: {
+          dateField: "dateLivraisonScan",
+          userField: "livreurId",
+          // Verrouillage d'ordre : un vélo ne peut être livré que s'il est
+          // préparé ET chargé. Sans ça, on a vu des vélos passer en "livré"
+          // alors qu'ils n'avaient jamais été chargés (bug 2026-04-28).
+          requires: ["datePreparation", "dateChargement"],
+          requiresLabels: ["préparation", "chargement"],
+        },
       } as const;
       const stage = stageMap[action as keyof typeof stageMap];
 
@@ -1126,7 +1145,24 @@ export async function runFirestoreAction(
         clientSnapshot?: { entreprise?: string };
       }).clientSnapshot?.entreprise || null;
 
-      // 3. Étape déjà faite → renvoie ok + alreadyDone
+      // 3. Verrouillage d'ordre : étapes précédentes obligatoires
+      const missing: string[] = [];
+      for (let i = 0; i < stage.requires.length; i++) {
+        const req = stage.requires[i];
+        if (!velo[req as keyof typeof velo]) missing.push(stage.requiresLabels[i]);
+      }
+      if (missing.length > 0) {
+        return {
+          error: `Impossible : étape${missing.length > 1 ? "s" : ""} précédente${missing.length > 1 ? "s" : ""} manquante${missing.length > 1 ? "s" : ""} (${missing.join(", ")})`,
+          code: "ETAPE_PRECEDENTE_MANQUANTE",
+          fnuci,
+          missing,
+          clientId: veloClientId,
+          clientName: livraisonClientName,
+        };
+      }
+
+      // 4. Étape déjà faite → renvoie ok + alreadyDone
       const dateExisting = velo[stage.dateField as keyof typeof velo];
       if (dateExisting) {
         return {
@@ -1436,9 +1472,28 @@ export async function runFirestoreAction(
         urlPhotoMontageQrVelo?: string;
         photoMontageUrl?: string;
         dateMontage?: { toDate?: () => Date } | string;
+        datePreparation?: unknown;
+        dateChargement?: unknown;
+        dateLivraisonScan?: unknown;
       };
       const veloId = veloDoc.id;
       const clientId = velo.clientId || "no-client";
+
+      // 1.5 Verrouillage d'ordre : un vélo ne peut être monté que s'il est
+      // déjà préparé, chargé ET livré (sinon photos de montage prises avant
+      // la livraison effective — incohérent avec le terrain).
+      const missingMontage: string[] = [];
+      if (!velo.datePreparation) missingMontage.push("préparation");
+      if (!velo.dateChargement) missingMontage.push("chargement");
+      if (!velo.dateLivraisonScan) missingMontage.push("livraison");
+      if (missingMontage.length > 0) {
+        return {
+          error: `Impossible de monter : étape${missingMontage.length > 1 ? "s" : ""} manquante${missingMontage.length > 1 ? "s" : ""} (${missingMontage.join(", ")})`,
+          code: "ETAPE_PRECEDENTE_MANQUANTE",
+          fnuci,
+          missing: missingMontage,
+        };
+      }
 
       // 2. Upload Storage
       const fileName = `${fnuci}_${slot}_${Date.now()}.jpg`;
