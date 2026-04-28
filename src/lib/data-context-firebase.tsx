@@ -100,6 +100,9 @@ function clientFromDoc(id: string, d: DocumentData): ClientRow {
     liasseFiscaleDate: d.docDates?.liasseFiscale ?? null,
     mailRappelEnvoyeAt: tsToIso(d.mailRappelEnvoyeAt),
     nbVelosCommandes: asInt(d.nbVelosCommandes),
+    statut: typeof d.statut === "string" ? d.statut : null,
+    raisonAnnulation: typeof d.raisonAnnulation === "string" ? d.raisonAnnulation : null,
+    annuleeAt: tsToIso(d.annuleeAt),
     stats: {
       totalVelos: asInt(d.stats?.totalVelos),
       livres: asInt(d.stats?.livres),
@@ -115,6 +118,9 @@ function clientFromDoc(id: string, d: DocumentData): ClientRow {
 }
 
 function pointFromClient(c: ClientRow, d: DocumentData): ClientPoint | null {
+  // Exclut les clients soft-cancelled de la carte (et donc du picker
+  // /carte → suggestTournee + RetraitPanel + livraisons).
+  if (c.statut === "annulee") return null;
   const lat = typeof d.latitude === "number" ? d.latitude : null;
   const lng = typeof d.longitude === "number" ? d.longitude : null;
   if (lat == null || lng == null) return null;

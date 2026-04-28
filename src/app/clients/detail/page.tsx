@@ -79,6 +79,9 @@ interface ClientDetail {
   dateEngagement: string | null;
   liasseFiscaleDate: string | null;
   notes: string | null;
+  statut: string | null;
+  raisonAnnulation: string | null;
+  annuleeAt: string | null;
   velos: Velo[];
 }
 
@@ -142,6 +145,21 @@ function ClientDetailPage() {
     if (!confirm("Supprimer ce client et tous ses vélos ?")) return;
     await gasGet("deleteClient", { id });
     router.push("/clients");
+  };
+
+  const cancelClient = async () => {
+    const raison = prompt("Raison de l'annulation de la commande ? (obligatoire — ex: « docs jamais reçus », « client injoignable »)");
+    if (raison === null) return;
+    const raisonClean = raison.trim();
+    if (!raisonClean) { alert("Une raison est obligatoire pour annuler."); return; }
+    await gasPost("cancelClient", { id, raisonAnnulation: raisonClean });
+    load();
+  };
+
+  const restoreClient = async () => {
+    if (!confirm("Restaurer cette commande client ? Les livraisons annulées resteront annulées et devront être re-planifiées manuellement.")) return;
+    await gasPost("restoreClient", { id });
+    load();
   };
 
   if (!client) {
@@ -248,13 +266,48 @@ function ClientDetailPage() {
             </div>
           )}
         </div>
-        <button
-          onClick={deleteClient}
-          className="px-3 py-1 text-sm text-red-600 border border-red-200 rounded-lg hover:bg-red-50"
-        >
-          Supprimer
-        </button>
+        <div className="flex flex-col gap-2 items-end">
+          {client.statut === "annulee" ? (
+            <button
+              onClick={restoreClient}
+              className="px-3 py-1 text-sm text-emerald-700 border border-emerald-300 rounded-lg hover:bg-emerald-50"
+            >
+              ↺ Restaurer la commande
+            </button>
+          ) : (
+            <button
+              onClick={cancelClient}
+              className="px-3 py-1 text-sm text-amber-700 border border-amber-300 rounded-lg hover:bg-amber-50"
+              title="Annule la commande (livraisons + vélos cibles), réversible"
+            >
+              ⊘ Annuler la commande
+            </button>
+          )}
+          <button
+            onClick={deleteClient}
+            className="px-3 py-1 text-xs text-red-600 border border-red-200 rounded-lg hover:bg-red-50"
+            title="Suppression définitive (perte d'historique)"
+          >
+            Supprimer définitivement
+          </button>
+        </div>
       </div>
+
+      {client.statut === "annulee" && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 flex items-start gap-3">
+          <span className="text-amber-600 text-xl leading-none">⊘</span>
+          <div className="flex-1">
+            <div className="font-medium text-amber-900">Commande annulée</div>
+            {client.raisonAnnulation && (
+              <div className="text-sm text-amber-800 mt-1">Raison : {client.raisonAnnulation}</div>
+            )}
+            {client.annuleeAt && (
+              <div className="text-xs text-amber-700 mt-1">Annulée le {new Date(client.annuleeAt).toLocaleString("fr-FR")}</div>
+            )}
+            <div className="text-xs text-amber-700 mt-1">Le client est masqué de la carte, du picker et de la planif. Cliquer « Restaurer » pour le réactiver.</div>
+          </div>
+        </div>
+      )}
 
       {/* Progression documents */}
       <div className="bg-white rounded-xl border p-4 mb-6">

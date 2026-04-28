@@ -115,6 +115,8 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "updateClient",
   "bulkUpdateClients",
   "setClientVelosTarget",
+  "cancelClient",
+  "restoreClient",
   // livraisons
   "createLivraison",
   "updateLivraison",
@@ -255,6 +257,106 @@ export async function runFirestoreAction(
       }
       await batch.commit();
       return { ok: true, updated: ids.length };
+    }
+
+    case "cancelClient": {
+      // Soft-cancel un client (commande annulée — ex: docs jamais reçus).
+      // Cascade :
+      //   - livraisons planifiees → annulee (avec raison « Client annulé : X »)
+      //   - vélos cibles → annule=true (soft, restaurable)
+      //   - stats.planifies du client → 0 (toutes les livraisons sont annulées)
+      // Le doc client conserve toutes ses données pour permettre une
+      // restauration ultérieure si le client renvoie ses docs.
+      const id = getRequired(body, "id");
+      const raisonAnnulation = String(body.raisonAnnulation || "").trim();
+      if (!raisonAnnulation) return { ok: false, error: "raisonAnnulation requise" };
+
+      const cRefCC = doc(db, "clients", id);
+      const cSnapCC = await getDoc(cRefCC);
+      if (!cSnapCC.exists()) return { ok: false, error: "Client introuvable" };
+
+      // 1) Marque le client annulé
+      await updateDoc(cRefCC, {
+        statut: "annulee",
+        raisonAnnulation,
+        annuleeAt: ts(),
+        "stats.planifies": 0,
+        updatedAt: ts(),
+      });
+
+      // 2) Cascade livraisons planifiees → annulee
+      const livRaison = `Client annulé : ${raisonAnnulation}`;
+      const livSnapCC = await getDocs(
+        query(collection(db, "livraisons"), where("clientId", "==", id)),
+      );
+      let nbLivAnnulees = 0;
+      for (let i = 0; i < livSnapCC.docs.length; i += 400) {
+        const batch = writeBatch(db);
+        for (const d of livSnapCC.docs.slice(i, i + 400)) {
+          const data = d.data() as { statut?: string };
+          if (data.statut !== "planifiee") continue;
+          batch.update(d.ref, {
+            statut: "annulee",
+            dateEffective: null,
+            raisonAnnulation: livRaison,
+            annuleeAt: ts(),
+          });
+          nbLivAnnulees++;
+        }
+        await batch.commit();
+      }
+
+      // 3) Cascade vélos → annule=true (soft cancel, sans toucher aux scans
+      // déjà faits — on conserve dateLivraisonScan/Montage/Preparation pour
+      // que la restauration puisse remettre le client dans son état exact).
+      const velSnapCC = await getDocs(
+        query(collection(db, "velos"), where("clientId", "==", id)),
+      );
+      let nbVelosAnnules = 0;
+      for (let i = 0; i < velSnapCC.docs.length; i += 400) {
+        const batch = writeBatch(db);
+        for (const d of velSnapCC.docs.slice(i, i + 400)) {
+          batch.update(d.ref, { annule: true, updatedAt: ts() });
+          nbVelosAnnules++;
+        }
+        await batch.commit();
+      }
+
+      return { ok: true, nbLivAnnulees, nbVelosAnnules };
+    }
+
+    case "restoreClient": {
+      // Restaure un client annulé. Symétrique de cancelClient :
+      //   - statut → null/"actif"
+      //   - vélos : annule=false
+      // Les livraisons restent annulees (à re-planifier manuellement,
+      // l'utilisateur ne veut sûrement pas réactiver les anciennes dates).
+      const id = getRequired(body, "id");
+      const cRefRC = doc(db, "clients", id);
+      const cSnapRC = await getDoc(cRefRC);
+      if (!cSnapRC.exists()) return { ok: false, error: "Client introuvable" };
+
+      await updateDoc(cRefRC, {
+        statut: null,
+        raisonAnnulation: null,
+        annuleeAt: null,
+        updatedAt: ts(),
+      });
+
+      const velSnapRC = await getDocs(
+        query(collection(db, "velos"), where("clientId", "==", id)),
+      );
+      let nbVelosRestaures = 0;
+      for (let i = 0; i < velSnapRC.docs.length; i += 400) {
+        const batch = writeBatch(db);
+        for (const d of velSnapRC.docs.slice(i, i + 400)) {
+          batch.update(d.ref, { annule: false, updatedAt: ts() });
+          nbVelosRestaures++;
+        }
+        await batch.commit();
+      }
+
+      return { ok: true, nbVelosRestaures };
     }
 
     case "setClientVelosTarget": {
@@ -2362,9 +2464,16 @@ export async function runFirestoreGet(
         string,
         { clientId: string; entreprise: string; ville: string; adresse: string; codePostal: string }
       > = {};
+      // nbVelos demandés par client = somme des livraisons NON annulées
+      // de cette tournée. Sert de plafond aux compteurs vélos pour éviter
+      // que des vélos cibles orphelins (ex: livraison annulée + remplacée)
+      // gonflent les totaux — bug 2026-04-28.
+      const expectedByClient: Record<string, number> = {};
       for (const d of livSnap.docs) {
         const l = d.data() as {
           clientId?: string;
+          statut?: string;
+          nbVelos?: number;
           datePrevue?: { toDate?: () => Date };
           clientSnapshot?: {
             entreprise?: string;
@@ -2375,6 +2484,9 @@ export async function runFirestoreGet(
         };
         const cid = l.clientId;
         if (!cid) continue;
+        // Ignorer les livraisons annulées : leur client ne fait plus partie
+        // de la tournée et leurs vélos cibles ne doivent pas être comptés.
+        if (String(l.statut || "").toLowerCase() === "annulee") continue;
         if (!datePrevue && l.datePrevue?.toDate) {
           datePrevue = l.datePrevue.toDate().toISOString();
         }
@@ -2388,6 +2500,7 @@ export async function runFirestoreGet(
             codePostal: l.clientSnapshot?.codePostal || "",
           };
         }
+        expectedByClient[cid] = (expectedByClient[cid] || 0) + (Number(l.nbVelos) || 0);
       }
 
       type Velo = {
@@ -2422,6 +2535,7 @@ export async function runFirestoreGet(
           const data = d.data() as {
             clientId?: string;
             fnuci?: string | null;
+            annule?: boolean;
             datePreparation?: unknown;
             dateChargement?: unknown;
             dateLivraisonScan?: unknown;
@@ -2429,10 +2543,18 @@ export async function runFirestoreGet(
           };
           const cid = data.clientId || "";
           if (!cid) continue;
+          // Skip vélos soft-cancelled (annule=true).
+          if (data.annule === true) continue;
           if (!velosByClient[cid]) velosByClient[cid] = [];
           if (!perClientTotals[cid]) {
             perClientTotals[cid] = { total: 0, prepare: 0, charge: 0, livre: 0, monte: 0 };
           }
+          // Plafond : on n'accepte que `expectedByClient[cid]` vélos par client
+          // (= somme des nbVelos des livraisons actives). Si le client a plus
+          // de vélos cibles que demandé pour cette tournée (ex : 2 commandes
+          // séparées), seuls les premiers comptent ici.
+          const cap = expectedByClient[cid] ?? 0;
+          if (perClientTotals[cid].total >= cap) continue;
           const v: Velo = {
             veloId: d.id,
             fnuci: data.fnuci || null,

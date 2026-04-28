@@ -48,6 +48,11 @@ interface ClientRow {
    *  mais un signal "rappel composé / envoyé" pour colorer l'icône en vert. */
   mailRappelEnvoyeAt?: string | null;
   nbVelosCommandes: number;
+  /** Statut métier du client. "annulee" = commande annulée (soft cancel
+   *  via cancelClient — restaurable via restoreClient). null/absent = actif. */
+  statut?: string | null;
+  raisonAnnulation?: string | null;
+  annuleeAt?: string | null;
   stats: {
     totalVelos: number;
     livres: number;
