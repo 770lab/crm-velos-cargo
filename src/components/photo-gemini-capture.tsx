@@ -59,15 +59,49 @@ async function mirrorGeminiResultsToFirestore(
       const result = r.result as { ok?: true } | { error: string } | null;
       if (!(result && "ok" in result && result.ok)) continue;
       try {
+        // gasPost ne throw PAS sur {error: ...} — il return l'objet tel quel.
+        // On vérifie donc explicitement chaque retour pour capturer les codes
+        // serveur (HORS_TOURNEE, ETAPE_PRECEDENTE_MANQUANTE, ORDRE_VERROUILLE,
+        // FNUCI_INCONNU). Sinon un scan "OK Gemini" affiche succès mais le
+        // vélo n'est pas marqué → bug fantôme côté compteurs.
+        const checkResp = (resp: unknown): string | null => {
+          if (resp && typeof resp === "object" && "error" in resp) {
+            const r = resp as {
+              error?: string;
+              code?: string;
+              expectedClientName?: string | null;
+              missing?: string[];
+            };
+            if (r.code === "ORDRE_VERROUILLE") {
+              return `⛔ Termine d'abord ${r.expectedClientName || "le client précédent"}`;
+            }
+            if (r.code === "ETAPE_PRECEDENTE_MANQUANTE") {
+              return `⛔ Manque ${(r.missing || []).join(" + ") || "étape précédente"}`;
+            }
+            return r.error || "Erreur serveur";
+          }
+          return null;
+        };
+        let serverErr: string | null = null;
         if (etape === "preparation") {
           if (clientId) {
-            await gasPost("assignFnuciToClient", { fnuci: r.fnuci, clientId });
+            const a = await gasPost("assignFnuciToClient", { fnuci: r.fnuci, clientId });
+            serverErr = checkResp(a);
           }
-          await gasPost("markVeloPrepare", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
+          if (!serverErr) {
+            const m = await gasPost("markVeloPrepare", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
+            serverErr = checkResp(m);
+          }
         } else if (etape === "chargement") {
-          await gasPost("markVeloCharge", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
+          const m = await gasPost("markVeloCharge", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
+          serverErr = checkResp(m);
         } else if (etape === "livraisonScan") {
-          await gasPost("markVeloLivreScan", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
+          const m = await gasPost("markVeloLivreScan", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
+          serverErr = checkResp(m);
+        }
+        if (serverErr) {
+          failed.push({ fnuci: r.fnuci, error: serverErr });
+          console.warn("[scan] mirror serveur a refusé", r.fnuci, etape, serverErr);
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

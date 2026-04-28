@@ -1177,6 +1177,104 @@ export async function runFirestoreAction(
         };
       }
 
+      // 4bis. Verrouillage LIFO inter-clients (ordre des clients de la tournée).
+      // Complète ETAPE_PRECEDENTE_MANQUANTE (ordre vertical par vélo) avec un
+      // ordre horizontal : on n'ouvre pas le client N+1 tant que le N n'est
+      // pas terminé. Mode prép/charg = ordre INVERSE (LIFO camion : dernier
+      // livré entre en premier). Mode livraison = ordre tournée.
+      //
+      // Comportement DÉFENSIF : on ne bloque QUE si l'ordre est fiable pour
+      // TOUS les clients de la tournée (champ `ordre` direct OU "arrêt X/N"
+      // dans notes legacy). Sinon on laisse passer (zéro régression sur les
+      // anciennes tournées sans champ ordre détectable).
+      try {
+        const allLivSnap = await getDocs(
+          query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
+        );
+        const ordreFromNotesScan = (notes: unknown): number | null => {
+          if (typeof notes !== "string") return null;
+          const m = notes.match(/arr[êe]t\s+(\d+)\s*\//i);
+          return m ? parseInt(m[1], 10) : null;
+        };
+        type CDef = { clientId: string; ordre: number | null; entreprise: string };
+        const seen = new Set<string>();
+        const cdefs: CDef[] = [];
+        for (const d of allLivSnap.docs) {
+          const data = d.data() as {
+            clientId?: string;
+            statut?: string;
+            ordre?: number;
+            notes?: string;
+            clientSnapshot?: { entreprise?: string };
+          };
+          if (String(data.statut || "").toLowerCase() === "annulee") continue;
+          const cid = data.clientId;
+          if (!cid || seen.has(cid)) continue;
+          seen.add(cid);
+          const ordre =
+            typeof data.ordre === "number"
+              ? data.ordre
+              : ordreFromNotesScan(data.notes);
+          cdefs.push({
+            clientId: cid,
+            ordre,
+            entreprise: data.clientSnapshot?.entreprise || "",
+          });
+        }
+        const allHaveOrdre = cdefs.length > 0 && cdefs.every((c) => typeof c.ordre === "number");
+
+        if (allHaveOrdre && cdefs.length > 1) {
+          const sorted = cdefs
+            .slice()
+            .sort((a, b) => (a.ordre as number) - (b.ordre as number));
+          const ordered =
+            action === "markVeloPrepare" || action === "markVeloCharge"
+              ? sorted.slice().reverse()
+              : sorted;
+
+          // Compte les vélos déjà-faits / total par client (excluant les annulés).
+          const cids = ordered.map((c) => c.clientId);
+          const totalsByClient = new Map<string, { total: number; done: number }>();
+          for (let i = 0; i < cids.length; i += 30) {
+            const chunk = cids.slice(i, i + 30);
+            if (!chunk.length) continue;
+            const vSnap2 = await getDocs(
+              query(collection(db, "velos"), where("clientId", "in", chunk)),
+            );
+            for (const d of vSnap2.docs) {
+              const vd = d.data() as Record<string, unknown>;
+              if (vd.annule === true) continue;
+              const cid = vd.clientId as string;
+              if (!cid) continue;
+              const cur = totalsByClient.get(cid) || { total: 0, done: 0 };
+              cur.total++;
+              if (vd[stage.dateField]) cur.done++;
+              totalsByClient.set(cid, cur);
+            }
+          }
+          const firstUnfinished = ordered.find((c) => {
+            const t = totalsByClient.get(c.clientId);
+            return !t || t.done < t.total;
+          });
+          if (firstUnfinished && firstUnfinished.clientId !== veloClientId) {
+            return {
+              error: `Ordre verrouillé : termine d'abord ${firstUnfinished.entreprise || "le client précédent"}`,
+              code: "ORDRE_VERROUILLE",
+              fnuci,
+              veloClientId,
+              veloClientName: livraisonClientName,
+              expectedClientId: firstUnfinished.clientId,
+              expectedClientName: firstUnfinished.entreprise || null,
+            };
+          }
+        }
+      } catch {
+        // Faille silencieuse : si le check d'ordre plante (Firestore down,
+        // schema bizarre…), on retombe sur le comportement actuel (verrou
+        // frontend seul). On n'a JAMAIS le droit de bloquer un scan légitime
+        // sur place — chargement demain matin = zéro tolérance bug.
+      }
+
       // 4. Marque l'étape
       const updates: Body = {
         [stage.dateField]: ts(),
@@ -2747,7 +2845,33 @@ export async function runFirestoreGet(
       );
       // datePrevue de la tournée = celle de n'importe quelle livraison (toutes égales)
       let datePrevue: string | null = null;
-      // ordre : on garde l'ordre du Firestore (= ordre arrêt) — affinage possible plus tard
+      // Tri par ordre tournée :
+      //  - source primaire : champ `ordre` (posé par createTournees / createLivraison)
+      //  - fallback legacy : "arrêt X/N" extrait des notes (livraisons importées du sheet GAS)
+      //  - dernier recours : ordre Firestore (insertion)
+      // Le verrou LIFO côté UI (TourneeScanFlow.reverseClients) inverse cet ordre
+      // pour prép/charg ; sans tri fiable ici, l'inversion frontend est inutile.
+      const ordreFromNotes = (notes: unknown): number | null => {
+        if (typeof notes !== "string") return null;
+        const m = notes.match(/arr[êe]t\s+(\d+)\s*\//i);
+        return m ? parseInt(m[1], 10) : null;
+      };
+      const sortedLivDocs = livSnap.docs
+        .map((d, idx) => {
+          const data = d.data() as { ordre?: number; notes?: string };
+          const ordre =
+            typeof data.ordre === "number"
+              ? data.ordre
+              : ordreFromNotes(data.notes);
+          return { d, ordre, idx };
+        })
+        .sort((a, b) => {
+          if (a.ordre != null && b.ordre != null) return a.ordre - b.ordre;
+          if (a.ordre != null) return -1;
+          if (b.ordre != null) return 1;
+          return a.idx - b.idx;
+        })
+        .map((x) => x.d);
       const clientOrder: string[] = [];
       const clientInfo: Record<
         string,
@@ -2758,7 +2882,7 @@ export async function runFirestoreGet(
       // que des vélos cibles orphelins (ex: livraison annulée + remplacée)
       // gonflent les totaux — bug 2026-04-28.
       const expectedByClient: Record<string, number> = {};
-      for (const d of livSnap.docs) {
+      for (const d of sortedLivDocs) {
         const l = d.data() as {
           clientId?: string;
           statut?: string;

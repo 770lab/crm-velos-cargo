@@ -181,18 +181,25 @@ function Inner({ mode }: { mode: ScanMode }) {
         setHistory((h) => [evt, ...h].slice(0, 10));
       } else {
         beep(false);
-        const err = r as { error: string; code?: string; veloClientName?: string | null };
+        const err = r as { error: string; code?: string; veloClientName?: string | null; expectedClientName?: string | null };
         let status: ScanEvent["status"] = "error";
         let msg = err.error;
         if (err.code === "HORS_TOURNEE") {
           status = "hors-tournee";
           msg = `⚠ Pas dans cette tournée — ${err.veloClientName || "autre client"}`;
         } else if (err.code === "ETAPE_PRECEDENTE_MANQUANTE") {
-          // Verrouillage d'ordre : l'étape précédente n'a pas été faite.
-          // Backend renvoie `missing` (ex: ["préparation","chargement"]).
+          // Verrouillage d'ordre vertical : l'étape précédente (par vélo)
+          // n'a pas été faite. Backend renvoie `missing` (ex: ["préparation"]).
           status = "error";
           const miss = (err as { missing?: string[] }).missing || [];
           msg = `⛔ Manque ${miss.join(" + ") || "étape précédente"}`;
+        } else if (err.code === "ORDRE_VERROUILLE") {
+          // Verrouillage d'ordre horizontal (inter-clients) : on essaie de
+          // scanner un client en aval alors que le précédent n'est pas fini.
+          // Le verrou frontend (firstUnfinished) devrait déjà l'empêcher, mais
+          // c'est la double-sécurité (URL directe / onglet décalé / état stale).
+          status = "hors-tournee";
+          msg = `⛔ Termine d'abord ${err.expectedClientName || "le client précédent"}`;
         } else if (err.code === "FNUCI_INCONNU") {
           if (mode === "preparation") {
             // Fusion réception+préparation : on demande à quel client assigner.
