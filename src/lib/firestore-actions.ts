@@ -990,6 +990,33 @@ export async function runFirestoreAction(
         }
       }
       await batch.commit();
+
+      // Double-write GAS — best effort. proposeTournee (vague 3 🔴 pas
+      // encore migré) lit les dispos depuis le Sheet GAS. Sans ce miroir,
+      // l'utilisateur coche "Petit + Moyen", on écrit dans Firestore, mais
+      // Gemini renvoie "Aucun camion disponible" car GAS ne voit rien.
+      // À supprimer une fois proposeTournee migré (lira Firestore).
+      const gasUrl = process.env.NEXT_PUBLIC_GAS_URL;
+      if (gasUrl) {
+        try {
+          const url = new URL(gasUrl);
+          url.searchParams.set("action", "setDisponibilites");
+          url.searchParams.set(
+            "body",
+            encodeURIComponent(JSON.stringify({
+              date,
+              camionIds: desired.camion,
+              chauffeurIds: desired.chauffeur,
+              chefIds: desired.chef,
+              monteurIds: desired.monteur,
+            })),
+          );
+          await fetch(url.toString(), { redirect: "follow" });
+        } catch {
+          // GAS down ou timeout : on n'échoue pas, Firestore est la source de vérité.
+        }
+      }
+
       return { ok: true, added, reactivated, archived };
     }
 
