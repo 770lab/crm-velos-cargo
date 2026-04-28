@@ -3086,12 +3086,18 @@ export async function runFirestoreGet(
       // re-planification — bug 2026-04-28).
       const id = params.id;
       if (!id) throw new Error("id requis");
+      const raisonAnnulation = String(params.raisonAnnulation || "").trim() || null;
       const livRef = doc(db, "livraisons", id);
       const livSnap = await getDoc(livRef);
       const livData = livSnap.exists() ? (livSnap.data() as { statut?: string; clientId?: string }) : null;
       const wasPlanifiee = livData?.statut === "planifiee";
       const cidDel = livData?.clientId || null;
-      await updateDoc(livRef, { statut: "annulee", dateEffective: null });
+      await updateDoc(livRef, {
+        statut: "annulee",
+        dateEffective: null,
+        raisonAnnulation,
+        annuleeAt: ts(),
+      });
       if (wasPlanifiee && cidDel) {
         try {
           const cRef = doc(db, "clients", cidDel);
@@ -3140,6 +3146,7 @@ export async function runFirestoreGet(
       // Décrémente stats.planifies sur chaque client touché (cf. deleteLivraison).
       const tourneeId = params.tourneeId;
       if (!tourneeId) throw new Error("tourneeId requis");
+      const raisonAnnulationT = String(params.raisonAnnulation || "").trim() || null;
       const snap = await getDocs(
         query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
       );
@@ -3161,7 +3168,12 @@ export async function runFirestoreGet(
       for (let i = 0; i < docs.length; i += 400) {
         const batch = writeBatch(db);
         for (const d of docs.slice(i, i + 400)) {
-          batch.update(d.ref, { statut: "annulee", dateEffective: null });
+          batch.update(d.ref, {
+            statut: "annulee",
+            dateEffective: null,
+            raisonAnnulation: raisonAnnulationT,
+            annuleeAt: ts(),
+          });
         }
         await batch.commit();
       }

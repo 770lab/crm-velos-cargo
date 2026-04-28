@@ -159,6 +159,7 @@ function livraisonFromDoc(id: string, d: DocumentData): LivraisonRow {
     nbMonteurs: d.nbMonteurs ?? 0,
     tourneeNumero: typeof d.tourneeNumero === "number" ? d.tourneeNumero : null,
     bonCommandeEnvoyeAt: typeof d.bonCommandeEnvoyeAt === "string" ? d.bonCommandeEnvoyeAt : null,
+    raisonAnnulation: typeof d.raisonAnnulation === "string" ? d.raisonAnnulation : null,
     client: {
       entreprise: d.clientSnapshot?.entreprise ?? "",
       ville: d.clientSnapshot?.ville ?? null,

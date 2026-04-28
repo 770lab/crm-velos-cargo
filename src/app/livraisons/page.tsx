@@ -1166,7 +1166,7 @@ function TourneeModal({
   onClose: () => void;
   onChanged: () => void;
 }) {
-  const { carte: allClients, equipe, bonsEnlevement } = useData();
+  const { carte: allClients, equipe, bonsEnlevement, livraisons: allLivraisons } = useData();
   // Étapes autorisées pour le user connecté. Si pas de user (cas SSR ou non
   // logué), on laisse tout cliquable — l'auth-gate gère déjà la redirection.
   const currentUser = useCurrentUser();
@@ -1222,11 +1222,28 @@ function TourneeModal({
     return { lat, lng };
   }, [tournee.livraisons]);
 
+  // Calcul live des vélos planifiés par client à partir des livraisons réelles
+  // (statut=planifiee, non annulées). Évite de dépendre du compteur persisté
+  // `stats.planifies` qui peut dériver si une livraison a été créée/annulée
+  // sans MAJ du compteur — bug 2026-04-28 : SMART/ZAPHYR proposés alors qu'ils
+  // étaient déjà dans une tournée.
+  const planifiesParClient = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const l of allLivraisons) {
+      if (l.statut !== "planifiee") continue;
+      const cid = l.clientId;
+      if (!cid) continue;
+      m.set(cid, (m.get(cid) || 0) + (l.nbVelos || 0));
+    }
+    return m;
+  }, [allLivraisons]);
+
   const eligibleClients = useMemo(() => {
     const libre = capaciteRestante(tournee.mode, tournee.totalVelos);
     const list = allClients
       .map((c) => {
-        const reste = c.nbVelos - c.velosLivres - (c.velosPlanifies || 0);
+        const planifiesLive = planifiesParClient.get(c.id) || 0;
+        const reste = c.nbVelos - c.velosLivres - planifiesLive;
         const distKm = c.lat && c.lng
           ? haversineKm(tourCentroid.lat, tourCentroid.lng, c.lat, c.lng)
           : Infinity;
@@ -1250,7 +1267,7 @@ function TourneeModal({
       })
       .map(({ c }) => c)
       .slice(0, 30);
-  }, [allClients, alreadyInTour, clientSearch, tourCentroid, tournee.mode, tournee.totalVelos]);
+  }, [allClients, alreadyInTour, clientSearch, tourCentroid, tournee.mode, tournee.totalVelos, planifiesParClient]);
 
   const addClient = async (clientId: string, reste: number) => {
     setBusy("add-" + clientId);
@@ -1322,7 +1339,15 @@ function TourneeModal({
   const bulkAction = async (action: "livree" | "annulee" | "planifiee") => {
     if (selected.size === 0) return;
     const label = action === "annulee" ? "annuler" : action === "livree" ? "marquer livrées" : "restaurer";
-    if (!confirm(`${label.charAt(0).toUpperCase() + label.slice(1)} ${selected.size} livraison${selected.size > 1 ? "s" : ""} ?`)) return;
+    let raisonBulk = "";
+    if (action === "annulee") {
+      const raison = prompt(`Raison de l'annulation pour ces ${selected.size} livraison${selected.size > 1 ? "s" : ""} ? (obligatoire)`);
+      if (raison === null) return;
+      raisonBulk = raison.trim();
+      if (!raisonBulk) { alert("Une raison est obligatoire pour annuler."); return; }
+    } else {
+      if (!confirm(`${label.charAt(0).toUpperCase() + label.slice(1)} ${selected.size} livraison${selected.size > 1 ? "s" : ""} ?`)) return;
+    }
     setBusy("bulk");
     const ids = Array.from(selected);
     // Parallèle pour réduire la latence sur N livraisons (avant : N×latence, maintenant : 1×latence).
@@ -1331,7 +1356,7 @@ function TourneeModal({
         const l = tournee.livraisons.find((x) => x.id === id);
         if (!l) return;
         if (action === "annulee" && l.statut !== "annulee") {
-          await gasGet("deleteLivraison", { id });
+          await gasGet("deleteLivraison", { id, raisonAnnulation: raisonBulk });
         } else if (action === "livree" && l.statut !== "livree") {
           await gasPost("updateLivraison", { id, data: { statut: "livree", dateEffective: new Date().toISOString() } });
         } else if (action === "planifiee" && l.statut === "annulee") {
@@ -1358,15 +1383,18 @@ function TourneeModal({
   };
 
   const cancelAll = async () => {
-    if (!confirm(`Annuler toute la tournée (${tournee.livraisons.length} livraisons) ? Les données sont conservées.`)) return;
+    const raison = prompt(`Raison de l'annulation de la tournée (${tournee.livraisons.length} livraisons) ? (obligatoire)`);
+    if (raison === null) return;
+    const raisonClean = raison.trim();
+    if (!raisonClean) { alert("Une raison est obligatoire pour annuler."); return; }
     setBusy("cancelAll");
     if (tournee.tourneeId) {
-      await gasGet("cancelTournee", { tourneeId: tournee.tourneeId });
+      await gasGet("cancelTournee", { tourneeId: tournee.tourneeId, raisonAnnulation: raisonClean });
     } else {
       await Promise.all(
         tournee.livraisons
           .filter((l) => l.statut !== "annulee")
-          .map((l) => gasGet("deleteLivraison", { id: l.id })),
+          .map((l) => gasGet("deleteLivraison", { id: l.id, raisonAnnulation: raisonClean })),
       );
     }
     onChanged();
@@ -1375,9 +1403,15 @@ function TourneeModal({
   };
 
   const annuler = async (id: string) => {
-    if (!confirm("Annuler cette livraison ?")) return;
+    const raison = prompt("Raison de l'annulation ? (obligatoire)");
+    if (raison === null) return; // Annulé via Échap
+    const raisonClean = raison.trim();
+    if (!raisonClean) {
+      alert("Une raison est obligatoire pour annuler.");
+      return;
+    }
     setBusy(id);
-    await gasGet("deleteLivraison", { id });
+    await gasGet("deleteLivraison", { id, raisonAnnulation: raisonClean });
     onChanged();
     setBusy(null);
   };

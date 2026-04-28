@@ -108,6 +108,9 @@ interface LivraisonRow {
    *  Sert à : (1) afficher un état "déjà envoyé" sur le bouton,
    *  (2) servir de clé de matching quand on auto-importera les bons en retour. */
   bonCommandeEnvoyeAt?: string | null;
+  /** Raison de l'annulation (saisie au moment du clic sur "annuler" /
+   *  "Annuler la tournée"). null tant que la livraison n'est pas annulée. */
+  raisonAnnulation?: string | null;
   client: {
     entreprise: string;
     ville: string | null;
