@@ -9,7 +9,11 @@ type Progression =
   | { tourneeId: string; datePrevue: string | null; clients: Client[] }
   | { error: string };
 
-const PER_PAGE = 6; // planche A4 — 2 colonnes × 3 rangées (~99 × 95 mm par étiquette)
+// Format imprimante thermique 100×150 mm (rouleau standard) — 1 étiquette
+// par "planche" (pas de découpe à faire). Anciennement A4 6/feuille.
+const PER_PAGE = 1;
+const LABEL_WIDTH_MM = 100;
+const LABEL_HEIGHT_MM = 150;
 
 export default function EtiquettesPageWrapper() {
   return (
@@ -58,7 +62,7 @@ function EtiquettesPage() {
   return (
     <>
       <style>{`
-        @page { size: A4; margin: 0; }
+        @page { size: ${LABEL_WIDTH_MM}mm ${LABEL_HEIGHT_MM}mm; margin: 0; }
         @media print {
           .no-print { display: none !important; }
           body { background: white !important; }
@@ -66,34 +70,61 @@ function EtiquettesPage() {
           .sheet:last-child { page-break-after: auto; }
         }
         .sheet {
-          width: 21cm; height: 29.7cm;
-          padding: 0.7cm;
+          width: ${LABEL_WIDTH_MM}mm; height: ${LABEL_HEIGHT_MM}mm;
+          padding: 0;
           box-sizing: border-box;
           background: white;
-          display: grid;
-          grid-template-columns: repeat(2, 1fr);
-          grid-template-rows: repeat(3, 1fr);
-          gap: 0.4cm;
           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
         }
         .label {
-          border: 1px dashed #bbb;
-          padding: 0.4cm;
+          width: 100%; height: 100%;
+          padding: 5mm;
           box-sizing: border-box;
           display: flex; flex-direction: column;
           color: #111;
           overflow: hidden;
         }
-        @media print { .label { border-color: transparent; } }
       `}</style>
 
       <div className="no-print fixed top-0 left-0 right-0 bg-white border-b shadow-sm z-50 px-4 py-2 flex items-center justify-between">
         <div className="text-sm">
           <span className="font-bold">🏷️ Étiquettes</span>
-          <span className="text-gray-500 ml-2">Tournée {tourneeId} · {total} étiquettes · {pages.length} planche{pages.length > 1 ? "s" : ""} A4 (6/feuille)</span>
+          <span className="text-gray-500 ml-2">Tournée {tourneeId} · {total} étiquettes · format {LABEL_WIDTH_MM}×{LABEL_HEIGHT_MM} mm (1/feuille)</span>
         </div>
         <button
           onClick={async () => {
+            // 1) Précharge tous les QR codes en data URL via fetch+Blob.
+            //    Sans ça, l'image <img src="api.qrserver.com..."> est encore
+            //    en train de charger quand window.print() ou html2canvas
+            //    capture la page → QR vide sur l'impression. Bug observé sur
+            //    iOS Safari surtout (CORS strict + load async).
+            const imgs = Array.from(document.querySelectorAll<HTMLImageElement>(".sheet img"));
+            await Promise.all(
+              imgs.map(async (img) => {
+                if (img.src.startsWith("data:")) return;
+                try {
+                  const r = await fetch(img.src);
+                  const b = await r.blob();
+                  const dataUrl = await new Promise<string>((res, rej) => {
+                    const fr = new FileReader();
+                    fr.onload = () => res(fr.result as string);
+                    fr.onerror = rej;
+                    fr.readAsDataURL(b);
+                  });
+                  img.src = dataUrl;
+                  await new Promise<void>((res) => {
+                    if (img.complete) return res();
+                    img.onload = () => res();
+                    img.onerror = () => res();
+                  });
+                } catch {
+                  // Si la précharge échoue, on continue : au pire le QR
+                  // sera blanc sur cette étiquette plutôt que de bloquer
+                  // toute l'impression.
+                }
+              }),
+            );
+
             const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
             if (!isMobile) {
               window.print();
@@ -101,23 +132,36 @@ function EtiquettesPage() {
             }
             // Mobile (iOS Safari notamment) : window.print() est souvent no-op
             // sur les pages d'impression complexes. On génère le PDF côté
-            // client via html2pdf.js → fichier téléchargé → s'ouvre dans le
-            // viewer PDF natif iOS qui propose Imprimer / Partager / Airdrop.
+            // client via html2pdf.js puis on l'ouvre dans un nouvel onglet :
+            // iOS affiche son viewer PDF natif avec bouton Partager →
+            // Imprimer (AirPrint) qui marche bien mieux que le download.
             const html2pdf = (await import("html2pdf.js")).default;
             const sheets = document.querySelectorAll(".sheet");
             if (!sheets.length) return;
             const wrapper = document.createElement("div");
             sheets.forEach((s) => wrapper.appendChild(s.cloneNode(true)));
-            await html2pdf()
+            const pdfBlob: Blob = await html2pdf()
               .from(wrapper)
               .set({
                 filename: `etiquettes-${tourneeId}.pdf`,
                 margin: 0,
                 image: { type: "jpeg", quality: 0.95 },
                 html2canvas: { scale: 2, useCORS: true },
-                jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+                jsPDF: {
+                  unit: "mm",
+                  // Format custom 100×150mm (rouleau thermique). Doit matcher
+                  // exactement le @page CSS pour que la mise en page soit
+                  // pixel-perfect entre l'aperçu écran et le PDF.
+                  format: [LABEL_WIDTH_MM, LABEL_HEIGHT_MM],
+                  orientation: "portrait",
+                },
               })
-              .save();
+              .output("blob");
+            const url = URL.createObjectURL(pdfBlob);
+            // Nouvelle fenêtre / onglet → iOS Safari ouvre le viewer PDF
+            // natif avec Partager → Imprimer / Enregistrer dans Fichiers /
+            // AirDrop. Bien plus fluide que le téléchargement direct.
+            window.open(url, "_blank");
           }}
           className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
         >
@@ -140,7 +184,7 @@ function EtiquettesPage() {
               const fnuci = velo.fnuci || velo.veloId;
               return (
                 <div key={velo.veloId} className="label">
-                  <div style={{ fontSize: "9px", color: "#666", display: "flex", justifyContent: "space-between" }}>
+                  <div style={{ fontSize: "10px", color: "#666", display: "flex", justifyContent: "space-between" }}>
                     <span>Tournée {tourneeId}{dateStr ? " · " + dateStr : ""}</span>
                     <span>{index}/{total}</span>
                   </div>
@@ -149,35 +193,32 @@ function EtiquettesPage() {
                   <div
                     style={{
                       fontWeight: 900,
-                      fontSize: "26px",
+                      fontSize: "30px",
                       lineHeight: 1.05,
                       wordBreak: "break-word",
-                      marginTop: "0.15cm",
+                      marginTop: "3mm",
                       letterSpacing: "-0.3px",
                     }}
                   >
                     {client.entreprise}
                   </div>
-                  <div style={{ display: "flex", gap: "0.35cm", marginTop: "0.2cm", flex: 1, minHeight: 0, alignItems: "center" }}>
+                  {/* QR pleine largeur centré + adresse + ref dessous —
+                      layout vertical pour exploiter les 150mm de hauteur
+                      du rouleau thermique. */}
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, minHeight: 0, marginTop: "4mm" }}>
                     {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={qrUrl} alt={qrPayload} style={{ width: "3.4cm", height: "3.4cm", flexShrink: 0 }} />
-                    <div style={{ display: "flex", flexDirection: "column", justifyContent: "space-between", flex: 1, minWidth: 0, height: "3.4cm" }}>
-                      <div style={{ fontSize: "11px", color: "#222", lineHeight: 1.3 }}>
-                        {client.adresse}<br />
-                        {client.codePostal} {client.ville}
-                      </div>
-                      <div style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: "9px", color: "#888", letterSpacing: "0.2px", wordBreak: "break-all" }}>
-                        ref. {fnuci}
-                      </div>
-                    </div>
+                    <img src={qrUrl} alt={qrPayload} style={{ width: "60mm", height: "60mm" }} />
+                  </div>
+                  <div style={{ fontSize: "13px", color: "#222", lineHeight: 1.3, textAlign: "center", marginTop: "3mm" }}>
+                    {client.adresse}<br />
+                    {client.codePostal} {client.ville}
+                  </div>
+                  <div style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: "10px", color: "#888", letterSpacing: "0.2px", wordBreak: "break-all", textAlign: "center", marginTop: "2mm" }}>
+                    ref. {fnuci}
                   </div>
                 </div>
               );
             })}
-            {/* Cellules vides pour conserver la grille si la dernière page n'est pas pleine */}
-            {pageItems.length < PER_PAGE && Array.from({ length: PER_PAGE - pageItems.length }).map((_, k) => (
-              <div key={"empty-" + k} className="label" style={{ borderColor: "transparent" }} />
-            ))}
           </div>
         ))}
       </div>
