@@ -147,6 +147,8 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "uploadVeloPhoto",
   // sync admin
   "syncBonsNow",
+  // batch admin
+  "bulkAutoValidate",
 ]);
 
 export function isMigrated(action: string): boolean {
@@ -886,6 +888,273 @@ export async function runFirestoreAction(
         updatedAt: ts(),
       });
       return { ok: true, url };
+    }
+
+    case "bulkAutoValidate": {
+      // Miroir fidèle de gas/Code.js bulkAutoValidate (ligne 3003).
+      // Auto-valide en lot toutes les vérifications "pending" avec clientId
+      // et docType reconnu. Pose flag+lien sur la fiche client (mode C :
+      // flag toujours posé, lien posé seulement si vide aujourd'hui — on ne
+      // casse jamais un lien classé manuellement).
+      const dryRun = body.dryRun === true || body.dryRun === "true";
+      const excludeRaw = body.excludeClientIds;
+      const excludeSet = new Set<string>();
+      if (Array.isArray(excludeRaw)) {
+        for (const id of excludeRaw) excludeSet.add(String(id));
+      } else if (typeof excludeRaw === "string") {
+        try {
+          const parsed = JSON.parse(excludeRaw);
+          if (Array.isArray(parsed)) for (const id of parsed) excludeSet.add(String(id));
+        } catch {}
+      }
+
+      // Mapping docType → { flag, link } (miroir GAS DOC_TYPE_TO_CLIENT_FIELDS)
+      const DOC_TYPE_MAP: Record<string, { flag: string; link: string }> = {
+        DEVIS: { flag: "devisSignee", link: "devisLien" },
+        KBIS: { flag: "kbisRecu", link: "kbisLien" },
+        LIASSE: { flag: "attestationRecue", link: "attestationLien" },
+        URSSAF: { flag: "attestationRecue", link: "attestationLien" },
+        ATTESTATION: { flag: "attestationRecue", link: "attestationLien" },
+        SIGNATURE: { flag: "signatureOk", link: "signatureLien" },
+        BICYCLE: { flag: "inscriptionBicycle", link: "bicycleLien" },
+        PARCELLE: { flag: "parcelleCadastrale", link: "parcelleCadastraleLien" },
+      };
+      // Flat field name → Firestore nested path
+      const FLAG_TO_PATH: Record<string, string> = {
+        devisSignee: "docs.devisSignee",
+        kbisRecu: "docs.kbisRecu",
+        attestationRecue: "docs.attestationRecue",
+        signatureOk: "docs.signatureOk",
+        inscriptionBicycle: "docs.inscriptionBicycle",
+        parcelleCadastrale: "docs.parcelleCadastrale",
+      };
+      const LINK_TO_PATH: Record<string, string> = {
+        devisLien: "docLinks.devis",
+        kbisLien: "docLinks.kbis",
+        attestationLien: "docLinks.attestation",
+        signatureLien: "docLinks.signature",
+        bicycleLien: "docLinks.bicycle",
+        parcelleCadastraleLien: "docLinks.parcelleCadastrale",
+      };
+
+      // Parcourt les vérifications. Status pending OR vide OR unassigned.
+      const verifSnap = await getDocs(collection(db, "verifications"));
+      const skipReasons = {
+        notPending: 0,
+        noClient: 0,
+        clientNotFound: 0,
+        unknownDocType: 0,
+        excluded: 0,
+      };
+      const byDocType: Record<string, number> = {};
+      const sample: Array<{ id: string; clientId: string; docType: string; fileName: string; action: string }> = [];
+      // clientId → flagFlat → { linkField, link?, when, setFlag }
+      const pendingClientUpdates: Record<string, Record<string, { linkField: string; link: string | null; when: number; setFlag: boolean }>> = {};
+      const rowsToValidate: Array<{ verifId: string; action: string }> = [];
+      const counts = { fresh: 0, linkOnly: 0, skipExisting: 0 };
+      type ClientBreakdown = {
+        clientId: string;
+        entreprise: string;
+        fresh: number;
+        linkOnly: number;
+        skipExisting: number;
+        byDocType: Record<string, number>;
+        total?: number;
+      };
+      const clientsBreakdown: Record<string, ClientBreakdown> = {};
+
+      // Pré-charge les clients en une seule passe (collection size raisonnable).
+      const cSnap = await getDocs(collection(db, "clients"));
+      type ClientDoc = {
+        entreprise?: string;
+        docs?: Record<string, boolean>;
+        docLinks?: Record<string, string>;
+      };
+      const clientsById: Record<string, ClientDoc> = {};
+      for (const cd of cSnap.docs) clientsById[cd.id] = cd.data() as ClientDoc;
+
+      const tsToMs = (x: unknown): number => {
+        if (!x) return 0;
+        if (typeof x === "string") {
+          const t = Date.parse(x);
+          return Number.isFinite(t) ? t : 0;
+        }
+        const t = x as { toDate?: () => Date };
+        return t?.toDate ? t.toDate().getTime() : 0;
+      };
+
+      for (const vd of verifSnap.docs) {
+        const v = vd.data() as {
+          clientId?: string;
+          docType?: string;
+          driveUrl?: string;
+          storageUrl?: string;
+          status?: string;
+          fileName?: string;
+          receivedAt?: unknown;
+        };
+        const status = (v.status || "").toLowerCase();
+        if (status !== "" && status !== "pending" && status !== "unassigned") {
+          skipReasons.notPending++;
+          continue;
+        }
+        const clientId = v.clientId || "";
+        if (!clientId) {
+          skipReasons.noClient++;
+          continue;
+        }
+        if (excludeSet.has(String(clientId))) {
+          skipReasons.excluded++;
+          continue;
+        }
+        const client = clientsById[clientId];
+        if (!client) {
+          skipReasons.clientNotFound++;
+          continue;
+        }
+        const docType = (v.docType || "").toUpperCase();
+        const mapping = DOC_TYPE_MAP[docType];
+        if (!mapping) {
+          skipReasons.unknownDocType++;
+          continue;
+        }
+
+        const currentFlag = !!(client.docs?.[mapping.flag] === true);
+        // Le lien est nommé sans "Lien" dans docLinks (devisLien → docLinks.devis).
+        const linkKey = mapping.link.replace(/Lien$/, "");
+        const currentLink = (client.docLinks?.[linkKey] || "") as string;
+        const linkIsEmpty = !currentLink || currentLink.trim() === "";
+        byDocType[docType] = (byDocType[docType] || 0) + 1;
+
+        // driveUrl GAS pouvait contenir plusieurs URLs séparées par " ||| ", on garde la 1ère
+        const driveUrl = String(v.driveUrl || v.storageUrl || "").split(" ||| ")[0];
+        const receivedTs = tsToMs(v.receivedAt);
+
+        let action: "fresh" | "linkOnly" | "skipExisting";
+        if (currentFlag && !linkIsEmpty) action = "skipExisting";
+        else if (currentFlag && linkIsEmpty) action = "linkOnly";
+        else action = "fresh"; // !flag (link vide ou non) → on coche
+
+        if (action !== "skipExisting") {
+          const slot = (pendingClientUpdates[clientId] ||= {});
+          const prev = slot[mapping.flag];
+          if (!prev || receivedTs >= (prev.when || 0)) {
+            slot[mapping.flag] = {
+              linkField: mapping.link,
+              link: linkIsEmpty ? driveUrl : null,
+              when: receivedTs,
+              setFlag: !currentFlag,
+            };
+          }
+        }
+
+        counts[action]++;
+        rowsToValidate.push({ verifId: vd.id, action });
+
+        let bk = clientsBreakdown[clientId];
+        if (!bk) {
+          bk = clientsBreakdown[clientId] = {
+            clientId,
+            entreprise: client.entreprise || "",
+            fresh: 0,
+            linkOnly: 0,
+            skipExisting: 0,
+            byDocType: {},
+          };
+        }
+        bk[action]++;
+        bk.byDocType[docType] = (bk.byDocType[docType] || 0) + 1;
+        if (sample.length < 10) {
+          sample.push({
+            id: vd.id,
+            clientId,
+            docType,
+            fileName: v.fileName || "",
+            action,
+          });
+        }
+      }
+
+      const clientsList = Object.values(clientsBreakdown)
+        .map((b) => ({ ...b, total: b.fresh + b.linkOnly + b.skipExisting }))
+        .sort((a, b) => (b.total || 0) - (a.total || 0));
+
+      const preview = {
+        wouldValidate: rowsToValidate.length,
+        fresh: counts.fresh,
+        linkOnly: counts.linkOnly,
+        skipExisting: counts.skipExisting,
+        skipped:
+          skipReasons.notPending +
+          skipReasons.noClient +
+          skipReasons.clientNotFound +
+          skipReasons.unknownDocType +
+          skipReasons.excluded,
+        skipReasons,
+        byDocType,
+        clientsTouched: Object.keys(pendingClientUpdates).length,
+        clientsBreakdown: clientsList,
+        sample,
+        dryRun,
+      } as Body;
+
+      if (dryRun || rowsToValidate.length === 0) {
+        return preview;
+      }
+
+      // Application : updates clients par batches (writeBatch limité à 500 ops),
+      // puis verifs status=validated + note. Idempotent en cas de retry partiel.
+      let clientsUpdated = 0;
+      const stamp = new Date().toISOString().slice(0, 10);
+      const cIds = Object.keys(pendingClientUpdates);
+      for (let i = 0; i < cIds.length; i += 400) {
+        const batch = writeBatch(db);
+        for (const cid of cIds.slice(i, i + 400)) {
+          const slot = pendingClientUpdates[cid];
+          const updates: Body = { updatedAt: ts() };
+          let changed = false;
+          for (const flagFlat of Object.keys(slot)) {
+            const info = slot[flagFlat];
+            if (info.setFlag) {
+              const path = FLAG_TO_PATH[flagFlat];
+              if (path) {
+                updates[path] = true;
+                changed = true;
+              }
+            }
+            if (info.link) {
+              const lpath = LINK_TO_PATH[info.linkField];
+              if (lpath) {
+                updates[lpath] = info.link;
+                changed = true;
+              }
+            }
+          }
+          if (changed) {
+            batch.update(doc(db, "clients", cid), updates);
+            clientsUpdated++;
+          }
+        }
+        await batch.commit();
+      }
+
+      for (let i = 0; i < rowsToValidate.length; i += 400) {
+        const batch = writeBatch(db);
+        for (const item of rowsToValidate.slice(i, i + 400)) {
+          // Note : on append "auto-bulk YYYY-MM-DD (action)" en pose simple
+          // (pas de read-modify-write — assez bon pour traçabilité).
+          batch.update(doc(db, "verifications", item.verifId), {
+            status: "validated",
+            reviewedAt: ts(),
+            notes: `auto-bulk ${stamp} (${item.action})`,
+          });
+        }
+        await batch.commit();
+      }
+
+      preview.validated = rowsToValidate.length;
+      preview.clientsUpdated = clientsUpdated;
+      return preview;
     }
 
     case "syncBonsNow": {
@@ -2081,6 +2350,33 @@ export async function runFirestoreGet(
         byMember,
         totals,
       };
+    }
+
+    case "deleteClient": {
+      // Hard delete client + cascade : vélos, livraisons, verifications.
+      // Le bouton "Supprimer ce client et tous ses vélos ?" demande confirm
+      // côté UI, donc on assume la responsabilité utilisateur.
+      // Note : GAS n'avait pas cette action implémentée — clic = no-op.
+      // Implémentation Firestore restaure la fonctionnalité.
+      const id = params.id;
+      if (!id) return { error: "id requis" };
+      // Verifs : supprimées aussi (audit trail mais réf vers client supprimé
+      // n'a plus de valeur).
+      const collsToCascade = ["velos", "livraisons", "verifications"];
+      let cascadeCount = 0;
+      for (const coll of collsToCascade) {
+        const snap = await getDocs(
+          query(collection(db, coll), where("clientId", "==", id)),
+        );
+        for (let i = 0; i < snap.docs.length; i += 400) {
+          const batch = writeBatch(db);
+          for (const d of snap.docs.slice(i, i + 400)) batch.delete(d.ref);
+          await batch.commit();
+          cascadeCount += Math.min(400, snap.docs.length - i);
+        }
+      }
+      await deleteDoc(doc(db, "clients", id));
+      return { ok: true, cascadeCount };
     }
 
     case "lookupFnuci": {
