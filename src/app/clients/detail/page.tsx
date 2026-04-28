@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useEffect, useState, useCallback } from "react";
+import { Suspense, useEffect, useState, useCallback, useRef } from "react";
 import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { gasGet, gasPost, gasUpload } from "@/lib/gas";
@@ -268,7 +268,33 @@ function ClientDetailPage() {
             style={{ width: `${(docsValides / TOTAL_DOCS) * 100}%` }}
           />
         </div>
-        <p className="text-xs text-gray-400 mt-2">
+        {/* Accès rapide aux pièces jointes : mêmes pastilles que sur la
+            liste /clients. Clic vert/orange = aperçu inline, clic rouge
+            = upload direct sans avoir à scroller jusqu'à la carte. */}
+        <div className="flex flex-wrap items-center gap-3 mt-3 text-xs">
+          {DOC_CONFIG.map((doc) => {
+            const isValid = client[doc.field as keyof ClientDetail] as boolean;
+            const lien = (client[doc.lienField as keyof ClientDetail] as string) || "";
+            const isExpired = doc.field === "kbisRecu"
+              ? isValid && isDocExpired(client.kbisDate, client.dateEngagement, 3)
+              : doc.field === "attestationRecue"
+              ? isValid && isDocExpired(client.liasseFiscaleDate, client.dateEngagement, 12)
+              : false;
+            return (
+              <DocPastille
+                key={doc.field}
+                label={doc.label}
+                lien={lien}
+                ok={isValid}
+                expired={isExpired}
+                clientId={id}
+                docType={doc.field}
+                onChange={load}
+              />
+            );
+          })}
+        </div>
+        <p className="text-xs text-gray-400 mt-3">
           Checklist dossier CEE complet (process TRA-EQ-131). Uploadez ou collez le lien Drive de chaque document.
         </p>
       </div>
@@ -870,5 +896,153 @@ function PhotoLinks({
         ),
       )}
     </div>
+  );
+}
+
+// Pastille document compacte pour la barre d'accès rapide en haut de la
+// fiche client. Mirroir UX des cellules de la liste /clients :
+//   • rouge → cliquer pour uploader (input file invisible)
+//   • vert/orange → cliquer pour ouvrir l'aperçu PDF inline (iframe).
+// Pas de "Coller un lien" ici — pour ça l'utilisateur descend à la carte
+// étendue plus bas. Cette barre cible le besoin "voir/remplacer vite".
+function DocPastille({
+  label,
+  lien,
+  ok,
+  expired,
+  clientId,
+  docType,
+  onChange,
+}: {
+  label: string;
+  lien: string;
+  ok: boolean;
+  expired: boolean;
+  clientId: string;
+  docType: string;
+  onChange: () => void;
+}) {
+  const [uploading, setUploading] = useState(false);
+  const [showPreview, setShowPreview] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Aperçu inline : Firebase Storage = URL directe dans iframe ; Drive
+  // = forme /file/d/<id>/preview. Sinon on retombe sur "Ouvrir directement".
+  const driveIdMatch = lien.match(/\/file\/d\/([a-zA-Z0-9_-]{10,})/) || lien.match(/[?&]id=([a-zA-Z0-9_-]{10,})/);
+  const isFirebaseStorage = /firebasestorage\.googleapis\.com/.test(lien);
+  const previewUrl = driveIdMatch
+    ? `https://drive.google.com/file/d/${driveIdMatch[1]}/preview`
+    : isFirebaseStorage
+      ? lien
+      : null;
+
+  const onPickFile = () => fileInputRef.current?.click();
+  const onFile = async (file: File) => {
+    setUploading(true);
+    try {
+      const reader = new FileReader();
+      const base64 = await new Promise<string>((resolve) => {
+        reader.onload = () => resolve((reader.result as string).split(",")[1]);
+        reader.readAsDataURL(file);
+      });
+      await gasUpload("uploadDoc", {
+        clientId,
+        docType,
+        fileName: file.name,
+        fileData: base64,
+        mimeType: file.type,
+      });
+      onChange();
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const dotColor = !ok || !lien
+    ? "bg-red-400 hover:bg-red-500"
+    : expired
+      ? "bg-orange-400 hover:bg-orange-500"
+      : "bg-green-500 hover:bg-green-600";
+  const title = !ok || !lien
+    ? `${label} — cliquer pour uploader`
+    : expired
+      ? `${label} — document expiré, cliquer pour aperçu`
+      : `${label} — cliquer pour aperçu`;
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => (ok && lien ? setShowPreview(true) : onPickFile())}
+        title={title}
+        disabled={uploading}
+        className="inline-flex items-center gap-1.5 hover:scale-105 transition-transform disabled:opacity-50"
+      >
+        <span className={`inline-block w-3 h-3 rounded-full ${dotColor}`} />
+        <span className="text-gray-700">{label}</span>
+        {uploading && <span className="text-gray-400">…</span>}
+      </button>
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/pdf,image/*"
+        className="hidden"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) onFile(f);
+          e.target.value = "";
+        }}
+      />
+      {showPreview && (
+        <div
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 p-4"
+          onClick={() => setShowPreview(false)}
+        >
+          <div
+            className="bg-white rounded-xl p-4 flex flex-col"
+            style={{ width: "calc(100vw - 2rem)", height: "calc(100vh - 2rem)", maxWidth: "100%", maxHeight: "100%" }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex justify-between items-center mb-2">
+              <h2 className="text-lg font-semibold">{label}</h2>
+              <button
+                onClick={() => setShowPreview(false)}
+                className="text-gray-400 hover:text-gray-600 text-2xl leading-none"
+              >
+                ×
+              </button>
+            </div>
+            <div className="flex-1 min-h-0 bg-gray-100 rounded overflow-hidden">
+              {previewUrl ? (
+                <iframe src={previewUrl} className="w-full h-full border-0" allow="autoplay" />
+              ) : (
+                <div className="flex items-center justify-center h-full text-gray-500 text-sm">
+                  Aperçu impossible.{" "}
+                  <a className="text-blue-600 underline ml-1" href={lien} target="_blank" rel="noopener noreferrer">
+                    Ouvrir directement
+                  </a>
+                </div>
+              )}
+            </div>
+            <div className="flex justify-between items-center mt-3 gap-2">
+              <button
+                onClick={() => { setShowPreview(false); onPickFile(); }}
+                className="px-3 py-1.5 text-sm border rounded text-gray-700 hover:bg-gray-50"
+              >
+                Remplacer
+              </button>
+              <a
+                href={lien}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="px-3 py-1.5 text-sm bg-green-600 text-white rounded hover:bg-green-700"
+              >
+                Ouvrir dans un nouvel onglet
+              </a>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
