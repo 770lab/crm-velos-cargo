@@ -392,13 +392,89 @@ export async function runFirestoreAction(
     }
 
     case "setClientVelosTarget": {
+      // Met à jour le nombre de vélos commandés (devis) ET aligne :
+      //   - stats.totalVelos = target (lu par l'UI /clients pour "X/Y")
+      //   - docs `velos` cibles : crée la diff si on monte, supprime des
+      //     vierges si on descend (jamais ceux déjà préparés/livrés/montés
+      //     ni ceux avec un fnuci scanné — sécurité historique).
+      // Avant ce fix : l'UI affichait toujours l'ancienne valeur après
+      // modification (bug 2026-04-28).
       const clientId = getRequired(body, "clientId");
       const target = Number(body.target) || 0;
+
+      // 1) Compte les vélos existants et leur état pour ce client
+      const velSnap = await getDocs(
+        query(collection(db, "velos"), where("clientId", "==", clientId)),
+      );
+      type V = { ref: typeof velSnap.docs[0]["ref"]; locked: boolean };
+      const existing: V[] = velSnap.docs.map((d) => {
+        const o = d.data() as {
+          fnuci?: string | null;
+          datePreparation?: unknown;
+          dateChargement?: unknown;
+          dateLivraisonScan?: unknown;
+          dateMontage?: unknown;
+        };
+        const locked = !!(o.fnuci || o.datePreparation || o.dateChargement || o.dateLivraisonScan || o.dateMontage);
+        return { ref: d.ref, locked };
+      });
+      const lockedCount = existing.filter((v) => v.locked).length;
+      if (target < lockedCount) {
+        return { ok: false, error: `Impossible de descendre sous ${lockedCount} (vélos déjà engagés/livrés)` };
+      }
+
+      // 2) Update doc client (devis + stats)
       await updateDoc(doc(db, "clients", clientId), {
         nbVelosCommandes: target,
+        "stats.totalVelos": target,
         updatedAt: ts(),
       });
-      return { ok: true };
+
+      // 3) Aligne les docs vélos cibles
+      const cur = existing.length;
+      let createdN = 0;
+      let deletedN = 0;
+      if (target > cur) {
+        // Récupère apporteurLower client pour les nouveaux vélos
+        let apporteurLowerNew: string | null = null;
+        try {
+          const cSnap = await getDoc(doc(db, "clients", clientId));
+          if (cSnap.exists()) {
+            const cd = cSnap.data() as { apporteur?: string; apporteurLower?: string };
+            apporteurLowerNew = cd.apporteurLower
+              || (cd.apporteur ? String(cd.apporteur).trim().toLowerCase() : null)
+              || null;
+          }
+        } catch {}
+        const toCreate = target - cur;
+        const batch = writeBatch(db);
+        for (let i = 0; i < toCreate; i++) {
+          const veloRef = doc(collection(db, "velos"));
+          batch.set(veloRef, {
+            clientId,
+            apporteurLower: apporteurLowerNew,
+            fnuci: null,
+            datePreparation: null,
+            dateChargement: null,
+            dateLivraisonScan: null,
+            dateMontage: null,
+            createdAt: ts(),
+            updatedAt: ts(),
+          });
+        }
+        await batch.commit();
+        createdN = toCreate;
+      } else if (target < cur) {
+        // Supprime des vierges (non locked) jusqu'à atteindre target
+        const toDelete = cur - target;
+        const blanks = existing.filter((v) => !v.locked).slice(0, toDelete);
+        const batch = writeBatch(db);
+        for (const v of blanks) batch.delete(v.ref);
+        await batch.commit();
+        deletedN = blanks.length;
+      }
+
+      return { ok: true, target, createdN, deletedN };
     }
 
     // ---------- livraisons ----------
