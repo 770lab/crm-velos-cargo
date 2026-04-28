@@ -313,6 +313,52 @@ export async function runFirestoreAction(
         statut: body.statut || "planifiee",
         createdAt: ts(),
       });
+
+      // Création automatique des docs `velos` cibles si manquants. Modèle A
+      // (vélo lié au clientId, pas à la livraisonId) : on s'aligne sur le
+      // schéma historique GAS pour préserver assignFnuciToClient,
+      // getTourneeProgression, etc.
+      //
+      // Idempotent : on compte les vélos existants pour ce client et on
+      // crée uniquement la différence avec nbVelos demandé. Sans ça, créer
+      // une livraison pour un client neuf donne `total=0` côté préparation
+      // → impossible d'imprimer étiquettes ou scanner FNUCI (cf. bug
+      // ALYSSAR du 2026-04-28).
+      const nbVelosLiv = Number(body.nbVelos) || 0;
+      if (cidLiv && nbVelosLiv > 0) {
+        try {
+          const existingSnap = await getDocs(
+            query(collection(db, "velos"), where("clientId", "==", cidLiv)),
+          );
+          const aCreer = Math.max(0, nbVelosLiv - existingSnap.size);
+          if (aCreer > 0) {
+            // apporteurLower dénormalisé identique à la livraison (RBAC
+            // apporteur — cf. firestore.rules).
+            const batch = writeBatch(db);
+            for (let i = 0; i < aCreer; i++) {
+              const veloRef = doc(collection(db, "velos"));
+              batch.set(veloRef, {
+                clientId: cidLiv,
+                apporteurLower: apporteurLowerLiv,
+                fnuci: null,
+                datePreparation: null,
+                dateChargement: null,
+                dateLivraisonScan: null,
+                dateMontage: null,
+                createdAt: ts(),
+                updatedAt: ts(),
+              });
+            }
+            await batch.commit();
+          }
+        } catch (e) {
+          // Si la création échoue, la livraison existe déjà — on log et on
+          // laisse passer pour ne pas bloquer le user. Backfill possible
+          // via setClientVelosTarget ou recompute-client-stats.mjs.
+          console.error("[createLivraison] velos backfill KO", e);
+        }
+      }
+
       return { ok: true, id: ref.id, tourneeNumero };
     }
 
@@ -1366,10 +1412,14 @@ export async function runFirestoreAction(
       // Si getPromptOnly:true on simule l'ancienne réponse "phase=build, prompt=…"
       // — mais en pratique, le frontend devrait être mis à jour pour appeler
       // proposeTournee en un seul shot (cf. day-planner-modal.tsx propose()).
+      // Timeout 120s côté client pour matcher la CF (Gemini peut réfléchir
+      // 60-90s sur les gros volumes — le default SDK 60s coupe trop tôt et
+      // remonte deadline-exceeded alors que la CF est encore en train de
+      // tourner).
       const callable = httpsCallable<
         { date: string; mode: string },
         Record<string, unknown>
-      >(functions, "proposeTournee");
+      >(functions, "proposeTournee", { timeout: 120000 });
       try {
         const r = await callable({ date, mode });
         return r.data;

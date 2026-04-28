@@ -757,8 +757,11 @@ type ProposePayload = {
 export const proposeTournee = onCall<ProposePayload>(
   {
     secrets: [GEMINI_API_KEY],
-    timeoutSeconds: 120,
-    memory: "1GiB",
+    // Sur gros volumes (300+ clients candidats) Gemini 2.5-flash peut
+    // réfléchir 60-90s, et avec retry+fallback flash-lite on peut grimper
+    // à 3-4 min. 540s = max gen2 sans config VPC, on prend la marge.
+    timeoutSeconds: 540,
+    memory: "2GiB",
     region: "europe-west1",
   },
   async (request) => {
