@@ -194,14 +194,26 @@ export async function runFirestoreAction(
       const apporteurLower = body.apporteur
         ? String(body.apporteur).trim().toLowerCase() || null
         : null;
+
+      // Géocodage à la création (api-adresse.data.gouv.fr — public, sans clé).
+      // Sans coords, le client n'apparaît pas sur /carte (pointFromClient
+      // retourne null si latitude/longitude manquants) — bug 2026-04-28
+      // (DIGITAL 111 invisible).
+      const geo = await geocodeClientAddress({
+        adresse: body.adresse,
+        codePostal: body.codePostal,
+        ville: body.ville,
+      });
+
       const ref = await addDoc(collection(db, "clients"), {
         ...body,
         nbVelosCommandes: Number(body.nbVelosCommandes) || 0,
         apporteurLower,
+        ...(geo ? { latitude: geo.lat, longitude: geo.lng } : {}),
         createdAt: ts(),
         updatedAt: ts(),
       });
-      return { ok: true, id: ref.id };
+      return { ok: true, id: ref.id, geocoded: !!geo };
     }
 
     case "updateClient": {
@@ -243,6 +255,26 @@ export async function runFirestoreAction(
         updates.apporteurLower = data.apporteur
           ? String(data.apporteur).trim().toLowerCase() || null
           : null;
+      }
+      // Si adresse / CP / ville change, on re-géocode (le client doit
+      // bouger sur la carte). On lit le doc actuel pour combler les
+      // champs non fournis dans data (update partiel).
+      if ("adresse" in data || "codePostal" in data || "ville" in data) {
+        try {
+          const cur = await getDoc(doc(db, "clients", id));
+          const curData = cur.exists() ? (cur.data() as { adresse?: string; codePostal?: string; ville?: string }) : {};
+          const geo = await geocodeClientAddress({
+            adresse: ("adresse" in data ? data.adresse : curData.adresse) as string | undefined,
+            codePostal: ("codePostal" in data ? data.codePostal : curData.codePostal) as string | undefined,
+            ville: ("ville" in data ? data.ville : curData.ville) as string | undefined,
+          });
+          if (geo) {
+            updates.latitude = geo.lat;
+            updates.longitude = geo.lng;
+          }
+        } catch (e) {
+          console.error("[updateClient] geocode KO", e);
+        }
       }
       await updateDoc(doc(db, "clients", id), updates);
       return { ok: true };
@@ -2301,6 +2333,34 @@ export async function runFirestoreAction(
  * Quelques lectures qui pourraient appeler GAS aujourd'hui.
  * Pas exhaustif — on étend si besoin.
  */
+// Géocode une adresse client via api-adresse.data.gouv.fr (public, sans clé).
+// "PARIS 01..20" doit être normalisé en "PARIS" (l'API ne reconnaît pas les
+// arrondissements en suffixe ville). Retourne null en cas d'échec — le caller
+// continue sans coords plutôt que de bloquer la création.
+async function geocodeClientAddress(input: {
+  adresse?: unknown;
+  codePostal?: unknown;
+  ville?: unknown;
+}): Promise<{ lat: number; lng: number } | null> {
+  const adresse = String(input.adresse || "").trim();
+  if (!adresse) return null;
+  const codePostal = String(input.codePostal || "").trim();
+  const villeRaw = String(input.ville || "").trim();
+  const villeNorm = villeRaw.replace(/^PARIS\s+\d+$/i, "PARIS");
+  const q = [adresse, codePostal, villeNorm].filter(Boolean).join(" ");
+  if (!q) return null;
+  try {
+    const res = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(q)}&limit=1`);
+    if (!res.ok) return null;
+    const data = await res.json() as { features?: Array<{ geometry?: { coordinates?: number[] } }> };
+    const coords = data.features?.[0]?.geometry?.coordinates;
+    if (!coords || coords.length < 2) return null;
+    return { lng: coords[0], lat: coords[1] };
+  } catch {
+    return null;
+  }
+}
+
 // Distance grand cercle entre 2 points (km). Cf. gas/Code.js:1058.
 function haversineKmFs(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371;
