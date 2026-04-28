@@ -48,11 +48,19 @@ function BlPage() {
   }, [tourneeId]);
 
   if (!tourneeId) return <div className="p-6 text-red-600">Paramètre tourneeId manquant.</div>;
-  if (!data) return <div className="p-6 text-sm text-gray-500">Chargement…</div>;
-  if ("error" in data) return <div className="p-6 text-red-600">{data.error}</div>;
 
-  const clients = focusClientId ? data.clients.filter((c) => c.clientId === focusClientId) : data.clients;
-  const dateLivraison = data.datePrevue ? new Date(data.datePrevue) : new Date();
+  // Bug observé : si gasGet est lent ou silently fail, la page restait sur
+  // "Chargement…" sans header → bouton Imprimer invisible. On affiche
+  // maintenant le header en permanence et on désactive le bouton tant que
+  // les données ne sont pas chargées.
+  const isLoading = !data;
+  const hasError = data && "error" in data;
+  const safeData = data && !("error" in data) ? data : null;
+
+  const clients = safeData
+    ? (focusClientId ? safeData.clients.filter((c) => c.clientId === focusClientId) : safeData.clients)
+    : [];
+  const dateLivraison = safeData?.datePrevue ? new Date(safeData.datePrevue) : new Date();
   const dateStr = dateLivraison.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
 
   // Le numéro BL est attribué côté serveur via getBlForTournee (séquentiel par
@@ -233,6 +241,7 @@ function BlPage() {
           </div>
         </div>
         <button
+          disabled={isLoading || hasError || clients.length === 0}
           onClick={async () => {
             const isMobile = /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
             if (!isMobile) {
@@ -259,13 +268,20 @@ function BlPage() {
               })
               .save();
           }}
-          className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+          className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
         >
           🖨️ Imprimer
         </button>
       </div>
 
       <div className="no-print h-12" />
+
+      {isLoading && (
+        <div className="p-8 text-center text-gray-500">Chargement…</div>
+      )}
+      {hasError && data && "error" in data && (
+        <div className="p-8 text-center text-red-600">{data.error}</div>
+      )}
 
       {clients.map((c) => {
         const ref = blRef(c);

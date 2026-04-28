@@ -35,29 +35,40 @@ function EtiquettesPage() {
   }, [tourneeId]);
 
   if (!tourneeId) return <div className="p-6 text-red-600">Paramètre tourneeId manquant.</div>;
-  if (!data) return <div className="p-6 text-sm text-gray-500">Chargement…</div>;
-  if ("error" in data) return <div className="p-6 text-red-600">{data.error}</div>;
 
+  // Bug observé en prod : si gasGet est lent ou silently fail, la page restait
+  // bloquée sur "Chargement…" sans header → pas de bouton Imprimer visible.
+  // On affiche maintenant le header en permanence et on calcule les pages avec
+  // un tableau vide tant que data n'est pas dispo. Le bouton se désactive.
+  const isLoading = !data;
+  const hasError = data && "error" in data;
+  const safeData = data && !("error" in data) ? data : null;
   // Numérotation par ordre de chargement camion (LIFO) : on inverse la liste
   // des clients car le dernier livré est le premier chargé (au fond du
-  // camion). Ex tournée 1→9 livraisons : étiquette 1 = client 9 (Anadolu,
-  // chargé en premier), étiquette N = client 1 (Organisation Carrée, chargé
-  // en dernier, à l'avant du camion = premier livré).
-  // En vue focus client unique, l'ordre des clients n'a pas d'importance.
-  const clients = focusClientId
-    ? data.clients.filter((c) => c.clientId === focusClientId)
-    : [...data.clients].reverse();
-  const items: { client: Client; velo: Velo; index: number; total: number }[] = [];
+  // camion). En vue focus client unique, l'ordre n'a pas d'importance.
+  const clients = safeData
+    ? (focusClientId
+        ? safeData.clients.filter((c) => c.clientId === focusClientId)
+        : [...safeData.clients].reverse())
+    : [];
+  const items: { client: Client; velo: Velo; index: number; total: number; clientLoadOrder: number; totalClients: number }[] = [];
   let total = 0;
   clients.forEach((c) => { total += c.velos.length; });
+  // clients est déjà dans l'ordre de chargement (reverse de l'ordre de livraison) :
+  // 1er du tableau = chargé en premier (au fond du camion). On expose ce rang
+  // pour l'afficher en gros sur l'étiquette (demande chauffeur/manutention).
+  const totalClients = clients.length;
   let i = 0;
-  clients.forEach((c) => {
-    c.velos.forEach((v) => { i++; items.push({ client: c, velo: v, index: i, total }); });
+  clients.forEach((c, ci) => {
+    c.velos.forEach((v) => {
+      i++;
+      items.push({ client: c, velo: v, index: i, total, clientLoadOrder: ci + 1, totalClients });
+    });
   });
 
   const pages: typeof items[] = [];
   for (let p = 0; p < items.length; p += PER_PAGE) pages.push(items.slice(p, p + PER_PAGE));
-  const dateStr = data.datePrevue ? new Date(data.datePrevue).toLocaleDateString("fr-FR") : "";
+  const dateStr = safeData?.datePrevue ? new Date(safeData.datePrevue).toLocaleDateString("fr-FR") : "";
 
   return (
     <>
@@ -92,6 +103,7 @@ function EtiquettesPage() {
           <span className="text-gray-500 ml-2">Tournée {tourneeId} · {total} étiquettes · format {LABEL_WIDTH_MM}×{LABEL_HEIGHT_MM} mm (1/feuille)</span>
         </div>
         <button
+          disabled={isLoading || hasError || pages.length === 0}
           onClick={async () => {
             // 1) Précharge tous les QR codes en data URL via fetch+Blob.
             //    Sans ça, l'image <img src="api.qrserver.com..."> est encore
@@ -163,7 +175,7 @@ function EtiquettesPage() {
             // AirDrop. Bien plus fluide que le téléchargement direct.
             window.open(url, "_blank");
           }}
-          className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700"
+          className="px-4 py-1.5 bg-blue-600 text-white rounded text-sm hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
         >
           🖨️ Imprimer
         </button>
@@ -171,10 +183,17 @@ function EtiquettesPage() {
 
       <div className="no-print h-12" />
 
+      {isLoading && (
+        <div className="p-8 text-center text-gray-500">Chargement…</div>
+      )}
+      {hasError && data && "error" in data && (
+        <div className="p-8 text-center text-red-600">{data.error}</div>
+      )}
+
       <div className="bg-gray-100 print:bg-white py-4 print:py-0">
         {pages.map((pageItems, pi) => (
           <div key={pi} className="sheet mx-auto print:mx-0 my-3 print:my-0 shadow print:shadow-none">
-            {pageItems.map(({ client, velo, index, total }) => {
+            {pageItems.map(({ client, velo, index, total, clientLoadOrder, totalClients }) => {
               // QR identique pour TOUTES les étiquettes d'un même client : on
               // encode le clientId (= identifiant interne CRM, sert au suivi
               // chargement/livraison/montage). Le BicyCode FNUCI est hors CRM
@@ -182,12 +201,45 @@ function EtiquettesPage() {
               const qrPayload = client.clientId;
               const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(qrPayload)}`;
               const fnuci = velo.fnuci || velo.veloId;
+              // En mode focus 1 client, l'ordre de chargement n'a pas de sens
+              // (le seul client est forcément "1/1"). On le masque.
+              const showLoadOrder = !focusClientId && totalClients > 1;
+              const loadLabel = clientLoadOrder === 1
+                ? "CHARGER EN PREMIER"
+                : `CHARGER EN ${clientLoadOrder}ème`;
               return (
                 <div key={velo.veloId} className="label">
                   <div style={{ fontSize: "10px", color: "#666", display: "flex", justifyContent: "space-between" }}>
                     <span>Tournée {tourneeId}{dateStr ? " · " + dateStr : ""}</span>
                     <span>{index}/{total}</span>
                   </div>
+                  {showLoadOrder && (
+                    // Bandeau "ordre de chargement" — gros chiffre + texte court.
+                    // Demande chauffeur : voir d'un coup d'œil dans quel ordre
+                    // empiler les vélos au chargement du camion (LIFO = 1er chargé,
+                    // dernier livré, au fond du camion).
+                    <div
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "3mm",
+                        marginTop: "2mm",
+                        padding: "2mm 3mm",
+                        background: clientLoadOrder === 1 ? "#000" : "#f3f4f6",
+                        color: clientLoadOrder === 1 ? "#fff" : "#111",
+                        border: clientLoadOrder === 1 ? "none" : "1.5px solid #111",
+                        borderRadius: "2mm",
+                      }}
+                    >
+                      <div style={{ fontSize: "44px", fontWeight: 900, lineHeight: 1, letterSpacing: "-2px" }}>
+                        {clientLoadOrder}
+                      </div>
+                      <div style={{ fontSize: "11px", fontWeight: 800, lineHeight: 1.1, letterSpacing: "0.3px" }}>
+                        {loadLabel}<br />
+                        <span style={{ fontWeight: 500, opacity: 0.8 }}>sur {totalClients} clients</span>
+                      </div>
+                    </div>
+                  )}
                   {/* Nom client énorme : c'est l'info la plus utile pour le
                       chauffeur / monteur qui lit l'étiquette à distance. */}
                   <div
