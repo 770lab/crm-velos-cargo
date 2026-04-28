@@ -322,16 +322,23 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
     };
 
     // RBAC apporteur côté listener : un apporteur ne reçoit que ses propres
-    // clients (filtre Firestore = compatible avec la rule serveur). Sans ce
-    // filtre, un apporteur loggé verrait son onSnapshot rejeté par les rules
-    // (il essaierait de lire la collection entière). Les autres rôles
-    // (admin/superadmin/chauffeur/chef/monteur/preparateur) gardent l'accès
-    // global. Si pas de currentUser (cas SSR ou logout), pas de listener.
-    const clientsQuery = currentUser?.role === "apporteur" && currentUser.nom
-      ? query(collection(db, "clients"), where("apporteur", "==", currentUser.nom))
+    // clients/livraisons/velos (filtre Firestore = compatible avec la rule
+    // serveur). Le matching utilise apporteurLower (champ dénormalisé pour
+    // case-insensitive), backfillé via scripts/backfill-apporteur-lower.mjs.
+    // Sans ce filtre, un apporteur loggé verrait ses snapshots rejetés par
+    // les rules. Les autres rôles gardent l'accès global.
+    const apporteurLower = currentUser?.role === "apporteur" && currentUser.nom
+      ? currentUser.nom.trim().toLowerCase()
+      : null;
+
+    const clientsQuery = apporteurLower
+      ? query(collection(db, "clients"), where("apporteurLower", "==", apporteurLower))
       : collection(db, "clients");
     const unsubClients = onSnapshot(clientsQuery, handleClients, onErr("clients"));
-    const unsubLivraisons = onSnapshot(collection(db, "livraisons"), (snap) => {
+    const livraisonsQuery = apporteurLower
+      ? query(collection(db, "livraisons"), where("apporteurLower", "==", apporteurLower))
+      : collection(db, "livraisons");
+    const unsubLivraisons = onSnapshot(livraisonsQuery, (snap) => {
       const rows: LivraisonRow[] = [];
       snap.forEach((doc) => rows.push(livraisonFromDoc(doc.id, doc.data())));
       setLivraisons(rows);

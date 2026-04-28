@@ -169,9 +169,15 @@ export async function runFirestoreAction(
 
     // ---------- clients ----------
     case "createClient": {
+      // apporteurLower : champ dénormalisé case-insensitive pour le RBAC
+      // apporteur (cf. firestore.rules + scripts/backfill-apporteur-lower.mjs).
+      const apporteurLower = body.apporteur
+        ? String(body.apporteur).trim().toLowerCase() || null
+        : null;
       const ref = await addDoc(collection(db, "clients"), {
         ...body,
         nbVelosCommandes: Number(body.nbVelosCommandes) || 0,
+        apporteurLower,
         createdAt: ts(),
         updatedAt: ts(),
       });
@@ -211,6 +217,12 @@ export async function runFirestoreAction(
         else if (docLinkMap[k]) updates[docLinkMap[k]] = v;
         else if (docDateMap[k]) updates[docDateMap[k]] = v;
         else updates[k] = v;
+      }
+      // Si apporteur change, on met à jour aussi apporteurLower (RBAC).
+      if ("apporteur" in data) {
+        updates.apporteurLower = data.apporteur
+          ? String(data.apporteur).trim().toLowerCase() || null
+          : null;
       }
       await updateDoc(doc(db, "clients", id), updates);
       return { ok: true };
@@ -270,9 +282,25 @@ export async function runFirestoreAction(
         }
         tourneeNumero = maxN + 1;
       }
+      // apporteurLower : dénormalisé depuis le client pour le RBAC apporteur
+      // (cf. firestore.rules + scripts/backfill-apporteur-lower.mjs).
+      let apporteurLowerLiv: string | null = null;
+      const cidLiv = getString(body, "clientId");
+      if (cidLiv) {
+        try {
+          const cSnap = await getDoc(doc(db, "clients", cidLiv));
+          if (cSnap.exists()) {
+            const cData = cSnap.data() as { apporteur?: string; apporteurLower?: string };
+            apporteurLowerLiv = cData.apporteurLower
+              || (cData.apporteur ? String(cData.apporteur).trim().toLowerCase() : null)
+              || null;
+          }
+        } catch {}
+      }
       const ref = await addDoc(collection(db, "livraisons"), {
         ...applyMaybeDates(body),
         tourneeNumero,
+        apporteurLower: apporteurLowerLiv,
         statut: body.statut || "planifiee",
         createdAt: ts(),
       });

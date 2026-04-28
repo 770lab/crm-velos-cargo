@@ -30,6 +30,18 @@ service firebase.storage {
       ];
     }
 
+    function isApporteur() {
+      return isSignedIn() && isActive() && role() == "apporteur";
+    }
+
+    function apporteurNameLower() {
+      return memberDoc().data.nom.lower();
+    }
+
+    function clientApporteurLower(clientId) {
+      return firestore.get(/databases/(default)/documents/clients/$(clientId)).data.apporteurLower;
+    }
+
     function isImage() {
       return request.resource.contentType.matches("image/.*");
     }
@@ -39,8 +51,13 @@ service firebase.storage {
     }
 
     // Documents clients (Kbis, devis, attestations, etc.)
+    // Un apporteur ne voit que les docs des clients où son nom (normalisé)
+    // matche apporteurLower du client (lookup Firestore cross-doc). 1 read
+    // Firestore par eval — acceptable vu le faible volume d'accès.
     match /clients/{clientId}/documents/{fileName} {
-      allow read: if isStaff();
+      allow read: if isAdmin()
+                  || (isStaff() && !isApporteur())
+                  || (isApporteur() && clientApporteurLower(clientId) == apporteurNameLower());
       allow write: if isAdmin() && maxSize(20);
     }
 

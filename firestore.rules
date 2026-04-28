@@ -41,6 +41,13 @@ service cloud.firestore {
       return memberDoc().data.nom;
     }
 
+    // Version normalisée pour matching case-insensitive avec resource.data.apporteurLower
+    // (champ dénormalisé sur clients/livraisons/velos via scripts/backfill-apporteur-lower.mjs).
+    // Évite que "Thierry Bismuth" en equipe ≠ "thierry bismuth" sur un client.
+    function apporteurNameLower() {
+      return memberDoc().data.nom.lower();
+    }
+
     // equipe : un membre peut lire son propre doc; admin lit/écrit tout.
     match /equipe/{uid} {
       allow read: if isSignedIn() && (request.auth.uid == uid || isAdmin());
@@ -49,35 +56,40 @@ service cloud.firestore {
 
     // Données métier : tout le staff actif lit, admin écrit.
     // Cas spécial apporteur (RBAC commercial 2026-04-28) : un apporteur ne
-    // voit QUE les clients dont le champ `apporteur` matche son nom (ses
-    // propres dossiers commerciaux). Les autres rôles staff voient tout.
-    // Le frontend doit query avec where("apporteur","==",userName) sinon
-    // Firestore rejette le snapshot global. Cf. memory crm_velos_cargo_apporteurs.
+    // voit QUE les clients dont le champ apporteurLower (dénormalisé,
+    // case-insensitive) matche son nom normalisé. Les autres rôles staff
+    // voient tout. Le frontend doit query avec where("apporteurLower","==",
+    // userName.toLowerCase().trim()) sinon Firestore rejette le snapshot.
+    // Cf. memory crm_velos_cargo_apporteurs.
     match /clients/{id} {
       allow read: if isAdmin()
                   || (isStaff() && !isApporteur())
-                  || (isApporteur() && resource.data.apporteur == apporteurName());
+                  || (isApporteur() && resource.data.apporteurLower == apporteurNameLower());
       allow write: if isAdmin();
     }
 
     // Vélos : update ouvert au staff terrain pour le marquage d'étapes
     // (préparation, chargement, livraison, montage) + photos montage.
-    // Pas de rule create/delete au staff : ces vélos sont créés à l'avance
-    // par admin (à partir des commandes), jamais par les opérationnels sur
-    // le terrain. Si on durcit plus tard, valider que seuls les champs
-    // attendus changent (datePreparation, dateChargement, etc.).
+    // Apporteur : lecture seule sur les vélos de SES clients (via
+    // apporteurLower dénormalisé). Pas d'update apporteur (ils ne touchent
+    // pas au flux opérationnel terrain).
     match /velos/{id} {
-      allow read: if isStaff();
-      allow update: if isStaff();
+      allow read: if isAdmin()
+                  || (isStaff() && !isApporteur())
+                  || (isApporteur() && resource.data.apporteurLower == apporteurNameLower());
+      allow update: if isStaff() && !isApporteur();
       allow create, delete: if isAdmin();
     }
 
     // Livraisons : update ouvert au staff terrain pour passer le statut à
-    // "livree", poser dateEffective et l'urlBlSigne. Création / suppression
-    // reste admin (planning J-N).
+    // "livree", poser dateEffective et l'urlBlSigne. Apporteur : lecture
+    // seule sur les livraisons de SES clients (= il voit quand son client
+    // est livré). Pas d'update apporteur.
     match /livraisons/{id} {
-      allow read: if isStaff();
-      allow update: if isStaff();
+      allow read: if isAdmin()
+                  || (isStaff() && !isApporteur())
+                  || (isApporteur() && resource.data.apporteurLower == apporteurNameLower());
+      allow update: if isStaff() && !isApporteur();
       allow create, delete: if isAdmin();
     }
 
