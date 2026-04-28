@@ -59,6 +59,9 @@ export default function CartePage() {
   const { carte: allClients, clients: allClientsFull, livraisons, stats, flotte, refresh } = useData();
   const [selected, setSelected] = useState<string | null>(null);
   const [mode, setMode] = useState<"gros" | "moyen" | "camionnette" | "retrait">("moyen");
+  // ID du camion spécifique sélectionné (pour passer la vraie capacité à
+  // suggestTournee). null = bouton "type" générique sans camion précis.
+  const [selectedCamionId, setSelectedCamionId] = useState<string | null>(null);
   const [maxDistance, setMaxDistance] = useState(50);
   const [selectedDeps, setSelectedDeps] = useState<string[]>([]);
   const [codePostal, setCodePostal] = useState("");
@@ -146,11 +149,15 @@ export default function CartePage() {
     async (clientId: string) => {
       setSelected(clientId);
       setLoading(true);
-      const data = await gasPost("suggestTournee", { clientId, mode, maxDistance });
+      // Passe la capacité réelle du camion sélectionné (sinon suggestTournee
+      // utilise un défaut par type qui peut être obsolète).
+      const camion = selectedCamionId ? flotte.find((c) => c.id === selectedCamionId) : null;
+      const capacite = camion?.capaciteVelos;
+      const data = await gasPost("suggestTournee", { clientId, mode, maxDistance, capacite });
       setTournee(data);
       setLoading(false);
     },
-    [mode, maxDistance]
+    [mode, maxDistance, selectedCamionId, flotte]
   );
 
   useEffect(() => {
@@ -256,34 +263,47 @@ export default function CartePage() {
             <label className="text-xs font-medium text-gray-600 block mb-1">
               Type de camion
             </label>
-            <div className="flex gap-1">
+            <div className="flex flex-wrap gap-1">
               {(() => {
-                // Capacités lues dynamiquement depuis Firestore (collection camions).
-                // Fallback sur les valeurs historiques si le doc est manquant.
-                const capByType = (t: string, fallback: string) => {
-                  // Le seed `camionnette` côté UI = type `petit` côté flotte (cf. day-planner-modal).
-                  const lookupType = t === "camionnette" ? "petit" : t;
-                  const c = flotte.find((f) => f.type === lookupType && f.actif);
-                  if (!c) return fallback;
-                  return c.capaciteVelos > 0 ? `${c.capaciteVelos} v.` : "client";
-                };
-                return [
-                  { key: "gros", label: "Gros", cap: capByType("gros", "165 v.") },
-                  { key: "moyen", label: "Moyen", cap: capByType("moyen", "54 v.") },
-                  { key: "camionnette", label: "Camion.", cap: capByType("camionnette", "20 v.") },
-                  { key: "retrait", label: "Retrait", cap: capByType("retrait", "client") },
-                ] as const;
+                // Liste tous les camions actifs depuis Firestore (option B :
+                // 1 bouton par camion individuel, pas par type). L'utilisateur
+                // peut choisir précisément quel véhicule sera affecté à la
+                // tournée — ça change la capacité passée à suggestTournee.
+                // Type côté UI : `camionnette` = `petit` côté flotte (legacy).
+                const typeForUI = (t: string) => (t === "petit" ? "camionnette" : t);
+                const buttons = flotte
+                  .filter((c) => c.actif)
+                  .map((c) => ({
+                    id: c.id,
+                    type: typeForUI(c.type) as "gros" | "moyen" | "camionnette" | "retrait",
+                    label: c.nom,
+                    cap: c.capaciteVelos > 0 ? `${c.capaciteVelos} v.` : "client",
+                  }));
+                // Tri stable : Gros d'abord, puis moyens (capacité décroissante),
+                // puis petits, puis retrait.
+                const order: Record<string, number> = { gros: 0, moyen: 1, camionnette: 2, retrait: 3 };
+                buttons.sort((a, b) => {
+                  const da = order[a.type] ?? 9;
+                  const db = order[b.type] ?? 9;
+                  if (da !== db) return da - db;
+                  // Capacité décroissante dans le même type
+                  const ca = parseInt(a.cap) || 0;
+                  const cb = parseInt(b.cap) || 0;
+                  return cb - ca;
+                });
+                return buttons;
               })().map((opt) => (
                 <button
-                  key={opt.key}
-                  onClick={() => setMode(opt.key)}
-                  className={`flex-1 px-2 py-2 text-xs font-medium rounded-lg transition-colors ${
-                    mode === opt.key
+                  key={opt.id}
+                  onClick={() => { setMode(opt.type); setSelectedCamionId(opt.id); }}
+                  className={`flex-1 min-w-[60px] px-2 py-2 text-xs font-medium rounded-lg transition-colors ${
+                    selectedCamionId === opt.id
                       ? "bg-green-600 text-white"
                       : "bg-gray-100 text-gray-600 hover:bg-gray-200"
                   }`}
+                  title={opt.label}
                 >
-                  {opt.label}
+                  <span className="block truncate">{opt.label}</span>
                   <span className="block text-[10px] font-normal opacity-80">{opt.cap}</span>
                 </button>
               ))}

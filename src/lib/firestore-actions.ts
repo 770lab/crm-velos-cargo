@@ -2008,10 +2008,10 @@ export async function runFirestoreAction(
       const maxDistance = Number(body.maxDistance || 50);
       if (!clientId) return { error: "clientId requis" };
 
-      // Capacités historiques GAS (cf. gas/Code.js:965). Le frontend /carte
-      // affiche les vraies capacités via le data-context, mais ici on garde
-      // une table par TYPE (gros/moyen/camionnette/retrait) qui sert juste à
-      // borner le bin-packing — peu importe quel doc camion précis.
+      // Capacité : si le frontend a passé une capacité explicite (ex: clic sur
+      // "Moyen 65v" précis), on la prend. Sinon, fallback sur la table par
+      // type (cf. gas/Code.js:965).
+      const capaciteOverride = Number(body.capacite);
       const capacites: Record<string, number> = {
         gros: 132,
         moyen: 54,
@@ -2019,7 +2019,7 @@ export async function runFirestoreAction(
         petit: 20,
         retrait: 9999,
       };
-      const capacite = capacites[mode] ?? 54;
+      const capacite = capaciteOverride > 0 ? capaciteOverride : (capacites[mode] ?? 54);
 
       // 1) Tous les clients livrables (avec lat/lng)
       const cSnap = await getDocs(collection(db, "clients"));
