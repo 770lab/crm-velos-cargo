@@ -2817,6 +2817,19 @@ function RappelVeilleModal({
     return match?.email || null;
   };
 
+  // Chef d'équipe joignable le jour J — on prend le 1er chef de la tournée.
+  // Mail veille : on l'expose au client pour qu'il puisse appeler en direct
+  // en cas d'imprévu, plutôt qu'un vague "appelez-nous".
+  const chefEquipeRef = (() => {
+    const liv0 = tournee.livraisons[0];
+    if (!liv0) return null;
+    const chefId = liv0.chefEquipeIds?.[0] || liv0.chefEquipeId;
+    if (!chefId) return null;
+    const m = equipe.find((x) => x.id === chefId);
+    if (!m) return null;
+    return { nom: m.nom || "", telephone: m.telephone || "" };
+  })();
+
   const buildMail = (st: typeof stops[number]) => {
     const cid = st.livraison.clientId;
     const c = cid ? clientInfo.get(cid) : null;
@@ -2824,6 +2837,9 @@ function RappelVeilleModal({
     const debut = fmtHM(roundDown30(st.arriveeMin));
     const fin = fmtHM(roundUp30(st.arriveeMin + FENETRE_HEURES * 60));
     const subject = `Rappel livraison vélos cargo le ${dateObj ? dateObj.toLocaleDateString("fr-FR", { day: "numeric", month: "long" }) : ""} — fenêtre ${debut}-${fin}`;
+    const chefContact = chefEquipeRef?.telephone
+      ? `${chefEquipeRef.nom ? chefEquipeRef.nom + " " : ""}au ${chefEquipeRef.telephone}`
+      : null;
     const body = [
       `Bonjour${c?.contact ? " " + c.contact : ""},`,
       ``,
@@ -2833,7 +2849,11 @@ function RappelVeilleModal({
       `Adresse : ${c?.adresse || ""}${c?.codePostal ? ", " + c.codePostal : ""}${c?.ville ? " " + c.ville : ""}.`,
       ``,
       `Merci de prévoir une personne sur place pour la réception et la signature du procès-verbal de livraison.`,
-      `En cas d'imprévu (retard, fenêtre serrée, accès difficile), répondez à ce mail ou appelez-nous.`,
+      `⚠️ Le tampon de l'entreprise est impératif sur le PV au moment de la livraison — sans tampon, le dossier CEE ne peut pas être finalisé.`,
+      ``,
+      chefContact
+        ? `En cas d'imprévu (retard, fenêtre serrée, accès difficile), appelez directement le chef d'équipe ${chefContact}, ou répondez à ce mail.`
+        : `En cas d'imprévu (retard, fenêtre serrée, accès difficile), répondez à ce mail ou appelez-nous.`,
       ``,
       `Cordialement,`,
       `L'équipe Artisans Verts Energy`,
