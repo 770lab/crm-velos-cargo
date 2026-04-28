@@ -215,12 +215,22 @@ function BlPage() {
       `}</style>
 
       <div className="no-print fixed top-0 left-0 right-0 bg-white border-b shadow-sm z-50 px-4 py-2 flex items-center justify-between">
-        <div className="text-sm">
-          <span className="font-bold">📄 Bons de livraison</span>
-          <span className="text-gray-500 ml-2">
+        <div className="text-sm leading-tight">
+          <div>
+            <span className="font-bold">📄 Bons de livraison</span>
+            {/* En mode focus 1 client : on affiche le numéro de BL + date juste
+                à côté du titre — c'est l'info principale, l'utilisateur la
+                cherchait pour identifier le BL en un coup d'œil. */}
+            {clients.length === 1 && (
+              <span className="font-bold text-gray-800 ml-2">
+                {blRef(clients[0])} <span className="text-gray-500 font-normal">— {dateStr}</span>
+              </span>
+            )}
+          </div>
+          <div className="text-gray-500 text-xs mt-0.5">
             Tournée {tourneeId} · {clients.length} client{clients.length > 1 ? "s" : ""}
             {focusClientId ? " (focus)" : ""}
-          </span>
+          </div>
         </div>
         <button
           onClick={async () => {
