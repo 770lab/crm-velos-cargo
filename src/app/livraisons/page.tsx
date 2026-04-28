@@ -1698,7 +1698,17 @@ function TourneeModal({
 
         {/* Bon d'enlèvement de la tournée (Axdis) */}
         {tournee.tourneeId && (() => {
-          const be = bonsEnlevement.find((b) => b.tourneeId === tournee.tourneeId);
+          // Matching priorisé : (1) lien direct via tourneeId si renseigné par
+          // le sync Cloud Function, (2) fallback via tourneeNumero (les bons
+          // arrivés via gas-inbox+Gemini Vision n'ont QUE le numéro extrait du
+          // PDF — "VELO CARGO - TOURNEE X"). Cf. memory crm_velos_cargo_axdis_workflow.
+          const be = bonsEnlevement.find((b) => {
+            if (b.tourneeId && b.tourneeId === tournee.tourneeId) return true;
+            if (tournee.numero != null && b.tourneeNumero != null) {
+              return Number(b.tourneeNumero) === tournee.numero;
+            }
+            return false;
+          });
           if (!be) {
             return (
               <div className="mb-3 inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg border bg-gray-50 border-gray-200 text-gray-500">

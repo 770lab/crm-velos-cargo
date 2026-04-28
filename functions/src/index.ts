@@ -352,10 +352,35 @@ export const syncFromGas = onSchedule(
         | { items: RawBon[] }
         | RawBon[];
       const bons = Array.isArray(bonsResp) ? bonsResp : bonsResp.items || [];
+
+      // Resolve tourneeNumero → tourneeId via Firestore livraisons. gas-inbox
+      // n'a pas accès au mapping numéro→id, il extrait juste "TOURNEE X" du PDF
+      // AXDIS via Gemini. Ici on fait la jointure une fois pour toutes pour que
+      // le frontend puisse matcher directement par tourneeId (lien stable).
+      const numToId = new Map<number, string>();
+      try {
+        const livSnap = await db.collection("livraisons").get();
+        for (const d of livSnap.docs) {
+          const data = d.data();
+          const num = typeof data.tourneeNumero === "number" ? data.tourneeNumero : null;
+          const tid = typeof data.tourneeId === "string" ? data.tourneeId : null;
+          if (num != null && tid && !numToId.has(num)) numToId.set(num, tid);
+        }
+      } catch (mapErr) {
+        logger.warn("syncFromGas: build numToId map failed (matching dégradé)", mapErr);
+      }
+
       const batch = db.batch();
       let n = 0;
       for (const b of bons) {
         if (!b.id) continue;
+        // Résolution tourneeId : (1) celui fourni par GAS, (2) sinon lookup
+        // par tourneeNumero, (3) sinon null (le frontend matchera quand même
+        // via tourneeNumero, mais le lien est moins direct).
+        let resolvedTourneeId: string | null = b.tourneeId || null;
+        if (!resolvedTourneeId && typeof b.tourneeNumero === "number") {
+          resolvedTourneeId = numToId.get(b.tourneeNumero) || null;
+        }
         batch.set(
           db.collection("bonsEnlevement").doc(b.id),
           {
@@ -366,7 +391,7 @@ export const syncFromGas = onSchedule(
             tourneeRef: b.tourneeRef || null,
             tourneeDate: b.tourneeDate || null,
             tourneeNumero: b.tourneeNumero ?? null,
-            tourneeId: b.tourneeId || null,
+            tourneeId: resolvedTourneeId,
             quantite: b.quantite ?? null,
             driveUrl: b.driveUrl || null,
             fileName: b.fileName || null,
@@ -445,10 +470,29 @@ export const syncFromGasNow = onCall(async (request) => {
       | { items: RawBon[] }
       | RawBon[];
     const bons = Array.isArray(bonsResp) ? bonsResp : bonsResp.items || [];
+
+    // Même résolution tourneeNumero → tourneeId que le scheduler.
+    const numToId = new Map<number, string>();
+    try {
+      const livSnap = await db.collection("livraisons").get();
+      for (const d of livSnap.docs) {
+        const data = d.data();
+        const num = typeof data.tourneeNumero === "number" ? data.tourneeNumero : null;
+        const tid = typeof data.tourneeId === "string" ? data.tourneeId : null;
+        if (num != null && tid && !numToId.has(num)) numToId.set(num, tid);
+      }
+    } catch (mapErr) {
+      logger.warn("syncFromGasNow: build numToId map failed", mapErr);
+    }
+
     for (const b of bons) {
       if (!b.id) continue;
+      let resolvedTourneeId: string | null = b.tourneeId || null;
+      if (!resolvedTourneeId && typeof b.tourneeNumero === "number") {
+        resolvedTourneeId = numToId.get(b.tourneeNumero) || null;
+      }
       await db.collection("bonsEnlevement").doc(b.id).set(
-        { ...b, syncedAt: FieldValue.serverTimestamp() },
+        { ...b, tourneeId: resolvedTourneeId, syncedAt: FieldValue.serverTimestamp() },
         { merge: true },
       );
       result.bons++;
