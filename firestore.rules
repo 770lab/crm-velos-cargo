@@ -119,6 +119,20 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Disponibilités d'une journée (camions / chauffeurs / chefs / monteurs).
+    // Écrites par setDisponibilites (admin via day-planner-modal), lues par
+    // tout le staff (proposeTournee, vues planning).
+    match /disponibilites/{id} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
+    // Compteurs séquentiels (ex : counters/bl-2026 pour numéros BL).
+    // Lus + incrémentés en transaction par getBlForTournee.
+    match /counters/{id} {
+      allow read, write: if isStaff();
+    }
+
     // Tout le reste est refusé par défaut.
     match /{document=**} {
       allow read, write: if false;
