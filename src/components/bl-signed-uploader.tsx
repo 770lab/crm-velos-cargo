@@ -98,7 +98,7 @@ export default function BlSignedUploader({
         </div>
         <div className="text-xs text-gray-600 mt-1">
           Photographie le BL papier après signature et cachet du client. Il sera
-          archivé dans le dossier Drive du client.
+          archivé dans l&apos;espace de stockage sécurisé du client.
         </div>
       </div>
 

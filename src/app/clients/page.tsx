@@ -1083,7 +1083,7 @@ function UploadDocModal({
       <div className="bg-white rounded-xl p-6 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
         <h2 className="text-lg font-semibold mb-2">Uploader « {docLabels[docType]} »</h2>
         <p className="text-sm text-gray-500 mb-4">
-          Le fichier sera classé directement dans le bon sous-dossier Drive et la pastille passera au vert.
+          Le fichier sera archivé dans l&apos;espace de stockage sécurisé du client et la pastille passera au vert.
         </p>
 
         <input
