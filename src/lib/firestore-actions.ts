@@ -153,6 +153,8 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "setDisponibilites",
   // gemini vision (vague 3 — proxifié via Cloud Function)
   "extractFnuciFromImage",
+  // routing & planning (vague 3 — Cloud Function lit Firestore + appelle Gemini)
+  "proposeTournee",
 ]);
 
 export function isMigrated(action: string): boolean {
@@ -990,33 +992,6 @@ export async function runFirestoreAction(
         }
       }
       await batch.commit();
-
-      // Double-write GAS — best effort. proposeTournee (vague 3 🔴 pas
-      // encore migré) lit les dispos depuis le Sheet GAS. Sans ce miroir,
-      // l'utilisateur coche "Petit + Moyen", on écrit dans Firestore, mais
-      // Gemini renvoie "Aucun camion disponible" car GAS ne voit rien.
-      // À supprimer une fois proposeTournee migré (lira Firestore).
-      const gasUrl = process.env.NEXT_PUBLIC_GAS_URL;
-      if (gasUrl) {
-        try {
-          const url = new URL(gasUrl);
-          url.searchParams.set("action", "setDisponibilites");
-          url.searchParams.set(
-            "body",
-            encodeURIComponent(JSON.stringify({
-              date,
-              camionIds: desired.camion,
-              chauffeurIds: desired.chauffeur,
-              chefIds: desired.chef,
-              monteurIds: desired.monteur,
-            })),
-          );
-          await fetch(url.toString(), { redirect: "follow" });
-        } catch {
-          // GAS down ou timeout : on n'échoue pas, Firestore est la source de vérité.
-        }
-      }
-
       return { ok: true, added, reactivated, archived };
     }
 
@@ -1374,6 +1349,32 @@ export async function runFirestoreAction(
           ok: false,
           error: e instanceof Error ? e.message : String(e),
         };
+      }
+    }
+
+    case "proposeTournee": {
+      // Cloud Function europe-west1. Lit Firestore (dispos, équipe, flotte,
+      // clients, livraisons), construit le prompt, appelle Gemini, parse +
+      // sanitize, renvoie la même ProposeResponse que l'ancienne route GAS.
+      // Le frontend day-planner-modal.tsx envoyait { getPromptOnly, geminiText }
+      // pour le bypass Vercel — devenu inutile (la CF est notre serveur).
+      const date = getString(body, "date");
+      const mode = getString(body, "mode") || "fillGaps";
+      if (!date) return { error: "date YYYY-MM-DD requise" };
+      // Si le frontend nous repasse un geminiText (legacy GAS getPromptOnly +
+      // /api/gemini Vercel), on ignore et on relance un cycle complet côté CF.
+      // Si getPromptOnly:true on simule l'ancienne réponse "phase=build, prompt=…"
+      // — mais en pratique, le frontend devrait être mis à jour pour appeler
+      // proposeTournee en un seul shot (cf. day-planner-modal.tsx propose()).
+      const callable = httpsCallable<
+        { date: string; mode: string },
+        Record<string, unknown>
+      >(functions, "proposeTournee");
+      try {
+        const r = await callable({ date, mode });
+        return r.data;
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
       }
     }
 

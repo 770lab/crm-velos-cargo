@@ -876,3 +876,6 @@ export const extractFnuciFromImage = onCall<ExtractFnuciPayload>(
     };
   },
 );
+
+// proposeTournee — vague 3 migration GAS → Cloud Function (cf. propose-tournee.ts).
+export { proposeTournee } from "./propose-tournee.js";

@@ -2,7 +2,9 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { gasGet, gasPost } from "@/lib/gas";
-import { callGemini } from "@/lib/gemini-client";
+// callGemini (proxy Vercel /api/gemini) n'est plus appelé depuis vague 3 :
+// proposeTournee est une Cloud Function qui appelle Gemini elle-même. Import
+// retiré pour éviter le warning TS unused.
 import { useData, type Camion, type EquipeMember } from "@/lib/data-context";
 
 type Dispo = {
@@ -170,7 +172,9 @@ export default function DayPlannerModal({
     setProposition(null);
     setProposeStep("savingDispo");
     try {
-      // Sauvegarde les dispos d'abord pour que Gemini voie l'état actuel
+      // Sauvegarde les dispos pour que la Cloud Function les voie en lisant
+      // Firestore. Plus de double-write GAS depuis vague 3 (proposeTournee
+      // est désormais une Cloud Function qui lit Firestore directement).
       await gasPost("setDisponibilites", {
         date,
         camionIds: Array.from(camionIds),
@@ -179,33 +183,18 @@ export default function DayPlannerModal({
         monteurIds: Array.from(monteurIds),
       });
 
-      // Appel Gemini déporté hors GAS pour contourner le quota UrlFetch :
-      //   1) GAS construit le prompt + contexte (pas d'appel HTTP externe)
-      //   2) /api/gemini sur Vercel appelle Gemini avec retry + fallback modèles
-      //   3) GAS reçoit la réponse texte et fait le parse + sanitize en local
-      setProposeStep("buildingPrompt");
-      const built = (await gasPost("proposeTournee", { date, mode, getPromptOnly: true })) as
-        ProposeResponse & { phase?: string; prompt?: string };
-      if (built.error || !built.prompt) {
-        setProposition(built as ProposeResponse);
-        return;
-      }
+      // Appel one-shot à la Cloud Function europe-west1 `proposeTournee` :
+      // elle lit Firestore + appelle Gemini + parse + sanitize en interne.
+      // Plus de cycle 3-étapes (getPromptOnly → /api/gemini Vercel → geminiText)
+      // qui était nécessaire pour bypass le quota UrlFetch GAS.
       setProposeStep("gemini");
       setGeminiStartedAt(Date.now());
-      // En mode rapide on force flash-lite directement (pas de fallback flash
-      // au cas où). En mode normal on laisse le Cloud Function essayer flash
-      // d'abord puis flash-lite si saturation.
-      const apiJson = await callGemini(
-        built.prompt,
-        fastMode ? ["gemini-2.5-flash-lite"] : undefined,
-      );
-      if (!apiJson.ok) {
-        setProposition({ error: "Gemini : " + apiJson.error });
-        return;
-      }
-      setProposeStep("parsing");
-      const r = (await gasPost("proposeTournee", { date, mode, geminiText: apiJson.text })) as ProposeResponse;
+      const r = (await gasPost("proposeTournee", { date, mode })) as ProposeResponse;
       setProposition(r);
+      // `fastMode` est conservé dans l'UI mais n'a plus d'effet : la CF tente
+      // flash puis flash-lite avec retry. Sera réintroduit si besoin via un
+      // paramètre `models` côté CF.
+      void fastMode;
     } catch (err) {
       setProposition({ error: String(err) });
     } finally {
