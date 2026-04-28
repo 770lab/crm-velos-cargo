@@ -77,7 +77,22 @@ export default function CartePage() {
 
   const cpFilter = codePostal.trim();
   const searchQuery = search.trim().toLowerCase();
-  const clients = allClients.filter((c) => {
+  // Vélos réellement planifiés par client = somme des nbVelos des livraisons
+  // statut=planifiee. Source de vérité plus fiable que stats.planifies persisté
+  // (qui peut dériver). Cf. fix /livraisons 2026-04-28.
+  const planifiesParClient = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const l of livraisons) {
+      if (l.statut !== "planifiee") continue;
+      const cid = l.clientId;
+      if (!cid) continue;
+      m.set(cid, (m.get(cid) || 0) + (l.nbVelos || 0));
+    }
+    return m;
+  }, [livraisons]);
+  const clients = allClients
+    .map((c) => ({ ...c, velosPlanifies: planifiesParClient.get(c.id) || 0 }))
+    .filter((c) => {
     const reste = c.nbVelos - c.velosLivres - (c.velosPlanifies || 0);
     if (reste <= 0) return false;
     if (selectedDeps.length > 0 && !(c.departement != null && selectedDeps.includes(String(c.departement)))) {
