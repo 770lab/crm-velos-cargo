@@ -341,6 +341,23 @@ export async function runFirestoreAction(
         createdAt: ts(),
       });
 
+      // Incrémente stats.planifies si la livraison est planifiee (symétrique
+      // avec deleteLivraison). Sinon le compteur reste à 0 et le pop-up
+      // /carte affiche "Aucun vélo à planifier" alors qu'il y en a.
+      if (cidLiv && (body.statut || "planifiee") === "planifiee") {
+        try {
+          const cRef = doc(db, "clients", cidLiv);
+          const cSnap = await getDoc(cRef);
+          if (cSnap.exists()) {
+            const stats = (cSnap.data() as { stats?: { planifies?: number } }).stats || {};
+            const cur = Number(stats.planifies) || 0;
+            await updateDoc(cRef, { "stats.planifies": cur + 1 });
+          }
+        } catch (e) {
+          console.error("[createLivraison] increment planifies KO", e);
+        }
+      }
+
       // Création automatique des docs `velos` cibles si manquants. Modèle A
       // (vélo lié au clientId, pas à la livraisonId) : on s'aligne sur le
       // schéma historique GAS pour préserver assignFnuciToClient,
@@ -427,6 +444,8 @@ export async function runFirestoreAction(
       } catch {}
 
       const results: { tourneeId: string; livraisonsCount: number }[] = [];
+      // Compte les incréments stats.planifies par client (appliqués en fin de boucle).
+      const incParClient = new Map<string, number>();
       for (const t of tourneesIn) {
         // 1) Doc tournée
         const tRef = await addDoc(collection(db, "tournees"), {
@@ -523,9 +542,24 @@ export async function runFirestoreAction(
           } catch (e) {
             console.error("[createTournees] velos backfill KO", e);
           }
+          incParClient.set(cid, (incParClient.get(cid) || 0) + 1);
           livCount++;
         }
         results.push({ tourneeId: tRef.id, livraisonsCount: livCount });
+      }
+
+      // Incrémente stats.planifies par client (cf. createLivraison).
+      for (const [cid, n] of incParClient.entries()) {
+        try {
+          const cRef = doc(db, "clients", cid);
+          const cSnap = await getDoc(cRef);
+          if (!cSnap.exists()) continue;
+          const stats = (cSnap.data() as { stats?: { planifies?: number } }).stats || {};
+          const cur = Number(stats.planifies) || 0;
+          await updateDoc(cRef, { "stats.planifies": cur + n });
+        } catch (e) {
+          console.error("[createTournees] increment planifies KO", cid, e);
+        }
       }
       return { tournees: results, count: results.length };
     }
@@ -2923,42 +2957,104 @@ export async function runFirestoreGet(
       // Soft-delete : statut="annulee". restoreLivraison remet à "planifiee".
       // Pas de delete physique car les vélos rattachés gardent une référence
       // (tourneeId/livraisonId) qu'on ne veut pas casser.
+      // Décrémente stats.planifies sur le client si la livraison était planifiée
+      // (sinon le pop-up /carte affiche un compteur stale et bloque la
+      // re-planification — bug 2026-04-28).
       const id = params.id;
       if (!id) throw new Error("id requis");
-      await updateDoc(doc(db, "livraisons", id), {
-        statut: "annulee",
-        dateEffective: null,
-      });
+      const livRef = doc(db, "livraisons", id);
+      const livSnap = await getDoc(livRef);
+      const livData = livSnap.exists() ? (livSnap.data() as { statut?: string; clientId?: string }) : null;
+      const wasPlanifiee = livData?.statut === "planifiee";
+      const cidDel = livData?.clientId || null;
+      await updateDoc(livRef, { statut: "annulee", dateEffective: null });
+      if (wasPlanifiee && cidDel) {
+        try {
+          const cRef = doc(db, "clients", cidDel);
+          const cSnap = await getDoc(cRef);
+          if (cSnap.exists()) {
+            const stats = (cSnap.data() as { stats?: { planifies?: number } }).stats || {};
+            const cur = Number(stats.planifies) || 0;
+            await updateDoc(cRef, { "stats.planifies": Math.max(0, cur - 1) });
+          }
+        } catch (e) {
+          console.error("[deleteLivraison] decrement planifies KO", e);
+        }
+      }
       return { ok: true };
     }
 
     case "restoreLivraison": {
       const id = params.id;
       if (!id) throw new Error("id requis");
-      await updateDoc(doc(db, "livraisons", id), {
-        statut: "planifiee",
-        dateEffective: null,
-      });
+      const livRef = doc(db, "livraisons", id);
+      const livSnap = await getDoc(livRef);
+      const livData = livSnap.exists() ? (livSnap.data() as { statut?: string; clientId?: string }) : null;
+      const wasAnnulee = livData?.statut === "annulee";
+      const cidRest = livData?.clientId || null;
+      await updateDoc(livRef, { statut: "planifiee", dateEffective: null });
+      // Symétrique : si on remet en planifiee depuis annulee, ré-incrémente.
+      if (wasAnnulee && cidRest) {
+        try {
+          const cRef = doc(db, "clients", cidRest);
+          const cSnap = await getDoc(cRef);
+          if (cSnap.exists()) {
+            const stats = (cSnap.data() as { stats?: { planifies?: number } }).stats || {};
+            const cur = Number(stats.planifies) || 0;
+            await updateDoc(cRef, { "stats.planifies": cur + 1 });
+          }
+        } catch (e) {
+          console.error("[restoreLivraison] increment planifies KO", e);
+        }
+      }
       return { ok: true };
     }
 
     case "cancelTournee": {
       // Annule toutes les livraisons d'une tournée (statut="annulee").
       // Utilisé par le bouton "Annuler la tournée" dans /livraisons.
+      // Décrémente stats.planifies sur chaque client touché (cf. deleteLivraison).
       const tourneeId = params.tourneeId;
       if (!tourneeId) throw new Error("tourneeId requis");
       const snap = await getDocs(
         query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
       );
-      // writeBatch limité à 500 ops — au-delà on découpe (une tournée fait
-      // rarement plus de 50 livraisons mais on reste safe).
       const docs = snap.docs.filter((d) => (d.data() as { statut?: string }).statut !== "annulee");
+
+      // Compte les décréments par clientId AVANT de muter (les livraisons
+      // étaient toutes planifiees ou en cours — on décrémente uniquement
+      // celles qui étaient en statut=planifiee côté stats client).
+      const decrParClient = new Map<string, number>();
+      for (const d of docs) {
+        const data = d.data() as { statut?: string; clientId?: string };
+        if (data.statut !== "planifiee") continue;
+        const cid = data.clientId || "";
+        if (!cid) continue;
+        decrParClient.set(cid, (decrParClient.get(cid) || 0) + 1);
+      }
+
+      // writeBatch limité à 500 ops — au-delà on découpe.
       for (let i = 0; i < docs.length; i += 400) {
         const batch = writeBatch(db);
         for (const d of docs.slice(i, i + 400)) {
           batch.update(d.ref, { statut: "annulee", dateEffective: null });
         }
         await batch.commit();
+      }
+
+      // Décrément stats.planifies par client (pas batché — quelques clients
+      // par tournée typiquement, lectures séquentielles acceptables).
+      for (const [cid, n] of decrParClient.entries()) {
+        try {
+          const cRef = doc(db, "clients", cid);
+          const cSnap = await getDoc(cRef);
+          if (!cSnap.exists()) continue;
+          const stats = (cSnap.data() as { stats?: { planifies?: number } }).stats || {};
+          const cur = Number(stats.planifies) || 0;
+          await updateDoc(cRef, { "stats.planifies": Math.max(0, cur - n) });
+        } catch (e) {
+          console.error("[cancelTournee] decrement planifies KO", cid, e);
+        }
       }
       return { ok: true, count: docs.length };
     }
