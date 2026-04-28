@@ -500,10 +500,22 @@ function _processMessage(msg, crmCtx) {
   result.gemini = gemini;
   result.matched = !!matched;
 
-  // Upload des PJ au dossier client (si matché) sinon dossier "À classer"
-  var folder = matched
-    ? _getClientFolder(matched.entreprise, matched.id)
-    : _getOrCreateFolder(DriveApp.getFolderById(DRIVE_PARENT_ID), "À classer manuellement");
+  // Upload des PJ au dossier client (si matché) sinon dossier "À classer".
+  // CAS SPÉCIAL : les mails de @axdis.fr sont des bons d'enlèvement liés à
+  // une tournée, pas à un client. On les route directement dans un dossier
+  // dédié "Bons d'enlèvement AXDIS" pour que Yoann les retrouve facilement.
+  // Ce routage se fait sur l'email de l'expéditeur (avant classification
+  // Gemini) pour éviter d'uploader d'abord ailleurs et de devoir déplacer.
+  var isAxdisBon = /@axdis\.fr\b/i.test(fromEmail || "")
+    || /VELO\s*CARGO\s*-?\s*TOURNEE/i.test(msg.getSubject() || "");
+  var folder;
+  if (isAxdisBon) {
+    folder = _getOrCreateFolder(DriveApp.getFolderById(DRIVE_PARENT_ID), "Bons d'enlèvement AXDIS");
+  } else if (matched) {
+    folder = _getClientFolder(matched.entreprise, matched.id);
+  } else {
+    folder = _getOrCreateFolder(DriveApp.getFolderById(DRIVE_PARENT_ID), "À classer manuellement");
+  }
 
   for (var i = 0; i < attachments.length; i++) {
     var att = attachments[i];
