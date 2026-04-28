@@ -1548,7 +1548,9 @@ function TourneeModal({
           <div>
             <div className={`inline-flex items-center gap-2 ${palette.text}`}>
               <span className="text-lg font-semibold">
-                {isRetrait ? "Retrait client" : "Tournée"} {tourneeNumber ? <span>{tourneeNumber}</span> : tournee.tourneeId ? <span className="font-mono text-sm">{tournee.tourneeId}</span> : "(sans id)"}
+                {isRetrait
+                  ? `Retrait ${tournee.livraisons[0]?.client?.entreprise || "client"}`
+                  : <>Tournée {tourneeNumber ? <span>{tourneeNumber}</span> : tournee.tourneeId ? <span className="font-mono text-sm">{tournee.tourneeId}</span> : "(sans id)"}</>}
               </span>
             </div>
             <div className="text-sm text-gray-500 mt-1 flex items-center gap-2 flex-wrap">
