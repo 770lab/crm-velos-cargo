@@ -1517,6 +1517,153 @@ export async function runFirestoreGet(
       };
     }
 
+    case "listEquipe": {
+      // includeInactifs="true" → tout le monde, sinon seuls les actifs.
+      // Parité avec gas listEquipe (gas/Code.js) consommé par /equipe.
+      const includeInactifs = params.includeInactifs === "true";
+      const baseQuery = includeInactifs
+        ? collection(db, "equipe")
+        : query(collection(db, "equipe"), where("actif", "==", true));
+      const snap = await getDocs(baseQuery);
+      const items = snap.docs.map((d) => {
+        const data = d.data() as Record<string, unknown>;
+        const createdAt = data.createdAt as { toDate?: () => Date } | undefined;
+        return {
+          id: d.id,
+          nom: (data.nom as string) ?? "",
+          role: data.role,
+          telephone: (data.telephone as string | null) ?? null,
+          email: (data.email as string | null) ?? null,
+          actif: !!data.actif,
+          notes: (data.notes as string | null) ?? null,
+          createdAt: createdAt?.toDate ? createdAt.toDate().toISOString() : null,
+          hasCode: true,
+          salaireJournalier: data.salaireJournalier ?? null,
+          primeVelo: data.primeVelo ?? null,
+        };
+      });
+      return { ok: true, items };
+    }
+
+    case "listVerifications": {
+      // status ∈ {pending, validated, rejected, unassigned, "", "all"}.
+      // Pour "all" / "" / "unassigned" → pas de filtre status. "unassigned"
+      // est un filtre client-side (clientId vide), on remonte tout côté
+      // serveur et la page filtre. Limite par défaut 1000 comme GAS.
+      const status = params.status || "";
+      const lim = Math.max(1, Math.min(5000, Number(params.limit || "1000") || 1000));
+      const useStatusFilter = status === "pending" || status === "validated" || status === "rejected";
+      // Pas d'orderBy serveur : combiné à un where, Firestore exige un index
+      // composite (firestore.indexes.json est vide). On trie côté client après
+      // récup, ce qui est OK pour ≤ lim docs.
+      const q = useStatusFilter
+        ? query(
+            collection(db, "verifications"),
+            where("status", "==", status),
+            limit(lim),
+          )
+        : query(collection(db, "verifications"), limit(lim));
+      const snap = await getDocs(q);
+      const tsToIso = (x: unknown): string | undefined => {
+        if (!x) return undefined;
+        if (typeof x === "string") return x;
+        const t = x as { toDate?: () => Date };
+        return t?.toDate ? t.toDate().toISOString() : undefined;
+      };
+      const items = snap.docs.map((d) => {
+        const data = d.data() as Record<string, unknown>;
+        return {
+          id: d.id,
+          receivedAt: tsToIso(data.receivedAt),
+          clientId: data.clientId ?? "",
+          entreprise: data.entreprise ?? "",
+          docType: data.docType ?? "",
+          driveUrl: data.driveUrl ?? data.storageUrl ?? "",
+          fileName: data.fileName ?? "",
+          fromEmail: data.fromEmail ?? "",
+          subject: data.subject ?? "",
+          effectifDetected: data.effectifDetected ?? "",
+          nbVelosBefore: data.nbVelosBefore ?? "",
+          nbVelosAfter: data.nbVelosAfter ?? "",
+          status: data.status ?? "",
+          notes: data.notes ?? "",
+          messageId: data.messageId ?? "",
+        };
+      });
+      // Tri client : receivedAt desc, fallback sur id pour stabilité.
+      items.sort((a, b) => {
+        const ra = (a.receivedAt as string) || "";
+        const rb = (b.receivedAt as string) || "";
+        if (ra !== rb) return rb.localeCompare(ra);
+        return b.id.localeCompare(a.id);
+      });
+      return { ok: true, items };
+    }
+
+    case "archiveMembre": {
+      // Soft-delete d'un membre d'équipe : actif=false. Préserve l'historique
+      // (livraisons passées qui référencent l'id) tout en sortant le membre
+      // des listes "actifs". gasGet historique → reproduit via updateDoc.
+      const id = params.id;
+      if (!id) throw new Error("id requis");
+      await updateDoc(doc(db, "equipe", id), { actif: false });
+      return { ok: true };
+    }
+
+    case "deleteLivraison": {
+      // Soft-delete : statut="annulee". restoreLivraison remet à "planifiee".
+      // Pas de delete physique car les vélos rattachés gardent une référence
+      // (tourneeId/livraisonId) qu'on ne veut pas casser.
+      const id = params.id;
+      if (!id) throw new Error("id requis");
+      await updateDoc(doc(db, "livraisons", id), {
+        statut: "annulee",
+        dateEffective: null,
+      });
+      return { ok: true };
+    }
+
+    case "restoreLivraison": {
+      const id = params.id;
+      if (!id) throw new Error("id requis");
+      await updateDoc(doc(db, "livraisons", id), {
+        statut: "planifiee",
+        dateEffective: null,
+      });
+      return { ok: true };
+    }
+
+    case "cancelTournee": {
+      // Annule toutes les livraisons d'une tournée (statut="annulee").
+      // Utilisé par le bouton "Annuler la tournée" dans /livraisons.
+      const tourneeId = params.tourneeId;
+      if (!tourneeId) throw new Error("tourneeId requis");
+      const snap = await getDocs(
+        query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
+      );
+      // writeBatch limité à 500 ops — au-delà on découpe (une tournée fait
+      // rarement plus de 50 livraisons mais on reste safe).
+      const docs = snap.docs.filter((d) => (d.data() as { statut?: string }).statut !== "annulee");
+      for (let i = 0; i < docs.length; i += 400) {
+        const batch = writeBatch(db);
+        for (const d of docs.slice(i, i + 400)) {
+          batch.update(d.ref, { statut: "annulee", dateEffective: null });
+        }
+        await batch.commit();
+      }
+      return { ok: true, count: docs.length };
+    }
+
+    case "countPendingVerifications": {
+      // Badge sidebar admin (poll 60s). On compte uniquement les verifs
+      // status=pending. getDocs renvoie le size sans frais supplémentaires
+      // significatifs vs un getCountFromServer (collection limitée).
+      const snap = await getDocs(
+        query(collection(db, "verifications"), where("status", "==", "pending")),
+      );
+      return { ok: true, count: snap.size };
+    }
+
     default:
       return null; // signal "fallback GAS"
   }
