@@ -5,6 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { gasGet, gasPost, gasUpload } from "@/lib/gas";
 import { useCurrentUser } from "@/lib/current-user";
+import { BASE_PATH } from "@/lib/base-path";
 
 export default function ClientDetailWrapper() {
   return (
@@ -305,6 +306,34 @@ function ClientDetailPage() {
               <div className="text-xs text-amber-700 mt-1">Annulée le {new Date(client.annuleeAt).toLocaleString("fr-FR")}</div>
             )}
             <div className="text-xs text-amber-700 mt-1">Le client est masqué de la carte, du picker et de la planif. Cliquer « Restaurer » pour le réactiver.</div>
+          </div>
+        </div>
+      )}
+
+      {/* Pour les sociétés à 1 vélo (= dirigeant seul, pas de salariés),
+          l'admin doit imprimer une attestation sur l'honneur "0 salarié" en
+          plus du dossier CEE standard, à faire tamponner par le client.
+          Sans ce rappel, l'oubli bloque la validation CEE TRA-EQ-131. */}
+      {client.nbVelosCommandes === 1 && (
+        <div className="bg-amber-50 border border-amber-300 rounded-xl p-4 mb-4">
+          <div className="flex items-start gap-3">
+            <div className="text-2xl">📋</div>
+            <div className="flex-1">
+              <div className="font-semibold text-amber-900">
+                Société à 1 vélo — attestation 0 salarié à faire tamponner
+              </div>
+              <div className="text-sm text-amber-800 mt-1">
+                Imprime ce modèle, fais-le tamponner par le client (gérant), puis joins-le au dossier CEE.
+                Obligatoire quand la société n&apos;a pas de salariés (dirigeant seul).
+              </div>
+              <a
+                href={`${BASE_PATH}/templates/attestation-0-salarie-velo-cargo.docx`}
+                download="Attestation 0 salarié - Vélo Cargo.docx"
+                className="inline-block mt-2 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg px-3 py-1.5"
+              >
+                ⬇ Télécharger le modèle (.docx)
+              </a>
+            </div>
           </div>
         </div>
       )}
