@@ -1406,21 +1406,17 @@ export async function runFirestoreAction(
       // pour le bypass Vercel — devenu inutile (la CF est notre serveur).
       const date = getString(body, "date");
       const mode = getString(body, "mode") || "fillGaps";
+      const models = Array.isArray(body.models) ? (body.models as string[]) : undefined;
       if (!date) return { error: "date YYYY-MM-DD requise" };
-      // Si le frontend nous repasse un geminiText (legacy GAS getPromptOnly +
-      // /api/gemini Vercel), on ignore et on relance un cycle complet côté CF.
-      // Si getPromptOnly:true on simule l'ancienne réponse "phase=build, prompt=…"
-      // — mais en pratique, le frontend devrait être mis à jour pour appeler
-      // proposeTournee en un seul shot (cf. day-planner-modal.tsx propose()).
       // Timeout 300s côté client (SDK default 70s coupe trop tôt). La CF
       // elle-même est capée à 540s mais avec retry court côté CF (2 essais
       // × 4s backoff par modèle) on devrait rester sous 3 min en p99.
       const callable = httpsCallable<
-        { date: string; mode: string },
+        { date: string; mode: string; models?: string[] },
         Record<string, unknown>
       >(functions, "proposeTournee", { timeout: 300000 });
       try {
-        const r = await callable({ date, mode });
+        const r = await callable({ date, mode, models });
         return r.data;
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) };

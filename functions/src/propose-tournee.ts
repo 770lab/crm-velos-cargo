@@ -699,6 +699,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 async function callGemini(
   apiKey: string,
   prompt: string,
+  models?: string[],
 ): Promise<{ ok: true; text: string; finishReason: string | null } | { ok: false; error: string }> {
   const requestPayload = {
     contents: [{ parts: [{ text: prompt }] }],
@@ -706,13 +707,18 @@ async function callGemini(
       temperature: 0.1,
       maxOutputTokens: 65536,
       responseMimeType: "application/json",
-      thinkingConfig: { thinkingBudget: 4096 },
+      // thinkingBudget=0 libère 4k tokens pour la réponse. Bug observé
+      // 2026-04-28 : flash-lite + thinking 4096 + 70 clients = MAX_TOKENS
+      // atteint avec Gemini qui hallucine "Tournée 183" en boucle. Sans
+      // thinking, le modèle suit le format direct et tient dans le budget.
+      thinkingConfig: { thinkingBudget: 0 },
     },
   };
   let lastCode: number | null = null;
   let lastBody = "";
   let lastModel: string | null = null;
-  for (const model of FALLBACK_MODELS) {
+  const modelList = models && models.length > 0 ? models : FALLBACK_MODELS;
+  for (const model of modelList) {
     lastModel = model;
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
     let modelBlocked = false;
@@ -755,6 +761,10 @@ async function callGemini(
 type ProposePayload = {
   date?: string;
   mode?: string;
+  // ["gemini-2.5-flash-lite"] = mode rapide forcé sur le petit modèle.
+  // undefined ou ["gemini-2.5-flash", "gemini-2.5-flash-lite"] = cascade
+  // standard (flash robuste d'abord, fallback flash-lite si saturé).
+  models?: string[];
 };
 
 export const proposeTournee = onCall<ProposePayload>(
@@ -873,7 +883,7 @@ export const proposeTournee = onCall<ProposePayload>(
       capa,
     );
 
-    const callRes = await callGemini(apiKey, prompt);
+    const callRes = await callGemini(apiKey, prompt, request.data?.models);
     if (!callRes.ok) {
       logger.warn("proposeTournee Gemini KO", { error: callRes.error });
       return { error: callRes.error };

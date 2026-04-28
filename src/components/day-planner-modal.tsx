@@ -185,16 +185,14 @@ export default function DayPlannerModal({
 
       // Appel one-shot à la Cloud Function europe-west1 `proposeTournee` :
       // elle lit Firestore + appelle Gemini + parse + sanitize en interne.
-      // Plus de cycle 3-étapes (getPromptOnly → /api/gemini Vercel → geminiText)
-      // qui était nécessaire pour bypass le quota UrlFetch GAS.
       setProposeStep("gemini");
       setGeminiStartedAt(Date.now());
-      const r = (await gasPost("proposeTournee", { date, mode })) as ProposeResponse;
+      // fastMode → force flash-lite seul (réponse 5-30s, OK pour <40 clients).
+      // mode normal → cascade flash → flash-lite. Sur >50 clients flash-lite
+      // hallucine et sature MAX_TOKENS, donc préférer le mode normal.
+      const models = fastMode ? ["gemini-2.5-flash-lite"] : undefined;
+      const r = (await gasPost("proposeTournee", { date, mode, models })) as ProposeResponse;
       setProposition(r);
-      // `fastMode` est conservé dans l'UI mais n'a plus d'effet : la CF tente
-      // flash puis flash-lite avec retry. Sera réintroduit si besoin via un
-      // paramètre `models` côté CF.
-      void fastMode;
     } catch (err) {
       setProposition({ error: String(err) });
     } finally {
