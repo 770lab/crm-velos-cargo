@@ -1714,6 +1714,33 @@ function TourneeModal({
               <div className="mb-3 inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg border bg-gray-50 border-gray-200 text-gray-500">
                 <span>📋</span>
                 <span>Bon d&apos;enlèvement non reçu</span>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setBusy("syncBons");
+                    try {
+                      const r = (await gasPost("syncBonsNow", {})) as { ok?: boolean; bons?: number; verifs?: number; error?: string };
+                      if (r.error) {
+                        alert(`Sync échouée : ${r.error}`);
+                      } else {
+                        // Le badge se mettra à jour automatiquement via le listener
+                        // Firestore onSnapshot. On informe juste que la sync est OK.
+                        if ((r.bons ?? 0) === 0) {
+                          alert("Sync OK — aucun bon trouvé pour l'instant côté GAS. Tiffany n'a peut-être pas encore répondu, ou le mail n'a pas été classé BON_ENLEVEMENT.");
+                        }
+                      }
+                    } catch (e) {
+                      alert("Sync échouée : " + (e instanceof Error ? e.message : String(e)));
+                    } finally {
+                      setBusy(null);
+                    }
+                  }}
+                  disabled={busy === "syncBons"}
+                  className="ml-1 text-xs px-2 py-0.5 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-50"
+                  title="Force une sync immédiate des bons reçus depuis GAS (sans attendre le cron 15 min)"
+                >
+                  {busy === "syncBons" ? "⏳" : "🔄 Sync maintenant"}
+                </button>
               </div>
             );
           }

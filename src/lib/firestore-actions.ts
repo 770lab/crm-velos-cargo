@@ -144,6 +144,8 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "uploadBlSignedPhoto",
   "uploadMontagePhoto",
   "uploadVeloPhoto",
+  // sync admin
+  "syncBonsNow",
 ]);
 
 export function isMigrated(action: string): boolean {
@@ -855,6 +857,25 @@ export async function runFirestoreAction(
         updatedAt: ts(),
       });
       return { ok: true, url };
+    }
+
+    case "syncBonsNow": {
+      // Force la sync GAS → Firestore des bonsEnlevement + verifications
+      // immédiatement (sans attendre le cron 15 min). Délègue à la Cloud
+      // Function syncFromGasNow (réservée admins).
+      const callable = httpsCallable<
+        Record<string, never>,
+        { ok: boolean; bons?: number; verifs?: number; error?: string }
+      >(functions, "syncFromGasNow");
+      try {
+        const r = await callable({});
+        return r.data;
+      } catch (e) {
+        return {
+          ok: false,
+          error: e instanceof Error ? e.message : String(e),
+        };
+      }
     }
 
     default:
