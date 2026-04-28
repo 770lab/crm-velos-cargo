@@ -84,18 +84,61 @@ export default function ClientsPage() {
           c.ville?.toLowerCase().includes(q)
       );
     }
-    if (filter === "docs_manquants") {
-      result = result.filter(
-        (c) => ALL_DOC_FIELDS.some((f) => !c[f as keyof typeof c])
-      );
-    } else if (filter === "prets") {
-      result = result.filter(
-        (c) => ALL_DOC_FIELDS.every((f) => c[f as keyof typeof c])
-      );
-    } else if (filter === "livraison_prog") {
-      result = result.filter((c) => nextDeliveryByClient.has(c.id));
-    } else if (filter === "livraison_non_prog") {
-      result = result.filter((c) => !nextDeliveryByClient.has(c.id) && (c.stats.totalVelos - c.stats.livres) > 0);
+    // Filtres "manque doc X" : on garde les clients qui n'ont PAS le flag.
+    // Filtres "exécution" : basés sur stats (livres/montes/blSignes/etc).
+    // Convention : un filtre = un critère unique pour rester lisible.
+    switch (filter) {
+      case "docs_manquants":
+        result = result.filter((c) => ALL_DOC_FIELDS.some((f) => !c[f as keyof typeof c]));
+        break;
+      case "prets":
+        result = result.filter((c) => ALL_DOC_FIELDS.every((f) => c[f as keyof typeof c]));
+        break;
+      case "livraison_prog":
+        result = result.filter((c) => nextDeliveryByClient.has(c.id));
+        break;
+      case "livraison_non_prog":
+        result = result.filter((c) => !nextDeliveryByClient.has(c.id) && (c.stats.totalVelos - c.stats.livres) > 0);
+        break;
+      case "no_devis":
+        result = result.filter((c) => !c.devisSignee);
+        break;
+      case "no_kbis":
+        result = result.filter((c) => !c.kbisRecu);
+        break;
+      case "no_liasse":
+        result = result.filter((c) => !c.attestationRecue);
+        break;
+      case "no_signature":
+        result = result.filter((c) => !c.signatureOk);
+        break;
+      case "no_bicycle":
+        result = result.filter((c) => !c.inscriptionBicycle);
+        break;
+      case "no_parcelle":
+        result = result.filter((c) => !c.parcelleCadastrale);
+        break;
+      case "livres_sans_bl":
+        // Vélos livrés mais BL pas signé : livres>0 ET blSignes < totalLivraisonsLivrees.
+        result = result.filter(
+          (c) => c.stats.livres > 0 && (c.stats.blSignes ?? 0) < (c.stats.totalLivraisonsLivrees ?? 0),
+        );
+        break;
+      case "non_livres":
+        // Au moins un vélo restant à livrer.
+        result = result.filter((c) => c.stats.totalVelos > 0 && c.stats.livres < c.stats.totalVelos);
+        break;
+      case "non_montes":
+        // Au moins un vélo restant à monter (livré ou non, on regarde l'étape montage).
+        result = result.filter((c) => c.stats.totalVelos > 0 && (c.stats.montes ?? 0) < c.stats.totalVelos);
+        break;
+      case "facturables":
+        result = result.filter((c) => c.stats.facturables > 0);
+        break;
+      case "non_factures":
+        // Facturable mais pas encore facturé (différence non nulle).
+        result = result.filter((c) => c.stats.facturables > c.stats.factures);
+        break;
     }
     return result;
   }, [allClients, search, filter, nextDeliveryByClient]);
@@ -225,10 +268,31 @@ export default function ClientsPage() {
           className="px-4 py-2 border border-gray-300 rounded-lg text-sm"
         >
           <option value="all">Tous</option>
-          <option value="docs_manquants">Documents manquants</option>
-          <option value="prets">Dossiers complets</option>
-          <option value="livraison_prog">Livraison programmée</option>
-          <option value="livraison_non_prog">À programmer (vélos restants)</option>
+          <optgroup label="Dossier">
+            <option value="docs_manquants">Documents manquants</option>
+            <option value="prets">Dossiers complets</option>
+          </optgroup>
+          <optgroup label="Documents manquants">
+            <option value="no_devis">Sans devis signé</option>
+            <option value="no_kbis">Sans Kbis</option>
+            <option value="no_liasse">Sans liasse / attestation</option>
+            <option value="no_signature">Sans signature PV</option>
+            <option value="no_bicycle">Sans inscription Bicycle</option>
+            <option value="no_parcelle">Sans parcelle cadastrale</option>
+          </optgroup>
+          <optgroup label="Livraison">
+            <option value="livraison_prog">Livraison programmée</option>
+            <option value="livraison_non_prog">À programmer (vélos restants)</option>
+            <option value="non_livres">Vélos non livrés</option>
+            <option value="livres_sans_bl">Livrés sans BL signé</option>
+          </optgroup>
+          <optgroup label="Montage">
+            <option value="non_montes">Vélos non montés</option>
+          </optgroup>
+          <optgroup label="Facturation">
+            <option value="facturables">Avec facturables</option>
+            <option value="non_factures">Facturables non facturés</option>
+          </optgroup>
         </select>
       </div>
 
