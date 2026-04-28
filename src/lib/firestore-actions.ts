@@ -1412,14 +1412,13 @@ export async function runFirestoreAction(
       // Si getPromptOnly:true on simule l'ancienne réponse "phase=build, prompt=…"
       // — mais en pratique, le frontend devrait être mis à jour pour appeler
       // proposeTournee en un seul shot (cf. day-planner-modal.tsx propose()).
-      // Timeout 120s côté client pour matcher la CF (Gemini peut réfléchir
-      // 60-90s sur les gros volumes — le default SDK 60s coupe trop tôt et
-      // remonte deadline-exceeded alors que la CF est encore en train de
-      // tourner).
+      // Timeout 300s côté client (SDK default 70s coupe trop tôt). La CF
+      // elle-même est capée à 540s mais avec retry court côté CF (2 essais
+      // × 4s backoff par modèle) on devrait rester sous 3 min en p99.
       const callable = httpsCallable<
         { date: string; mode: string },
         Record<string, unknown>
-      >(functions, "proposeTournee", { timeout: 120000 });
+      >(functions, "proposeTournee", { timeout: 300000 });
       try {
         const r = await callable({ date, mode });
         return r.data;

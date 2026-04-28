@@ -690,7 +690,10 @@ function parseAndSanitize(rawText: string, ctx: ProposeContext): Record<string, 
 // ----------------------- Appel Gemini -----------------------
 
 const FALLBACK_MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
-const RETRY_DELAYS_MS = [0, 3000, 8000, 15000, 30000];
+// Retry agressif court : on essaie 2x avec backoff léger puis on bascule sur
+// flash-lite. Anciennement 5 retries × ~56s/modèle = 2 min/modèle = 4 min
+// total → dépasse le timeout client SDK (300s) sur les pics de charge Gemini.
+const RETRY_DELAYS_MS = [0, 4000];
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 async function callGemini(
