@@ -114,11 +114,43 @@ async function main() {
       batch.update(d.ref, {
         statut: "planifiee",
         dateEffective: null,
+        // Le BL signé est aussi un résidu des tests : sans ce reset, l'icône
+        // "Voir le BL signé" reste verte sur la fiche client alors qu'aucune
+        // livraison réelle n'a eu lieu. Vide aussi numeroBL pour que le 1er
+        // appel à getBlForTournee en réattribue un nouveau (séquentiel /YYYY).
+        urlBlSigne: null,
+        numeroBL: null,
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       });
     }
     await batch.commit();
-    console.log(`✅ ${livSnap.size} livraison(s) repassée(s) à "planifiee".`);
+    console.log(`✅ ${livSnap.size} livraison(s) repassée(s) à "planifiee" (BL signé + numeroBL vidés).`);
+  }
+
+  // 5) Recompute les stats du client : sans ça, /clients continue d'afficher
+  // 3/3 livrés / 3/3 montés alors que les vélos sont remis à zéro. Formule
+  // alignée sur reset-simulation.mjs (la référence canonique).
+  if (APPLY) {
+    const cVelosSnap = await db.collection("velos").where("clientId", "==", CLIENT_ID).get();
+    const cLivSnap = await db.collection("livraisons").where("clientId", "==", CLIENT_ID).get();
+    const velos = cVelosSnap.docs.filter((d) => !d.data().annule).map((d) => d.data());
+    const livs = cLivSnap.docs.map((d) => d.data());
+    const newStats = {
+      totalVelos: velos.length,
+      montes: velos.filter((v) => !!v.dateMontage).length,
+      livres: velos.filter((v) => !!v.dateLivraisonScan).length,
+      totalLivraisonsLivrees: livs.filter((l) => l.statut === "livree").length,
+      blSignes: livs.filter((l) => !!l.urlBlSigne).length,
+      facturables: 0,
+      planifies: livs.filter((l) => l.statut === "planifiee").length,
+      certificats: velos.filter((v) => !!v.fnuci).length,
+      factures: 0,
+    };
+    await db.collection("clients").doc(CLIENT_ID).update({
+      stats: newStats,
+      updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    console.log(`✅ Stats client recomputées :`, newStats);
   }
 
   if (!APPLY) {
