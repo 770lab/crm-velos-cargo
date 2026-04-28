@@ -51,7 +51,12 @@ interface TourneeResult {
 }
 
 export default function CartePage() {
-  const { carte: allClients, livraisons, refresh } = useData();
+  // - `carte` (allClients) : clients avec lat/lng → utilisé pour la carte + filtres dépt/CP
+  // - `clients` (allClientsFull) : TOUS les clients → utilisé pour les compteurs
+  //   du bandeau, pour qu'ils matchent /tableau-de-bord (sinon les clients sans
+  //   coordonnées GPS étaient invisibles dans le total)
+  // - `stats` : déjà calculé côté data context (même source que /tableau-de-bord)
+  const { carte: allClients, clients: allClientsFull, livraisons, stats, refresh } = useData();
   const [selected, setSelected] = useState<string | null>(null);
   const [mode, setMode] = useState<"gros" | "moyen" | "camionnette" | "retrait">("moyen");
   const [maxDistance, setMaxDistance] = useState(50);
@@ -104,20 +109,23 @@ export default function CartePage() {
     );
   }, [livraisons]);
 
+  // Source de vérité = `stats` du data context (= même calcul que /tableau-de-bord :
+  // somme de stats.totalVelos / stats.livres / stats.planifies sur tous les clients,
+  // PAS seulement ceux qui ont lat/lng). On ajoute juste les compteurs spécifiques
+  // à la page (nbTournees, clientsRestants).
   const dashStats = useMemo(() => {
-    const totalVelos = allClients.reduce((s, c) => s + c.nbVelos, 0);
-    const velosLivres = allClients.reduce((s, c) => s + c.velosLivres, 0);
-    const velosPlanifies = allClients.reduce((s, c) => s + (c.velosPlanifies || 0), 0);
+    const totalVelos = stats?.totalVelos ?? 0;
+    const velosLivres = stats?.velosLivres ?? 0;
+    const velosPlanifies = stats?.velosPlanifies ?? 0;
     const velosRestants = totalVelos - velosLivres - velosPlanifies;
-    const clientsPlanifies = allClients.filter((c) => c.velosPlanifies > 0 || c.velosLivres >= c.nbVelos).length;
-    const clientsRestants = allClients.filter((c) => {
-      const rest = c.nbVelos - c.velosLivres - (c.velosPlanifies || 0);
+    const clientsRestants = allClientsFull.filter((c) => {
+      const rest = c.stats.totalVelos - c.stats.livres - (c.stats.planifies || 0);
       return rest > 0;
     }).length;
     const tourneeIds = new Set(livraisons.filter((l) => l.tourneeId && l.statut !== "annulee").map((l) => l.tourneeId));
     const pct = totalVelos > 0 ? Math.round(((velosLivres + velosPlanifies) / totalVelos) * 100) : 0;
-    return { totalVelos, velosLivres, velosPlanifies, velosRestants, clientsPlanifies, clientsRestants, nbTournees: tourneeIds.size, pct };
-  }, [allClients, livraisons]);
+    return { totalVelos, velosLivres, velosPlanifies, velosRestants, clientsRestants, nbTournees: tourneeIds.size, pct };
+  }, [stats, allClientsFull, livraisons]);
 
   const handleSelectClient = useCallback(
     async (clientId: string) => {
