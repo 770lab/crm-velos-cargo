@@ -1381,11 +1381,22 @@ export async function runFirestoreAction(
     }
 
     case "unsetVeloClient": {
+      // ⚠ Bug 29-04 11h09 : avant on mettait clientId=null aussi → le vélo était
+      // déclient et le client perdait un slot (28 → 23 chez ANADOLU). Or le
+      // texte UI dit "Le slot reste sur la commande du client". On garde donc
+      // clientId, on vide juste fnuci + toutes les dates d'étapes (prép, charg,
+      // livr, montage). Le vélo redevient un slot vierge pour ce client,
+      // disponible pour assignFnuciToClient avec un nouveau FNUCI.
       const veloId = getRequired(body, "veloId");
       await updateDoc(doc(db, "velos", veloId), {
-        clientId: null,
         fnuci: null,
         datePreparation: null,
+        dateChargement: null,
+        dateLivraisonScan: null,
+        dateMontage: null,
+        urlPhotoMontageEtiquette: null,
+        urlPhotoMontageQrVelo: null,
+        photoMontageUrl: null,
         updatedAt: ts(),
       });
       return { ok: true };
