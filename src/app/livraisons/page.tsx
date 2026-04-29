@@ -2585,9 +2585,18 @@ Réponds STRICTEMENT en JSON sans markdown, format :
         })()}
 
         {/* Affectation équipe */}
-        {tournee.tourneeId && (
+        {tournee.tourneeId && (() => {
+          // Détecte une "tournée virtuelle" : tournee.tourneeId provient de
+          // parseTourneeFromNotes (legacy) mais aucune livraison n'a ce
+          // tourneeId persisté (ex: livraison reportée → tourneeId=null en
+          // Firestore). Dans ce cas on passe tourneeId="" et on s'appuie sur
+          // livraisonIds pour appliquer l'affectation par livraison.
+          const hasRealTourneeId = tournee.livraisons.some((l) => l.tourneeId === tournee.tourneeId);
+          const livIds = tournee.livraisons.map((l) => l.id);
+          return (
           <EquipeAssignBlock
-            tourneeId={tournee.tourneeId}
+            tourneeId={hasRealTourneeId ? tournee.tourneeId : ""}
+            livraisonIds={livIds}
             isRetrait={isRetrait}
             initialChauffeurId={tournee.livraisons[0]?.chauffeurId || null}
             initialChefEquipeIds={(() => {
@@ -2601,7 +2610,8 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             onSaved={onChanged}
             onMonteurCountChange={setMonteurs}
           />
-        )}
+          );
+        })()}
 
         {/* Barre sélection */}
         <div className="flex items-center gap-3 mb-2">
@@ -3335,6 +3345,7 @@ function groupByTournee(livraisons: LivraisonRow[]): Tournee[] {
 
 function EquipeAssignBlock({
   tourneeId,
+  livraisonIds,
   isRetrait,
   initialChauffeurId,
   initialChefEquipeIds,
@@ -3344,6 +3355,10 @@ function EquipeAssignBlock({
   onMonteurCountChange,
 }: {
   tourneeId: string;
+  /** IDs des livraisons composant la tournée — utilisés en fallback quand
+   *  tourneeId est vide (tournée virtuelle issue d'un report) pour appliquer
+   *  l'affectation livraison-par-livraison. */
+  livraisonIds?: string[];
   isRetrait: boolean;
   initialChauffeurId: string | null;
   initialChefEquipeIds: string[];
@@ -3388,15 +3403,32 @@ function EquipeAssignBlock({
     setSaving(true);
     setError(null);
     try {
-      const r = await gasPost("assignTournee", {
-        tourneeId,
+      const fields = {
         chauffeurId: chauffeurId || "",
         chefEquipeId: chefEquipeIds[0] || "",
         chefEquipeIds,
         monteurIds,
         preparateurIds,
-      });
-      if ((r as { error?: string }).error) throw new Error((r as { error?: string }).error);
+      };
+      // Cas standard : la tournée a un tourneeId Firestore → bulk update.
+      // Cas tournée virtuelle (livraison reportée → tourneeId=null côté Firestore,
+      // groupée en virtuel par le frontend par date+chauffeur) : on n'a pas de
+      // tourneeId, donc on fait l'assignment par livraisonId, sur chaque
+      // livraison de la "tournée virtuelle".
+      if (tourneeId) {
+        const r = await gasPost("assignTournee", { tourneeId, ...fields });
+        if ((r as { error?: string }).error) throw new Error((r as { error?: string }).error);
+      } else {
+        if (!livraisonIds || livraisonIds.length === 0) {
+          throw new Error("Aucune livraison à mettre à jour");
+        }
+        const results = await Promise.all(
+          livraisonIds.map((lid) => gasPost("assignTournee", { livraisonId: lid, ...fields })),
+        );
+        for (const r of results) {
+          if ((r as { error?: string }).error) throw new Error((r as { error?: string }).error);
+        }
+      }
       setSavedAt(new Date());
       onSaved();
     } catch (e) {
