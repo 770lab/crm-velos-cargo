@@ -140,6 +140,10 @@ function Inner({ mode }: { mode: ScanMode }) {
   // (la prép assigne le FNUCI, donc nécessite le BicyCode physique).
   const [qrScannerOpen, setQrScannerOpen] = useState<boolean>(false);
   const [qrScanFeedback, setQrScanFeedback] = useState<Array<{ label: string; ok: boolean; at: number }>>([]);
+  // Verrou client auto (29-04 12h05) : au 1er QR scanné, on déduit le client
+  // et on verrouille là-dessus. Les scans suivants doivent appartenir au
+  // même client, sinon refus. Quand le client est complet, libération auto.
+  const [autoLockedClientId, setAutoLockedClientId] = useState<string | null>(null);
   // En mode préparation, si on scanne un FNUCI inconnu on propose d'assigner
   // à un client de la tournée (fusionne réception + préparation).
   const [pendingFnuci, setPendingFnuci] = useState<string | null>(null);
@@ -163,6 +167,18 @@ function Inner({ mode }: { mode: ScanMode }) {
       setLoadError(String(e));
     }
   }, [tourneeId]);
+
+  // Libère le verrou client auto dès que le client verrouillé est complet
+  // pour l'étape courante (utile si la progression est rechargée d'un autre
+  // chemin, ex : un autre opérateur sur même tournée).
+  useEffect(() => {
+    if (!autoLockedClientId || !progression || "error" in progression) return;
+    const totalsKey = mode === "chargement" ? "charge" : mode === "livraison" ? "livre" : "prepare";
+    const c = progression.clients.find((c) => c.clientId === autoLockedClientId);
+    if (c && c.totals[totalsKey] >= c.totals.total) {
+      setAutoLockedClientId(null);
+    }
+  }, [autoLockedClientId, progression, mode]);
 
   useEffect(() => { loadProgression(); }, [loadProgression]);
 
@@ -347,14 +363,23 @@ function Inner({ mode }: { mode: ScanMode }) {
   const handleQrCartonScan = useCallback(async (scannedClientId: string) => {
     if (mode === "preparation") return; // jamais en prép
     const etape = mode === "chargement" ? "chargement" : "livraisonScan";
-    if (focusClientId && scannedClientId !== focusClientId) {
+
+    // Le client effectivement verrouillé : URL focus > verrou auto
+    const lockedClientId = focusClientId || autoLockedClientId;
+
+    // Si un client est déjà verrouillé et le QR scanné ne match pas → refus.
+    if (lockedClientId && scannedClientId !== lockedClientId) {
       beep(false);
+      const lockedName = (progression && "clients" in progression)
+        ? progression.clients.find((c) => c.clientId === lockedClientId)?.entreprise
+        : null;
       setQrScanFeedback((prev) => [
         ...prev,
-        { label: `QR pour un autre client — refusé`, ok: false, at: Date.now() },
+        { label: `⛔ QR autre client — termine ${lockedName || "le client en cours"}`, ok: false, at: Date.now() },
       ]);
       return;
     }
+
     try {
       const r = (await gasPost("markNextVeloForEtape", {
         clientId: scannedClientId,
@@ -368,6 +393,10 @@ function Inner({ mode }: { mode: ScanMode }) {
       if ("ok" in r && r.ok) {
         beep(true);
         const fn = r.fnuci || "(sans FNUCI)";
+        // Verrouille auto sur ce client si pas déjà fait (et pas de focusClientId).
+        if (!focusClientId && !autoLockedClientId) {
+          setAutoLockedClientId(scannedClientId);
+        }
         setQrScanFeedback((prev) => [
           ...prev,
           {
@@ -376,6 +405,14 @@ function Inner({ mode }: { mode: ScanMode }) {
             at: Date.now(),
           },
         ]);
+        // Si remaining == 0, le client est complet → libère le verrou auto.
+        if (r.remaining === 0 && !focusClientId) {
+          setAutoLockedClientId(null);
+          setQrScanFeedback((prev) => [
+            ...prev,
+            { label: `✅ ${r.clientName || "Client"} terminé — scanne le client suivant`, ok: true, at: Date.now() },
+          ]);
+        }
         // Recharger en arrière-plan pour mettre à jour les compteurs.
         void loadProgression();
       } else {
@@ -396,7 +433,7 @@ function Inner({ mode }: { mode: ScanMode }) {
         { label: e instanceof Error ? e.message : String(e), ok: false, at: Date.now() },
       ]);
     }
-  }, [mode, focusClientId, tourneeId, userId, bypassOrderLock, loadProgression]);
+  }, [mode, focusClientId, autoLockedClientId, progression, tourneeId, userId, bypassOrderLock, loadProgression]);
 
   if (!tourneeId) {
     return (
@@ -621,47 +658,97 @@ function Inner({ mode }: { mode: ScanMode }) {
             {/* Scan QR carton : remplace le scan BicyCode pour chargement / livraison.
                 Pas dispo en préparation (la prép assigne le FNUCI, le QR carton n'existe pas
                 encore à ce moment-là). */}
-            {(mode === "chargement" || mode === "livraison") && (
+            {(mode === "chargement" || mode === "livraison") && (() => {
+              const effectiveLockedId = focusClientId || autoLockedClientId;
+              const lockedClient = effectiveLockedId && "clients" in prog
+                ? prog.clients.find((c) => c.clientId === effectiveLockedId)
+                : null;
+              const lockedDone = lockedClient ? lockedClient.totals[cfg.totalsKey] : 0;
+              const lockedTotal = lockedClient ? lockedClient.totals.total : 0;
+              const lockedRemaining = lockedTotal - lockedDone;
+              return (
+                <div className="bg-white rounded-xl shadow p-4 mb-3 space-y-3">
+                  {lockedClient ? (
+                    <div className="bg-emerald-50 border-2 border-emerald-400 rounded-lg p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="text-[10px] uppercase tracking-wide text-emerald-700 font-bold">
+                            🔒 Client en cours
+                          </div>
+                          <div className="font-bold text-emerald-900 text-base truncate">
+                            {lockedClient.entreprise}
+                          </div>
+                          <div className="text-xs text-emerald-800">
+                            {lockedDone}/{lockedTotal} {cfg.title.toLowerCase()}é{lockedDone > 1 ? "s" : ""}
+                            {lockedRemaining > 0 && ` · reste ${lockedRemaining}`}
+                            {lockedRemaining === 0 && " · ✅ complet"}
+                          </div>
+                        </div>
+                        {!focusClientId && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setAutoLockedClientId(null);
+                              setQrScanFeedback([]);
+                            }}
+                            className="text-[11px] text-emerald-700 underline whitespace-nowrap"
+                            title="Libère le verrou pour scanner un autre client"
+                          >
+                            Changer
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-xs text-amber-900">
+                      📦 Scanne un 1er QR carton — le client sera identifié et verrouillé automatiquement.
+                    </div>
+                  )}
+                  <button
+                    type="button"
+                    disabled={allDone}
+                    onClick={() => {
+                      setQrScanFeedback([]);
+                      setQrScannerOpen(true);
+                    }}
+                    className="w-full px-3 py-3 bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 disabled:opacity-60 text-sm"
+                  >
+                    📦 Scanner QR carton ({cfg.title.toLowerCase()})
+                  </button>
+                  <p className="text-[11px] text-gray-500 text-center">
+                    Mitraille les étiquettes d&apos;un client d&apos;affilée. Chaque scan marque le prochain vélo du client en cours.
+                  </p>
+                </div>
+              );
+            })()}
+
+            {/* PhotoGeminiCapture (Caméra continue + dropdown client) n'a de
+                sens qu'en préparation où on assigne le FNUCI à un client.
+                En chargement/livraison, le scan QR carton suffit (le client
+                est déduit du QR, le serveur trouve le 1er vélo non-fait).
+                Le retirer évite que l'opérateur s'en serve pour scanner un
+                QR carton — Gemini hallucine un FNUCI au lieu de lire le QR. */}
+            {mode === "preparation" && (
               <div className="bg-white rounded-xl shadow p-4 mb-3">
-                <button
-                  type="button"
+                <PhotoGeminiCapture
+                  tourneeId={tourneeId}
+                  userId={userId}
+                  etape={cfg.unmarkEtape}
+                  onAfter={loadProgression}
                   disabled={allDone}
-                  onClick={() => {
-                    setQrScanFeedback([]);
-                    setQrScannerOpen(true);
-                  }}
-                  className="w-full px-3 py-3 bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 disabled:opacity-60 text-sm"
-                >
-                  📦 Scanner QR carton ({cfg.title.toLowerCase()})
-                </button>
-                <p className="text-[11px] text-gray-500 text-center mt-2">
-                  Ouvre la caméra et mitraille les étiquettes carton — chaque QR scanné marque automatiquement le prochain vélo du client.
-                </p>
+                  clients={"clients" in prog ? prog.clients.map((c) => ({
+                    clientId: c.clientId,
+                    entreprise: c.entreprise,
+                    total: c.totals.total,
+                    done: c.totals[cfg.totalsKey],
+                  })) : undefined}
+                  lockedClientId={focusClientId || undefined}
+                  nextEligibleClientId={firstUnfinishedClientId}
+                  onCameraToggle={setGeminiCameraOpen}
+                  bypassOrderLock={bypassOrderLock}
+                />
               </div>
             )}
-
-            <div className="bg-white rounded-xl shadow p-4 mb-3">
-              <PhotoGeminiCapture
-                tourneeId={tourneeId}
-                userId={userId}
-                etape={cfg.unmarkEtape}
-                onAfter={loadProgression}
-                disabled={allDone}
-                clients={"clients" in prog ? prog.clients.map((c) => ({
-                  clientId: c.clientId,
-                  entreprise: c.entreprise,
-                  total: c.totals.total,
-                  // `done` = compteur de l'étape courante (prepare en préparation,
-                  // charge en chargement, livre en livraison) — sert au "X/Y
-                  // déjà fait" dans le bandeau de verrouillage et le sélecteur.
-                  done: c.totals[cfg.totalsKey],
-                })) : undefined}
-                lockedClientId={focusClientId || undefined}
-                nextEligibleClientId={firstUnfinishedClientId}
-                onCameraToggle={setGeminiCameraOpen}
-                bypassOrderLock={bypassOrderLock}
-              />
-            </div>
 
             {history.length > 0 && (
               <div className="bg-white rounded-xl shadow p-3 mb-3">
@@ -873,22 +960,27 @@ function Inner({ mode }: { mode: ScanMode }) {
           </>
         )}
       </div>
-      {qrScannerOpen && (
-        <QrCartonScanner
-          title={`📦 ${cfg.title} — scan QR carton`}
-          subtitle={
-            focusClient
-              ? `Pour ${focusClient.entreprise} uniquement`
-              : "Scanne n'importe quelle étiquette carton de la tournée"
-          }
-          onScan={handleQrCartonScan}
-          onClose={() => {
-            setQrScannerOpen(false);
-            void loadProgression();
-          }}
-          recentScans={qrScanFeedback}
-        />
-      )}
+      {qrScannerOpen && (() => {
+        const effectiveLockedId = focusClientId || autoLockedClientId;
+        const lockedName = effectiveLockedId && prog
+          ? prog.clients.find((c) => c.clientId === effectiveLockedId)?.entreprise
+          : null;
+        const subtitle = lockedName
+          ? `🔒 ${lockedName} — refus auto des autres clients`
+          : "Scanne un 1er QR pour verrouiller un client";
+        return (
+          <QrCartonScanner
+            title={`📦 ${cfg.title} — scan QR carton`}
+            subtitle={subtitle}
+            onScan={handleQrCartonScan}
+            onClose={() => {
+              setQrScannerOpen(false);
+              void loadProgression();
+            }}
+            recentScans={qrScanFeedback}
+          />
+        );
+      })()}
     </div>
   );
 }
