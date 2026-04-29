@@ -26,6 +26,10 @@ type Velo = {
   urlPhotoMontageEtiquette?: string | null;
   urlPhotoMontageQrVelo?: string | null;
   photoMontageUrl?: string | null;
+  /** Workflow parallèle 29-04 13h50 : monteur qui a "claim" ce vélo pour montage.
+   * Expiration 30 min côté serveur. Affiché dans la liste pour visibilité. */
+  montageClaimBy?: string | null;
+  montageClaimAt?: string | null;
 };
 
 type ClientPreparation = {
@@ -57,6 +61,14 @@ type MarkMonteResp =
       dateMontage: string | null;
     }
   | { error: string; code?: string };
+
+type ClaimResp =
+  | { ok: true; veloId: string; fnuci: string | null; clientId: string; clientName: string | null; monteurId: string }
+  | { ok?: false; error: string; code?: string; claimedBy?: string };
+
+type TransferResp =
+  | { ok: true; veloId: string; fnuci: string; clientId: string | null }
+  | { ok?: false; error: string; code?: string; claimedBy?: string };
 
 type Step = "scanCarton" | "scanFnuci" | "photoMonte";
 
@@ -128,9 +140,11 @@ function ClientMontageView({
   } | null>(null);
   // Workflow 3-steps : scanCarton → scanFnuci → photoMonte → reset.
   // currentFnuci = FNUCI du vélo après le step 2, sert au step 3.
+  // currentVeloId = id Firestore du vélo claim, utilisé pour transfer/release.
   const [step, setStep] = useState<Step>("scanCarton");
   const [currentFnuci, setCurrentFnuci] = useState<string | null>(null);
-  const [phase, setPhase] = useState<"idle" | "compressing" | "identifying" | "uploading">("idle");
+  const [currentVeloId, setCurrentVeloId] = useState<string | null>(null);
+  const [phase, setPhase] = useState<"idle" | "compressing" | "identifying" | "uploading" | "claiming" | "transferring" | "releasing">("idle");
   const busy = phase !== "idle";
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement | null>(null);
@@ -213,25 +227,63 @@ function ClientMontageView({
     return { base64: out.slice(comma + 1), mimeType: "image/jpeg" };
   };
 
-  // Step 1 : QR carton scanné → vérifie clientId, passe au step 2.
-  const handleQrCartonScanned = (scannedClientId: string) => {
-    if (scannedClientId !== clientId) {
+  // Step 1 : QR carton scanné → claim un vélo en base (workflow parallèle
+  // 29-04 13h50). Si QR encode un cartonToken (CT-XXX) on cible le slot précis,
+  // sinon (legacy QR=clientId) on prend le 1er vélo dispo non-claim.
+  const handleQrCartonScanned = async (scanned: string) => {
+    const isCartonToken = /^CT-[A-Z0-9]{6,}$/.test(scanned);
+    if (!isCartonToken && scanned !== clientId) {
       setQrFeedback((prev) => [
         ...prev,
         { label: "QR pour un autre client — refusé", ok: false, at: Date.now() },
       ]);
       return;
     }
-    setQrFeedback((prev) => [
-      ...prev,
-      { label: "Carton OK · scan FNUCI vélo", ok: true, at: Date.now() },
-    ]);
-    setQrScannerOpen(false);
-    setStep("scanFnuci");
-    setErrMsg(null);
+    if (!monteurId) {
+      setQrFeedback((prev) => [
+        ...prev,
+        { label: "Connecte-toi pour identifier le monteur", ok: false, at: Date.now() },
+      ]);
+      return;
+    }
+    setPhase("claiming");
+    try {
+      const r = (await gasPost("claimVeloForMontage", {
+        clientId,
+        monteurId,
+        cartonToken: isCartonToken ? scanned : undefined,
+      })) as ClaimResp;
+      if (!("ok" in r) || !r.ok) {
+        const msg = ("error" in r ? r.error : "Erreur claim") || "Erreur claim";
+        setQrFeedback((prev) => [
+          ...prev,
+          { label: `⛔ ${msg}`, ok: false, at: Date.now() },
+        ]);
+        return;
+      }
+      setCurrentFnuci(r.fnuci);
+      setCurrentVeloId(r.veloId);
+      setQrFeedback((prev) => [
+        ...prev,
+        { label: `✓ Carton OK · ${r.fnuci || "(sans FNUCI)"} affilié`, ok: true, at: Date.now() },
+      ]);
+      setQrScannerOpen(false);
+      setStep("scanFnuci");
+      setErrMsg(null);
+      await reload();
+    } catch (e) {
+      setQrFeedback((prev) => [
+        ...prev,
+        { label: e instanceof Error ? e.message : String(e), ok: false, at: Date.now() },
+      ]);
+    } finally {
+      setPhase("idle");
+    }
   };
 
   // Step 2 : photo BicyCode → Gemini extrait FNUCI → vérifie ∈ vélos client + pas monté.
+  // Si le FNUCI extrait ≠ celui claim au step 1 (cas legacy QR=clientId), on
+  // transfère le claim sur le bon vélo (workflow parallèle 29-04 13h50).
   const onFnuciPhotoChosen = async (file: File) => {
     setErrMsg(null);
     setPhase("compressing");
@@ -265,6 +317,24 @@ function ClientMontageView({
         setErrMsg(`${matched} est déjà marqué monté. Choisis un autre vélo.`);
         return;
       }
+
+      // Si match différent du vélo claim au step 1 → transfère le claim
+      if (currentFnuci && matched !== currentFnuci && monteurId) {
+        setPhase("transferring");
+        const t = (await gasPost("transferMontageClaim", {
+          fromVeloId: currentVeloId,
+          toFnuci: matched,
+          monteurId,
+        })) as TransferResp;
+        if (!("ok" in t) || !t.ok) {
+          const msg = ("error" in t ? t.error : "Transfert claim refusé") || "Transfert claim refusé";
+          setErrMsg(`⛔ ${msg}`);
+          return;
+        }
+        setCurrentVeloId(t.veloId);
+        await reload();
+      }
+
       setCurrentFnuci(matched);
       setStep("photoMonte");
     } catch (e) {
@@ -298,7 +368,9 @@ function ClientMontageView({
         return;
       }
       // Reset au step 1 pour enchaîner sur le vélo suivant.
+      // (markVeloMontePhoto a déjà libéré le claim côté serveur en posant dateMontage)
       setCurrentFnuci(null);
+      setCurrentVeloId(null);
       setStep("scanCarton");
       await reload();
     } catch (e) {
@@ -309,11 +381,27 @@ function ClientMontageView({
     }
   };
 
-  const cancelCurrentVelo = () => {
+  const cancelCurrentVelo = async () => {
     if (!confirm("Annuler le vélo en cours ?")) return;
+    // Libère le claim en base pour qu'un autre monteur puisse prendre ce vélo
+    if (currentVeloId && monteurId) {
+      try {
+        setPhase("releasing");
+        await gasPost("releaseVeloMontageClaim", {
+          veloId: currentVeloId,
+          monteurId,
+        });
+      } catch {
+        // Si release échoue, le claim expirera tout seul après 30 min.
+      } finally {
+        setPhase("idle");
+      }
+    }
     setCurrentFnuci(null);
+    setCurrentVeloId(null);
     setStep("scanCarton");
     setErrMsg(null);
+    await reload();
   };
 
   return (
@@ -359,6 +447,11 @@ function ClientMontageView({
             {velos.map((v) => {
               const s = veloStatus(v);
               const isCurrent = v.fnuci === currentFnuci;
+              // Workflow parallèle : claim actif si un monteur ≠ moi a posé un
+              // claim < 30 min. Affiché en orange "En cours par autre monteur".
+              const claimByOther = !!(v.montageClaimBy && v.montageClaimBy !== monteurId);
+              const claimAtMs = v.montageClaimAt ? new Date(v.montageClaimAt).getTime() : 0;
+              const claimActive = claimByOther && claimAtMs > 0 && (Date.now() - claimAtMs < 30 * 60 * 1000);
               return (
                 <div
                   key={v.veloId}
@@ -367,7 +460,9 @@ function ClientMontageView({
                       ? "bg-green-50 border-green-200"
                       : isCurrent
                         ? "bg-blue-50 border-blue-300"
-                        : "bg-white border-gray-200"
+                        : claimActive
+                          ? "bg-orange-50 border-orange-300"
+                          : "bg-white border-gray-200"
                   }`}
                 >
                   <div className="min-w-0 flex-1">
@@ -376,14 +471,16 @@ function ClientMontageView({
                       {s.complete ? (
                         <span className="text-green-700">✅ Monté</span>
                       ) : isCurrent ? (
-                        <span className="text-blue-700">🔄 En cours</span>
+                        <span className="text-blue-700">🔄 En cours (toi)</span>
+                      ) : claimActive ? (
+                        <span className="text-orange-700">🔒 En cours par autre monteur</span>
                       ) : (
                         <span>⏳ À monter</span>
                       )}
                     </div>
                   </div>
                   <div className="shrink-0 text-base">
-                    {s.complete ? "🔧" : isCurrent ? "🔄" : "⏳"}
+                    {s.complete ? "🔧" : isCurrent ? "🔄" : claimActive ? "🔒" : "⏳"}
                   </div>
                 </div>
               );
@@ -463,9 +560,22 @@ function ClientMontageView({
                 {phase === "idle" && "🏷️ Photo BicyCode du vélo"}
               </button>
               <button
-                onClick={() => {
+                onClick={async () => {
+                  // Libère le claim avant de revenir au step 1 (sinon le vélo
+                  // reste réservé 30 min à ce monteur, bloque les autres).
+                  if (currentVeloId && monteurId) {
+                    try {
+                      await gasPost("releaseVeloMontageClaim", {
+                        veloId: currentVeloId,
+                        monteurId,
+                      });
+                    } catch {}
+                  }
+                  setCurrentFnuci(null);
+                  setCurrentVeloId(null);
                   setStep("scanCarton");
                   setErrMsg(null);
+                  await reload();
                 }}
                 disabled={busy}
                 className="w-full text-xs text-gray-500 hover:text-gray-700 py-1"

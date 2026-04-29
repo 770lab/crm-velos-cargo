@@ -149,6 +149,9 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "markVeloByCartonToken",
   "ensureCartonTokensForClient",
   "markVeloMontePhoto",
+  "claimVeloForMontage",
+  "transferMontageClaim",
+  "releaseVeloMontageClaim",
   "markClientAsDelivered",
   "unmarkVeloEtape",
   "unsetVeloClient",
@@ -2146,6 +2149,207 @@ export async function runFirestoreAction(
       return { ok: true, livraisonId, clientId, tourneeId, photoUrl: url };
     }
 
+    case "claimVeloForMontage": {
+      // Workflow montage parallèle (29-04 13h50, demande Yoann) : 4 monteurs
+      // travaillent en simultané sur 8 vélos d'un même client. Chaque monteur
+      // scanne le QR carton → on lui affilie un vélo précis pour qu'aucun
+      // autre monteur ne le prenne. Claim expire après 30 min (sécurité si
+      // le monteur abandonne sa session sans cancel propre).
+      //
+      // Input :
+      //   - clientId (legacy QR=clientId) → on prend le 1er dispo
+      //   - cartonToken (nouvelle archi) → on cible le slot précis
+      //   - monteurId
+      const clientId = getRequired(body, "clientId");
+      const monteurId = getRequired(body, "monteurId");
+      const cartonToken = getString(body, "cartonToken");
+      const CLAIM_EXPIRY_MS = 30 * 60 * 1000;
+      const nowMs = Date.now();
+
+      const isClaimActive = (vd: Record<string, unknown>): boolean => {
+        const by = vd.montageClaimBy as string | undefined;
+        if (!by) return false;
+        if (by === monteurId) return false; // same monteur peut re-claim
+        const at = vd.montageClaimAt as { toMillis?: () => number } | string | undefined;
+        let claimMs = 0;
+        if (typeof at === "string") claimMs = new Date(at).getTime();
+        else if (at?.toMillis) claimMs = at.toMillis();
+        return claimMs > 0 && nowMs - claimMs < CLAIM_EXPIRY_MS;
+      };
+
+      // Récup tous les vélos du client
+      const cSnap = await getDocs(
+        query(collection(db, "velos"), where("clientId", "==", clientId)),
+      );
+      const all = cSnap.docs.filter((d) => !(d.data() as { annule?: boolean }).annule);
+
+      let target: typeof all[0] | null = null;
+      if (cartonToken) {
+        // Path token : résout le slot précis
+        target = all.find((d) => (d.data() as { cartonToken?: string }).cartonToken === cartonToken) || null;
+        if (!target) {
+          return { error: "Étiquette inconnue", code: "TOKEN_INCONNU" };
+        }
+        const td = target.data() as Record<string, unknown>;
+        if (td.dateMontage) {
+          return { error: "Vélo déjà monté", code: "DEJA_MONTE", fnuci: td.fnuci };
+        }
+        if (isClaimActive(td)) {
+          return {
+            error: "Vélo en cours de montage par un autre monteur",
+            code: "DEJA_CLAIM",
+            claimedBy: td.montageClaimBy,
+          };
+        }
+      } else {
+        // Path legacy : 1er vélo non-monté + non-claim (ou claim expiré, ou claim par soi-même)
+        for (const d of all) {
+          const vd = d.data() as Record<string, unknown>;
+          if (vd.dateMontage) continue;
+          if (isClaimActive(vd)) continue;
+          target = d;
+          break;
+        }
+        if (!target) {
+          // Distinguer "client tout monté" vs "tout en cours par d'autres"
+          const allMonte = all.every((d) => (d.data() as { dateMontage?: unknown }).dateMontage);
+          if (allMonte) {
+            return { ok: false, error: "Tous les vélos du client sont montés", code: "CLIENT_COMPLET" };
+          }
+          return {
+            ok: false,
+            error: "Tous les vélos disponibles sont en cours de montage par d'autres monteurs",
+            code: "CLIENT_PLEIN",
+          };
+        }
+      }
+
+      const updates: Body = {
+        montageClaimBy: monteurId,
+        montageClaimAt: ts(),
+        updatedAt: ts(),
+      };
+      await updateDoc(target.ref, updates);
+
+      const td = target.data() as { fnuci?: string | null };
+      let clientName: string | null = null;
+      try {
+        const c = await getDoc(doc(db, "clients", clientId));
+        if (c.exists()) clientName = (c.data() as { entreprise?: string }).entreprise || null;
+      } catch {}
+
+      return {
+        ok: true,
+        veloId: target.id,
+        fnuci: td.fnuci || null,
+        clientId,
+        clientName,
+        monteurId,
+      };
+    }
+
+    case "transferMontageClaim": {
+      // Step 2 montage : si Gemini extrait un FNUCI ≠ celui claim au step 1
+      // (cas legacy étiquette QR=clientId, le 1er vélo claim au hasard ne
+      // correspond pas au BicyCode physique en main). On libère l'ancien
+      // claim et on en pose un nouveau sur le bon vélo.
+      const fromVeloId = getRequired(body, "fromVeloId");
+      const toFnuci = getRequired(body, "toFnuci").toUpperCase();
+      const monteurId = getRequired(body, "monteurId");
+      const CLAIM_EXPIRY_MS = 30 * 60 * 1000;
+      const nowMs = Date.now();
+
+      // 1. Trouve le vélo cible par FNUCI
+      const vSnap = await getDocs(
+        query(collection(db, "velos"), where("fnuci", "==", toFnuci)),
+      );
+      const matches = vSnap.docs.filter((d) => !(d.data() as { annule?: boolean }).annule);
+      if (matches.length === 0) {
+        return { error: "FNUCI inconnu", code: "FNUCI_INCONNU", fnuci: toFnuci };
+      }
+      if (matches.length > 1) {
+        return { error: "FNUCI doublon en base", code: "FNUCI_DOUBLON", fnuci: toFnuci };
+      }
+      const toDoc = matches[0];
+      const toData = toDoc.data() as Record<string, unknown>;
+      if (toData.dateMontage) {
+        return { error: "Vélo déjà monté", code: "DEJA_MONTE", fnuci: toFnuci };
+      }
+      // Vérifie pas claim par un autre monteur (encore actif)
+      const by = toData.montageClaimBy as string | undefined;
+      const at = toData.montageClaimAt as { toMillis?: () => number } | string | undefined;
+      if (by && by !== monteurId) {
+        let claimMs = 0;
+        if (typeof at === "string") claimMs = new Date(at).getTime();
+        else if (at?.toMillis) claimMs = at.toMillis();
+        if (claimMs > 0 && nowMs - claimMs < CLAIM_EXPIRY_MS) {
+          return {
+            error: "Vélo en cours de montage par un autre monteur",
+            code: "DEJA_CLAIM",
+            claimedBy: by,
+          };
+        }
+      }
+
+      // 2. Libère l'ancien claim (si différent du nouveau)
+      if (fromVeloId && fromVeloId !== toDoc.id) {
+        try {
+          const fromRef = doc(db, "velos", fromVeloId);
+          const fromSnap = await getDoc(fromRef);
+          if (fromSnap.exists()) {
+            const fd = fromSnap.data() as { montageClaimBy?: string };
+            // Ne libère que si c'est nous qui avions le claim
+            if (fd.montageClaimBy === monteurId) {
+              await updateDoc(fromRef, {
+                montageClaimBy: null,
+                montageClaimAt: null,
+                updatedAt: ts(),
+              });
+            }
+          }
+        } catch {
+          // Pas grave : si on n'arrive pas à libérer, le claim expirera tout seul
+        }
+      }
+
+      // 3. Pose le nouveau claim
+      await updateDoc(toDoc.ref, {
+        montageClaimBy: monteurId,
+        montageClaimAt: ts(),
+        updatedAt: ts(),
+      });
+
+      return {
+        ok: true,
+        veloId: toDoc.id,
+        fnuci: toFnuci,
+        clientId: (toData.clientId as string) || null,
+      };
+    }
+
+    case "releaseVeloMontageClaim": {
+      // Annulation propre du montage en cours côté frontend (bouton "Annuler")
+      // → libère le claim pour qu'un autre monteur puisse prendre ce vélo.
+      const veloId = getRequired(body, "veloId");
+      const monteurId = getString(body, "monteurId");
+      const ref2 = doc(db, "velos", veloId);
+      const snap2 = await getDoc(ref2);
+      if (!snap2.exists()) {
+        return { ok: false, error: "Vélo introuvable" };
+      }
+      const vd = snap2.data() as { montageClaimBy?: string };
+      // Ne libère que si on est le claim owner (sécurité contre release par un autre monteur)
+      if (monteurId && vd.montageClaimBy && vd.montageClaimBy !== monteurId) {
+        return { ok: false, error: "Claim détenu par un autre monteur", code: "PAS_TON_CLAIM" };
+      }
+      await updateDoc(ref2, {
+        montageClaimBy: null,
+        montageClaimAt: null,
+        updatedAt: ts(),
+      });
+      return { ok: true };
+    }
+
     case "markVeloMontePhoto": {
       // Workflow montage 1-photo (29-04 11h45, demande Yoann) : remplace les
       // 3 photos legacy (étiquette + QR vélo + monté) par un workflow plus
@@ -2245,6 +2449,10 @@ export async function runFirestoreAction(
       const updates: Body = {
         photoMontageUrl: url,
         dateMontage: ts(),
+        // Libère le claim montage : ce vélo est désormais monté, plus besoin
+        // de le réserver pour un monteur (workflow parallèle 29-04 13h50).
+        montageClaimBy: null,
+        montageClaimAt: null,
         updatedAt: ts(),
       };
       if (monteurId) updates.monteParId = monteurId;
@@ -3786,6 +3994,8 @@ export async function runFirestoreGet(
         urlPhotoMontageEtiquette?: string;
         urlPhotoMontageQrVelo?: string;
         photoMontageUrl?: string;
+        montageClaimBy?: string;
+        montageClaimAt?: unknown;
       };
       const velos = vSnap.docs
         .filter((d) => !(d.data() as VeloDoc).annule)
@@ -3801,6 +4011,8 @@ export async function runFirestoreGet(
             urlPhotoMontageEtiquette: asUrl(v.urlPhotoMontageEtiquette),
             urlPhotoMontageQrVelo: asUrl(v.urlPhotoMontageQrVelo),
             photoMontageUrl: asUrl(v.photoMontageUrl),
+            montageClaimBy: v.montageClaimBy || null,
+            montageClaimAt: isoOrNull(v.montageClaimAt),
           };
         });
       const avecFnuci = velos.filter((v) => !!v.fnuci);
