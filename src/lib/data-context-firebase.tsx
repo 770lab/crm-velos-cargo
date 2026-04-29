@@ -166,6 +166,16 @@ function livraisonFromDoc(id: string, d: DocumentData): LivraisonRow {
     tourneeNumero: typeof d.tourneeNumero === "number" ? d.tourneeNumero : null,
     bonCommandeEnvoyeAt: typeof d.bonCommandeEnvoyeAt === "string" ? d.bonCommandeEnvoyeAt : null,
     raisonAnnulation: typeof d.raisonAnnulation === "string" ? d.raisonAnnulation : null,
+    validationClient: d.validationClient && typeof d.validationClient === "object"
+      ? {
+          status: d.validationClient.status,
+          par: d.validationClient.par ?? null,
+          note: d.validationClient.note ?? null,
+          at: typeof d.validationClient.at === "string"
+            ? d.validationClient.at
+            : (d.validationClient.at?.toDate?.()?.toISOString?.() ?? ""),
+        }
+      : null,
     client: {
       entreprise: d.clientSnapshot?.entreprise ?? "",
       ville: d.clientSnapshot?.ville ?? null,

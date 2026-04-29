@@ -116,6 +116,15 @@ interface LivraisonRow {
   /** Raison de l'annulation (saisie au moment du clic sur "annuler" /
    *  "Annuler la tournée"). null tant que la livraison n'est pas annulée. */
   raisonAnnulation?: string | null;
+  /** Validation préalable client : confirmation que le client est joignable
+   *  et OK pour la date prévue. Sans ça, on ne livre pas (pas de déplacement
+   *  inutile). Posée par le chef d'équipe ou l'apporteur. */
+  validationClient?: {
+    status: "validee_orale" | "validee_mail";
+    par: string | null;
+    note: string | null;
+    at: string;
+  } | null;
   client: {
     entreprise: string;
     ville: string | null;

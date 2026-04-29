@@ -133,6 +133,7 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   // livraisons
   "createLivraison",
   "updateLivraison",
+  "setLivraisonValidation",
   // tournees → livraisons (ils sont stockés ensemble dans GAS)
   "createTournee",
   "createTournees",
@@ -696,6 +697,36 @@ export async function runFirestoreAction(
       const id = getRequired(body, "id");
       const data = (body.data as Body) || {};
       await updateDoc(doc(db, "livraisons", id), applyMaybeDates(data));
+      return { ok: true };
+    }
+
+    case "setLivraisonValidation": {
+      // Validation préalable client (terrain demande Yoann 2026-04-29) : on
+      // ne livre pas tant que le client n'a pas confirmé sa disponibilité
+      // (oralement par téléphone OU par mail). Le chef d'équipe ou
+      // l'apporteur enregistre ici la confirmation.
+      //   status : "validee_orale" | "validee_mail" | "non_contacte"
+      //   par    : nom de la personne qui a fait l'appel/reçu le mail
+      //   note   : libre (ex: « rappeler à 9h »)
+      const id = getRequired(body, "id");
+      const status = getString(body, "status");
+      if (!["validee_orale", "validee_mail", "non_contacte"].includes(status || "")) {
+        return { ok: false, error: "status invalide" };
+      }
+      const par = getString(body, "par") || null;
+      const note = getString(body, "note") || null;
+      const updates: Body = { updatedAt: ts() };
+      if (status === "non_contacte") {
+        updates.validationClient = null;
+      } else {
+        updates.validationClient = {
+          status,
+          par,
+          note,
+          at: new Date().toISOString(),
+        };
+      }
+      await updateDoc(doc(db, "livraisons", id), updates);
       return { ok: true };
     }
 

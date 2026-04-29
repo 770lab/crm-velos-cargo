@@ -2027,6 +2027,22 @@ Réponds STRICTEMENT en JSON sans markdown, format :
     setBusy(null);
   };
 
+  const validateClient = async (id: string, status: "validee_orale" | "validee_mail" | "non_contacte", currentUserName: string) => {
+    setBusy(id);
+    let par: string | null = currentUserName || null;
+    let note: string | null = null;
+    if (status !== "non_contacte") {
+      const who = prompt(`Qui a contacté le client ? (chef d'équipe / apporteur / nom)`, par || "");
+      if (who === null) { setBusy(null); return; }
+      par = who.trim() || par;
+      const n = prompt("Note (optionnelle, ex: « ok pour 9h », « rappelle demain ») :", "");
+      note = n?.trim() || null;
+    }
+    await gasPost("setLivraisonValidation", { id, status, par, note });
+    onChanged();
+    setBusy(null);
+  };
+
   // Cohérent avec TourneeCard : couleur = chauffeur (sauf retrait = violet).
   const chauffeurIdModal = tournee.livraisons[0]?.chauffeurId;
   const chauffeurNomModal = chauffeurIdModal
@@ -2689,6 +2705,50 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                       ⊘ Annulée : {l.raisonAnnulation}
                     </div>
                   )}
+                  {/* Validation préalable client (téléphone / mail). Sans ça,
+                      on n'envoie pas l'équipe — bandeau rouge si non validé. */}
+                  {l.statut !== "annulee" && (() => {
+                    const v = l.validationClient;
+                    if (v?.status === "validee_orale" || v?.status === "validee_mail") {
+                      const dt = v.at ? new Date(v.at).toLocaleDateString("fr-FR") : "";
+                      const icon = v.status === "validee_mail" ? "📧" : "📞";
+                      const label = v.status === "validee_mail" ? "Mail reçu" : "Validé par téléphone";
+                      return (
+                        <div className="mt-1 px-2 py-1 text-[11px] bg-emerald-50 border border-emerald-200 rounded text-emerald-800 flex items-center gap-2 flex-wrap">
+                          <span className="font-medium">{icon} {label}</span>
+                          {v.par && <span className="opacity-75">par {v.par}</span>}
+                          {dt && <span className="opacity-50">· {dt}</span>}
+                          {v.note && <span className="opacity-75 italic">— « {v.note} »</span>}
+                          <button
+                            onClick={(e) => { e.stopPropagation(); validateClient(l.id, "non_contacte", currentUser?.nom || ""); }}
+                            className="ml-auto text-[10px] underline opacity-60 hover:opacity-100"
+                            title="Réinitialiser la validation"
+                          >
+                            modifier
+                          </button>
+                        </div>
+                      );
+                    }
+                    return (
+                      <div className="mt-1 px-2 py-1.5 text-[11px] bg-red-50 border border-red-300 rounded text-red-800">
+                        <div className="font-medium mb-1">⚠ Client pas encore validé — pas de livraison sans confirmation</div>
+                        <div className="flex gap-1.5 flex-wrap">
+                          <button
+                            onClick={(e) => { e.stopPropagation(); validateClient(l.id, "validee_orale", currentUser?.nom || ""); }}
+                            className="px-2 py-0.5 text-[11px] bg-white border border-emerald-300 text-emerald-700 rounded hover:bg-emerald-50"
+                          >
+                            📞 Validé par téléphone
+                          </button>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); validateClient(l.id, "validee_mail", currentUser?.nom || ""); }}
+                            className="px-2 py-0.5 text-[11px] bg-white border border-emerald-300 text-emerald-700 rounded hover:bg-emerald-50"
+                          >
+                            📧 Mail reçu
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
                   {tournee.tourneeId && (() => {
                     const cp = progression?.clients?.find((c) => c.clientId === l.clientId)?.totals;
                     const tot = cp?.total ?? l._count.velos;
