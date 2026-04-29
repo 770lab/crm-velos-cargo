@@ -292,9 +292,78 @@ export const setMembreCode = onCall<SetMembreCodePayload>(async (request) => {
   if (!pin || !/^\d{4}$/.test(pin)) {
     throw new HttpsError("invalid-argument", "PIN à 4 chiffres requis");
   }
-  // L'uid Firebase Auth correspond au doc id de equipe.
-  await auth.updateUser(id, { password: `vc-${pin}` });
-  return { ok: true };
+  const password = `vc-${pin}`;
+
+  // Lit le doc équipe pour récupérer email / nom (création éventuelle).
+  const memberSnap = await db.collection("equipe").doc(id).get();
+  if (!memberSnap.exists) {
+    throw new HttpsError("not-found", "Membre introuvable dans la collection equipe");
+  }
+  const data = memberSnap.data() || {};
+  const email = (data.email as string | undefined)?.trim().toLowerCase() || undefined;
+  const displayName = (data.nom as string | undefined) || undefined;
+
+  // Idempotent (Naomi 2026-04-29 : login KO car uid Firestore ≠ uid Auth) :
+  //   1) update by uid (cas standard, seeds)
+  //   2) si user pas trouvé, lookup par email — si trouvé, on update son
+  //      password et on aligne son uid avec le doc équipe via un re-create
+  //      (impossible) → on update juste le password et on log un warning.
+  //   3) si rien trouvé, on crée un nouveau user Auth avec l'uid du doc.
+  try {
+    await auth.updateUser(id, {
+      password,
+      disabled: false,
+      ...(email ? { email } : {}),
+      ...(displayName ? { displayName } : {}),
+    });
+    logger.info("setMembreCode: updated by uid", { id, email });
+    return { ok: true, action: "updated" };
+  } catch (e) {
+    const code = (e as { code?: string }).code;
+    if (code !== "auth/user-not-found") {
+      logger.error("setMembreCode: updateUser failed", { id, code, error: String(e) });
+      throw e;
+    }
+    // 2) Pas trouvé par uid → tente par email
+    if (email) {
+      try {
+        const existing = await auth.getUserByEmail(email);
+        await auth.updateUser(existing.uid, { password, disabled: false });
+        logger.warn("setMembreCode: uid mismatch (updated by email)", {
+          docId: id, authUid: existing.uid, email,
+        });
+        // Met à jour le doc équipe avec l'uid réel pour les prochaines fois
+        // (évite la dérive). Note : on ne peut pas changer le doc id, mais on
+        // expose l'authUid en champ pour debug.
+        await db.collection("equipe").doc(id).update({
+          authUid: existing.uid,
+          authMismatchAt: FieldValue.serverTimestamp(),
+        }).catch(() => {});
+        return { ok: true, action: "updated_by_email", authUid: existing.uid };
+      } catch (e2) {
+        const c2 = (e2 as { code?: string }).code;
+        if (c2 !== "auth/user-not-found") {
+          logger.error("setMembreCode: getUserByEmail failed", { id, email, error: String(e2) });
+          throw e2;
+        }
+      }
+    }
+    // 3) Création
+    if (!email) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Pas d'email rattaché — impossible de créer le compte. Renseigne l'email sur la fiche équipe d'abord.",
+      );
+    }
+    await auth.createUser({
+      uid: id,
+      email,
+      password,
+      ...(displayName ? { displayName } : {}),
+    });
+    logger.info("setMembreCode: created", { id, email });
+    return { ok: true, action: "created" };
+  }
 });
 
 export const clearMembreCode = onCall<{ id: string }>(async (request) => {

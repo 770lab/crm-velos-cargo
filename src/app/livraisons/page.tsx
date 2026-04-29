@@ -360,15 +360,16 @@ export default function LivraisonsPage() {
       let curMin = DEPART_MIN_DEFAULT;
       let curMax = DEPART_MAX_DEFAULT;
       for (const t of ts) {
-        // Heure de départ custom posée sur la tournée (« 11h30 si je n'ai pas
-        // de marchandise avant »). Si présente, on RESET le curMin/curMax à
-        // cette heure (pas de chaînage au-dessous d'un départ explicite).
+        // Heure de départ custom posée sur la tournée. Si présente, on
+        // FORCE curMin/curMax à cette heure (peut être plus tôt OU plus tard
+        // que le défaut 8h30 — bug 2026-04-29 où Math.max empêchait de
+        // descendre sous 8h30).
         const customHM = t.livraisons[0]?.heureDepartTournee;
         if (customHM && /^\d{2}:\d{2}$/.test(customHM)) {
           const [hh, mm] = customHM.split(":").map((n) => parseInt(n, 10));
           const minOfDay = hh * 60 + mm;
-          curMin = Math.max(curMin, minOfDay);
-          curMax = Math.max(curMax, minOfDay + 30);
+          curMin = minOfDay;
+          curMax = minOfDay + 30;
         }
         const tourneeKey = (t.tourneeId || "no-tid") + "|" + (t.datePrevue ? isoDate(t.datePrevue) : "");
         result.set(tourneeKey, { min: curMin, max: curMax });
