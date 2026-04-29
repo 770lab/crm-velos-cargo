@@ -91,7 +91,7 @@ function livraisonMatchesUser(
 }
 
 export default function LivraisonsPage() {
-  const { livraisons, carte, refresh } = useData();
+  const { livraisons, carte, equipe, refresh } = useData();
   const currentUser = useCurrentUser();
   // Vue initiale :
   //  - localStorage gagne toujours (le user a explicitement choisi)
@@ -126,6 +126,10 @@ export default function LivraisonsPage() {
   const [refDate, setRefDate] = useState<Date>(() => new Date());
   const [openTournee, setOpenTournee] = useState<Tournee | null>(null);
   const [search, setSearch] = useState("");
+  // Filtre admin par chauffeur : "" = tous, sinon id d'un membre équipe.
+  // Inutile pour les rôles terrain (eux ne voient que leurs tournées via
+  // userLivraisons ci-dessous). On expose le dropdown UNIQUEMENT pour admin.
+  const [filtreChauffeurId, setFiltreChauffeurId] = useState<string>("");
   const [showAddClient, setShowAddClient] = useState(false);
   const [showPlanner, setShowPlanner] = useState(false);
   const [batchAxdis, setBatchAxdis] = useState<{ date: Date; tournees: Tournee[] } | null>(null);
@@ -231,6 +235,26 @@ export default function LivraisonsPage() {
     });
   }, [tournees, searchQuery, clientById]);
 
+  // Filtre admin "Chauffeur : X" — appliqué APRÈS le filtre recherche.
+  // Une tournée appartient au chauffeur si la 1re livraison porte son id
+  // (toutes les livraisons d'une même tournée partagent chauffeurId).
+  // Liste des chauffeurs présents = ceux qui apparaissent dans les tournées
+  // visibles après le filtre rôle utilisateur (userLivraisons).
+  const chauffeursPresents = useMemo(() => {
+    const ids = new Set<string>();
+    for (const t of tournees) {
+      const cid = t.livraisons[0]?.chauffeurId;
+      if (cid) ids.add(cid);
+    }
+    return equipe
+      .filter((m) => ids.has(m.id))
+      .sort((a, b) => (a.nom || "").localeCompare(b.nom || ""));
+  }, [tournees, equipe]);
+  const chauffeurFilteredTournees = useMemo(() => {
+    if (!filtreChauffeurId) return filteredTournees;
+    return filteredTournees.filter((t) => t.livraisons[0]?.chauffeurId === filtreChauffeurId);
+  }, [filteredTournees, filtreChauffeurId]);
+
   // Auto-navigation : quand une recherche filtre, naviguer à la date de la première tournée trouvée
   useEffect(() => {
     if (!searchQuery || filteredTournees.length === 0) return;
@@ -249,14 +273,14 @@ export default function LivraisonsPage() {
   }, [tournees]);
   const tourneesByDate = useMemo(() => {
     const map = new Map<string, Tournee[]>();
-    for (const t of filteredTournees) {
+    for (const t of chauffeurFilteredTournees) {
       if (!t.datePrevue) continue;
       const key = isoDate(t.datePrevue);
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(t);
     }
     return map;
-  }, [filteredTournees]);
+  }, [chauffeurFilteredTournees]);
 
   const livraisonsSansDate = userLivraisons.filter((l) => !l.datePrevue);
 
@@ -264,7 +288,7 @@ export default function LivraisonsPage() {
   // un monteur en vue Jour veut savoir combien de velos il a a monter aujourd'hui,
   // pas sur tout le mois.
   const windowedTournees = useMemo(() => {
-    if (view === "liste") return filteredTournees;
+    if (view === "liste") return chauffeurFilteredTournees;
     const start = new Date(refDate);
     start.setHours(0, 0, 0, 0);
     const end = new Date(start);
@@ -284,12 +308,12 @@ export default function LivraisonsPage() {
       end.setTime(start.getTime());
       end.setMonth(end.getMonth() + 1);
     }
-    return filteredTournees.filter((t) => {
+    return chauffeurFilteredTournees.filter((t) => {
       if (!t.datePrevue) return false;
       const d = new Date(t.datePrevue);
       return d >= start && d < end;
     });
-  }, [filteredTournees, view, refDate]);
+  }, [chauffeurFilteredTournees, view, refDate]);
 
   // Nb de velos a monter / livrer dans la fenetre, pour le compteur d'objectifs.
   const windowedVelos = useMemo(
@@ -324,7 +348,7 @@ export default function LivraisonsPage() {
     pageSubtitle = `${windowedLivraisons} livraison${windowedLivraisons > 1 ? "s" : ""} · ${windowedTournees.length} tournée${windowedTournees.length > 1 ? "s" : ""}${windowSuffix ? " " + windowSuffix : ""}`;
   } else {
     pageSubtitle = view === "liste"
-      ? `${filteredTournees.length} tournée${filteredTournees.length > 1 ? "s" : ""} · ${userLivraisons.length} livraison${userLivraisons.length > 1 ? "s" : ""}`
+      ? `${chauffeurFilteredTournees.length} tournée${chauffeurFilteredTournees.length > 1 ? "s" : ""} · ${userLivraisons.length} livraison${userLivraisons.length > 1 ? "s" : ""}`
       : `${windowedTournees.length} tournée${windowedTournees.length > 1 ? "s" : ""} · ${windowedLivraisons} livraison${windowedLivraisons > 1 ? "s" : ""}${windowSuffix ? " " + windowSuffix : ""}`;
   }
 
@@ -362,6 +386,22 @@ export default function LivraisonsPage() {
             placeholder="Rechercher client, ville, tél..."
             className="px-3 py-1.5 border-2 border-green-300 rounded-lg text-sm w-56 focus:border-green-500 focus:outline-none"
           />
+          {/* Filtre par chauffeur — admin/superadmin uniquement. Les rôles
+              terrain (chauffeur, monteur, chef, préparateur) ont déjà leur
+              propre filtrage via userLivraisons (rôle = vue ciblée). */}
+          {(currentUser?.role === "admin" || currentUser?.role === "superadmin") && chauffeursPresents.length > 0 && (
+            <select
+              value={filtreChauffeurId}
+              onChange={(e) => setFiltreChauffeurId(e.target.value)}
+              className="px-3 py-1.5 border-2 border-gray-200 rounded-lg text-sm bg-white focus:border-green-500 focus:outline-none"
+              title="Ne voir que les tournées d'un chauffeur"
+            >
+              <option value="">🚐 Tous les chauffeurs</option>
+              {chauffeursPresents.map((c) => (
+                <option key={c.id} value={c.id}>🚐 {c.nom}</option>
+              ))}
+            </select>
+          )}
           <div className="inline-flex rounded-lg border bg-white overflow-hidden">
             {(["jour", "3jours", "semaine", "mois", "liste"] as View[]).map((v) => (
               <button
@@ -948,6 +988,65 @@ function DayStaffingSummary({ tournees }: { tournees: Tournee[] }) {
   );
 }
 
+// Estimation des heures d'arrivée chez chaque client d'une tournée.
+// Hypothèse Yoann (29-04) : premier chargement entre 8h30 et 9h00. La fourchette
+// se propage tout au long de la tournée (mêmes 30 min d'incertitude au départ
+// → mêmes 30 min sur chaque arrivée). Vitesse 30 km/h = 2 min/km, distance
+// haversine × 1.3 (facteur réseau routier), montage 12 min/vélo répartis sur
+// nbMonteurs. Pour mode "retrait", pas de fourchette (le client vient au dépôt).
+//
+// PAUSE DÉJEUNER (Yoann 29-04 02h09) : 45 min de pause moyenne. On l'insère
+// quand l'heure d'arrivée chez un client franchit 12h00 → 45 min de décalage
+// sur tous les arrêts suivants.
+const DEPART_MIN_DEFAULT = 8 * 60 + 30; // 8h30
+const DEPART_MAX_DEFAULT = 9 * 60; // 9h00
+const PAUSE_DEJEUNER_DEBUT = 12 * 60; // 12h00 = début de la fenêtre de pause
+const PAUSE_DEJEUNER_DUREE = 45; // 45 min de pause moyenne (cf. retour Yoann)
+
+function computeArrivalTimes(
+  tournee: Tournee,
+  monteurs: number,
+): Array<{ minMin: number; maxMin: number } | null> {
+  if (tournee.mode === "retrait") return tournee.livraisons.map(() => null);
+  const eff = Math.max(1, monteurs);
+  let cumulMin = 0;
+  // pausePrise se déclenche dès que l'arrivée chez un client franchit 12h00 :
+  // on insère PAUSE_DEJEUNER_DUREE AVANT cet arrêt, ce qui décale tous les
+  // arrêts suivants. Approximation : on déclenche sur la borne min (départ
+  // 8h30) ; la borne max bénéficie du même décalage. On garde 1 seul
+  // pausePrise pour ne pas la prendre 2x.
+  let pausePrise = false;
+  let prev = { lat: ENTREPOT.lat, lng: ENTREPOT.lng };
+  const out: Array<{ minMin: number; maxMin: number } | null> = [];
+  for (let i = 0; i < tournee.livraisons.length; i++) {
+    const liv = tournee.livraisons[i];
+    const c = liv.client;
+    if (c.lat && c.lng && prev.lat && prev.lng) {
+      const km = haversineKm(prev.lat, prev.lng, c.lat, c.lng) * 1.3;
+      cumulMin += km / 0.5; // 30 km/h = 0.5 km/min
+    }
+    // Heure d'arrivée brute (sans pause), bornes min et max.
+    let arriveeMin = DEPART_MIN_DEFAULT + cumulMin;
+    let arriveeMax = DEPART_MAX_DEFAULT + cumulMin;
+    if (!pausePrise && arriveeMin >= PAUSE_DEJEUNER_DEBUT) {
+      // L'arrivée chez ce client tombe à 12h ou plus tard : on prend la pause
+      // AVANT cet arrêt. Décale aussi le cumul pour les arrêts suivants.
+      cumulMin += PAUSE_DEJEUNER_DUREE;
+      arriveeMin += PAUSE_DEJEUNER_DUREE;
+      arriveeMax += PAUSE_DEJEUNER_DUREE;
+      pausePrise = true;
+    }
+    out.push({
+      minMin: Math.round(arriveeMin),
+      maxMin: Math.round(arriveeMax),
+    });
+    const montageMin = ((liv.nbVelos ?? 0) * MINUTES_PAR_VELO) / eff;
+    cumulMin += montageMin;
+    if (c.lat && c.lng) prev = { lat: c.lat, lng: c.lng };
+  }
+  return out;
+}
+
 function TourneeCard({
   tournee,
   onClick,
@@ -967,6 +1066,9 @@ function TourneeCard({
   const palette = modePalette(tournee.mode, chauffeurNom);
   const libre = capaciteRestante(tournee.mode, tournee.totalVelos);
   const peutAjouter = libre >= SEUIL_2EME_TOURNEE && tournee.statutGlobal !== "livree" && tournee.statutGlobal !== "annulee";
+  // Fourchette horaire estimée chez chaque client (départ dépôt 8h30-9h00).
+  const monteursTournee = tournee.nbMonteurs > 0 ? tournee.nbMonteurs : MONTEURS_PAR_EQUIPE;
+  const arrivals = computeArrivalTimes(tournee, monteursTournee);
   // Check affectation : on regarde la 1re livraison (les affectations sont
   // par tournée, donc toutes ses livraisons partagent les mêmes équipes via
   // assignTournee).
@@ -1007,16 +1109,23 @@ function TourneeCard({
               : `${i + 1}. ${l.client.entreprise} · ${l._count.velos}v`;
             const len = fullText.length;
             const sizeClass = len <= 14 ? "text-[11px]" : len <= 20 ? "text-[10px]" : len <= 28 ? "text-[9px]" : "text-[8px]";
+            const arr = arrivals[i];
             return (
               <div key={l.id} className={`font-medium leading-tight break-words ${sizeClass}`} title={l.client.entreprise}>
                 {compact ? (
                   <>
                     <span className="opacity-60">{i + 1}.</span> {l.client.entreprise}
+                    {arr && (
+                      <span className="opacity-50 font-mono ml-1">{fmtHM(arr.minMin)}–{fmtHM(arr.maxMin)}</span>
+                    )}
                   </>
                 ) : (
                   <>
                     <span className="opacity-60">{i + 1}.</span> {l.client.entreprise}
                     <span className="opacity-60 font-mono"> · {l._count.velos}v</span>
+                    {arr && (
+                      <span className="opacity-50 font-mono ml-1">· {fmtHM(arr.minMin)}–{fmtHM(arr.maxMin)}</span>
+                    )}
                   </>
                 )}
               </div>
@@ -3002,9 +3111,12 @@ function keyForTournee(t: Tournee): string {
 }
 
 function fmtHM(totalMinutesFromMidnight: number): string {
-  const h = Math.floor(totalMinutesFromMidnight / 60);
-  const m = Math.round(totalMinutesFromMidnight % 60);
-  return `${String(h).padStart(2, "0")}h${String(m).padStart(2, "0")}`;
+  const total = Math.max(0, totalMinutesFromMidnight);
+  const h = Math.floor(total / 60);
+  const m = Math.round(total % 60);
+  // Format compact "8h30" (sans zéro-padding sur l'heure) — utilisé partout
+  // (cartes tournée, fenêtres de livraison, etc.).
+  return `${h}h${String(m).padStart(2, "0")}`;
 }
 
 // Arrondit au quart d'heure supérieur ou inférieur le plus proche de :00/:30
