@@ -185,7 +185,7 @@ export default function FinancesPage() {
 
       {data?.ok && (
         <>
-          {/* === Règlements monteurs (section dédiée, ultra lisible) === */}
+          {/* === Pointeuse monteurs (compact, click pour détail) === */}
           {(() => {
             const monteurs = (data.byMember || [])
               .filter((m) => m.role === "monteur")
@@ -194,46 +194,32 @@ export default function FinancesPage() {
             const totalMonteurs = monteurs.reduce((s, m) => s + m.coutTotal, 0);
             const totalVelosMontes = monteurs.reduce((s, m) => s + (m.velosPrimes || 0), 0);
             return (
-              <div className="mb-8">
-                <div className="flex items-end justify-between mb-3">
-                  <div>
-                    <h2 className="text-lg font-semibold flex items-center gap-2">
-                      🔧 Règlements monteurs
-                    </h2>
-                    <p className="text-xs text-gray-500 mt-0.5">
-                      {totalVelosMontes} vélos montés · {monteurs.length} monteur{monteurs.length > 1 ? "s" : ""} · {fmt(totalMonteurs)} à régler
-                    </p>
-                  </div>
+              <div className="mb-6 bg-white rounded-xl border overflow-hidden">
+                <div className="px-4 py-2.5 border-b bg-emerald-50 flex items-baseline justify-between">
+                  <h2 className="text-sm font-semibold flex items-center gap-2">
+                    🔧 Pointeuse monteurs
+                  </h2>
+                  <span className="text-[11px] text-emerald-700">
+                    {totalVelosMontes} vélos · {monteurs.length} monteur{monteurs.length > 1 ? "s" : ""} · <span className="font-semibold">{fmt(totalMonteurs)}</span>
+                  </span>
                 </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
-                  {monteurs.map((m) => (
-                    <div key={m.id} className="bg-white rounded-xl border-2 border-emerald-200 p-4 hover:border-emerald-400 transition-colors">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="font-semibold text-gray-900 truncate">{m.nom}</div>
-                        <span className="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 whitespace-nowrap">Monteur</span>
-                      </div>
-                      <div className="mt-3 grid grid-cols-2 gap-3">
-                        <div>
-                          <div className="text-[10px] uppercase tracking-wide text-gray-500">Vélos montés</div>
-                          <div className="text-2xl font-bold text-gray-900 leading-tight">{m.velosPrimes || 0}</div>
-                          <div className="text-[10px] text-gray-400">{m.jours || 0} jour{(m.jours||0) > 1 ? "s" : ""} sur le terrain</div>
-                        </div>
-                        <div className="text-right">
-                          <div className="text-[10px] uppercase tracking-wide text-gray-500">À régler</div>
-                          <div className="text-2xl font-bold text-emerald-700 leading-tight">{fmt(m.coutTotal)}</div>
-                          <div className="text-[10px] text-gray-400">
-                            {m.primeVelo ? `${fmt(m.primeVelo)}/vélo` : "—"}
-                            {m.salaireJournalier ? ` · ${fmt(m.salaireJournalier)}/j` : ""}
-                          </div>
-                        </div>
-                      </div>
-                      <div className="mt-3 pt-3 border-t flex justify-between text-[11px] text-gray-500">
-                        <span>Salaire <span className="text-blue-700 font-medium">{fmt(m.coutSalaire)}</span></span>
-                        <span>Prime <span className="text-amber-700 font-medium">{fmt(m.coutPrime)}</span></span>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                <table className="w-full text-sm">
+                  <thead className="bg-gray-50 border-b text-[11px] text-gray-600">
+                    <tr>
+                      <th className="text-left px-3 py-1.5 font-medium w-8"></th>
+                      <th className="text-left px-3 py-1.5 font-medium">Monteur</th>
+                      <th className="text-right px-3 py-1.5 font-medium">Jours</th>
+                      <th className="text-right px-3 py-1.5 font-medium">Vélos montés</th>
+                      <th className="text-right px-3 py-1.5 font-medium">€/vélo</th>
+                      <th className="text-right px-3 py-1.5 font-medium">À régler</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {monteurs.map((m) => (
+                      <MonteurPointeuseRow key={m.id} m={m} from={from} to={to} />
+                    ))}
+                  </tbody>
+                </table>
               </div>
             );
           })()}
@@ -343,5 +329,104 @@ function KpiCard({ label, value, accent }: { label: string; value: string; accen
       <div className="text-[11px] uppercase tracking-wide text-gray-500">{label}</div>
       <div className={`text-2xl font-bold mt-1 ${accent || "text-gray-900"}`}>{value}</div>
     </div>
+  );
+}
+
+interface SessionRow {
+  clientId: string;
+  entreprise: string;
+  jour: string;
+  heureDebut: string;
+  heureFin: string;
+  dureeMin: number;
+  nbVelos: number;
+  velos: { fnuci: string | null; dateMontage: string | null; montageClaimAt: string | null }[];
+}
+
+function MonteurPointeuseRow({ m, from, to }: { m: MemberRow; from: string; to: string }) {
+  const [open, setOpen] = useState(false);
+  const [sessions, setSessions] = useState<SessionRow[] | null>(null);
+  const [loadingSessions, setLoadingSessions] = useState(false);
+  const [errSessions, setErrSessions] = useState<string | null>(null);
+
+  const toggle = async () => {
+    const next = !open;
+    setOpen(next);
+    if (next && sessions === null && !loadingSessions) {
+      setLoadingSessions(true);
+      setErrSessions(null);
+      try {
+        const r = await gasGet("getMonteurActivity", { monteurId: m.id, from, to }) as
+          { ok?: boolean; sessions?: SessionRow[]; error?: string };
+        if (r.error) setErrSessions(r.error);
+        else setSessions(r.sessions || []);
+      } catch (e) {
+        setErrSessions(e instanceof Error ? e.message : String(e));
+      } finally {
+        setLoadingSessions(false);
+      }
+    }
+  };
+
+  const fmtTime = (iso: string | null) =>
+    iso ? new Date(iso).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" }) : "—";
+  const fmtDate = (iso: string) => new Date(iso).toLocaleDateString("fr-FR", { weekday: "short", day: "2-digit", month: "short" });
+
+  return (
+    <>
+      <tr className="hover:bg-gray-50 cursor-pointer" onClick={toggle}>
+        <td className="px-3 py-1.5 text-gray-400 text-xs">{open ? "▼" : "▶"}</td>
+        <td className="px-3 py-1.5 font-medium text-gray-900">{m.nom}</td>
+        <td className="px-3 py-1.5 text-right text-gray-700">{m.jours || "—"}</td>
+        <td className="px-3 py-1.5 text-right font-semibold">{m.velosPrimes || 0}</td>
+        <td className="px-3 py-1.5 text-right text-xs text-gray-500">{m.primeVelo ? fmt(m.primeVelo) : "—"}</td>
+        <td className="px-3 py-1.5 text-right font-semibold text-emerald-700">{fmt(m.coutTotal)}</td>
+      </tr>
+      {open && (
+        <tr className="bg-gray-50">
+          <td></td>
+          <td colSpan={5} className="px-3 py-2">
+            {loadingSessions && <div className="text-xs text-gray-400 italic">Chargement de la pointeuse…</div>}
+            {errSessions && <div className="text-xs text-red-600">{errSessions}</div>}
+            {sessions && sessions.length === 0 && (
+              <div className="text-xs text-gray-400 italic">Aucune intervention enregistrée sur la période.</div>
+            )}
+            {sessions && sessions.length > 0 && (
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs">
+                  <thead className="text-gray-500">
+                    <tr>
+                      <th className="text-left px-2 py-1 font-medium">Jour</th>
+                      <th className="text-left px-2 py-1 font-medium">Client</th>
+                      <th className="text-left px-2 py-1 font-medium" title="Scan QR carton (début intervention)">Début</th>
+                      <th className="text-left px-2 py-1 font-medium" title="Dernier vélo monté">Fin</th>
+                      <th className="text-right px-2 py-1 font-medium">Durée</th>
+                      <th className="text-right px-2 py-1 font-medium">Vélos</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-gray-200">
+                    {sessions.map((s) => (
+                      <tr key={`${s.clientId}-${s.jour}`} className="hover:bg-white">
+                        <td className="px-2 py-1 text-gray-600 whitespace-nowrap">{fmtDate(s.jour)}</td>
+                        <td className="px-2 py-1 font-medium text-gray-900 truncate max-w-xs">{s.entreprise || s.clientId}</td>
+                        <td className="px-2 py-1 font-mono">{fmtTime(s.heureDebut)}</td>
+                        <td className="px-2 py-1 font-mono">{fmtTime(s.heureFin)}</td>
+                        <td className="px-2 py-1 text-right text-gray-600">
+                          {s.dureeMin >= 60 ? `${Math.floor(s.dureeMin/60)}h${String(s.dureeMin%60).padStart(2,"0")}` : `${s.dureeMin}min`}
+                        </td>
+                        <td className="px-2 py-1 text-right font-semibold">{s.nbVelos}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="mt-1 text-[10px] text-gray-400 italic">
+                  Début = scan QR carton (claim) · Fin = photo du dernier vélo monté
+                </div>
+              </div>
+            )}
+          </td>
+        </tr>
+      )}
+    </>
   );
 }

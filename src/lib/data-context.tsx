@@ -125,6 +125,10 @@ interface LivraisonRow {
     note: string | null;
     at: string;
   } | null;
+  /** Marchandise déjà chargée dans le camion la veille (livraison reportée
+   *  où on n'a pas eu besoin de tout décharger). On part directement chez
+   *  le client le matin (pas de passage dépôt → arrivée typiquement 8h00). */
+  dejaChargee?: boolean;
   client: {
     entreprise: string;
     ville: string | null;

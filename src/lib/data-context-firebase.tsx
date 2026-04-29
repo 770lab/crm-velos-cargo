@@ -176,6 +176,7 @@ function livraisonFromDoc(id: string, d: DocumentData): LivraisonRow {
             : (d.validationClient.at?.toDate?.()?.toISOString?.() ?? ""),
         }
       : null,
+    dejaChargee: d.dejaChargee === true,
     client: {
       entreprise: d.clientSnapshot?.entreprise ?? "",
       ville: d.clientSnapshot?.ville ?? null,

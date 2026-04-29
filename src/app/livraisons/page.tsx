@@ -2126,6 +2126,18 @@ Réponds STRICTEMENT en JSON sans markdown, format :
     setBusy(null);
   };
 
+  const toggleDejaChargee = async (id: string, current: boolean) => {
+    setBusy(id);
+    try {
+      await gasPost("updateLivraison", { id, data: { dejaChargee: !current } });
+      onChanged();
+    } catch (e) {
+      alert("Échec : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const validateClient = async (id: string, status: "validee_orale" | "validee_mail" | "non_contacte", currentUserName: string) => {
     setBusy(id);
     let par: string | null = currentUserName || null;
@@ -2812,6 +2824,33 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                   {l.statut === "annulee" && l.raisonAnnulation && (
                     <div className="mt-1 px-2 py-1 text-[11px] bg-amber-50 border border-amber-200 rounded text-amber-800">
                       ⊘ Annulée : {l.raisonAnnulation}
+                    </div>
+                  )}
+                  {l.statut !== "annulee" && (
+                    <div className="mt-1">
+                      {l.dejaChargee ? (
+                        <div className="px-2 py-1 text-[11px] bg-indigo-50 border border-indigo-200 rounded text-indigo-800 flex items-center gap-2 flex-wrap">
+                          <span className="font-medium">📦 Déjà chargée</span>
+                          <span className="opacity-75">départ direct chez le client (~8h00)</span>
+                          <button
+                            onClick={(e) => { e.stopPropagation(); toggleDejaChargee(l.id, true); }}
+                            disabled={busy === l.id}
+                            className="ml-auto text-[10px] underline opacity-60 hover:opacity-100"
+                            title="Retirer le statut « déjà chargée »"
+                          >
+                            retirer
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={(e) => { e.stopPropagation(); toggleDejaChargee(l.id, false); }}
+                          disabled={busy === l.id}
+                          className="px-2 py-0.5 text-[11px] text-indigo-700 border border-indigo-300 rounded hover:bg-indigo-50"
+                          title="Marquer la marchandise comme déjà dans le camion (saute le chargement, arrivée 8h)"
+                        >
+                          📦 Marquer « déjà chargée »
+                        </button>
+                      )}
                     </div>
                   )}
                   {/* Validation préalable client (téléphone / mail). Sans ça,

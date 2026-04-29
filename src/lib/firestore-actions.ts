@@ -4780,6 +4780,121 @@ export async function runFirestoreGet(
       };
     }
 
+    case "getMonteurActivity": {
+      // Pointeuse monteur : sessions de travail (groupées par client + jour)
+      // dans une fenêtre [from, to]. Chaque session retourne :
+      //   - heureDebut  : scan QR carton (montageClaimAt) — fallback sur 1er
+      //                   dateMontage si pas de claim trace
+      //   - heureFin    : dernière photo de vélo monté (max dateMontage)
+      //   - nbVelos     : nb de vélos avec dateMontage et monteParId == X
+      //   - velos[]     : { fnuci, dateMontage }
+      // Permet à Yoann/ricky de suivre ce qu'a fait chaque monteur, à quelle
+      // heure exacte (vérification des règlements / debug terrain).
+      const monteurId = params.monteurId;
+      const fromStr = params.from || "";
+      const toStr = params.to || "";
+      if (!monteurId) throw new Error("monteurId requis");
+
+      const fromMs = fromStr ? new Date(fromStr + "T00:00:00").getTime() : 0;
+      const toMs = toStr ? new Date(toStr + "T23:59:59").getTime() : Number.POSITIVE_INFINITY;
+
+      const vSnap = await getDocs(
+        query(collection(db, "velos"), where("monteParId", "==", monteurId)),
+      );
+
+      type VeloEntry = {
+        fnuci: string | null;
+        dateMontage: string | null;
+        montageClaimAt: string | null;
+      };
+      type SessionKey = string; // `${clientId}|${dayISO}`
+      const sessions = new Map<SessionKey, {
+        clientId: string;
+        jour: string;
+        debutMs: number; // min montageClaimAt OR min dateMontage
+        finMs: number;   // max dateMontage
+        velos: VeloEntry[];
+      }>();
+      const clientIds = new Set<string>();
+
+      const toMs_ = (v: unknown): number | null => {
+        if (!v) return null;
+        if (typeof v === "string") {
+          const t = new Date(v).getTime();
+          return Number.isFinite(t) ? t : null;
+        }
+        const m = (v as { toMillis?: () => number }).toMillis?.();
+        if (typeof m === "number") return m;
+        const d = (v as { toDate?: () => Date }).toDate?.();
+        if (d) return d.getTime();
+        return null;
+      };
+
+      for (const d of vSnap.docs) {
+        const o = d.data() as {
+          clientId?: string;
+          fnuci?: string | null;
+          annule?: boolean;
+          dateMontage?: unknown;
+          montageClaimAt?: unknown;
+        };
+        if (o.annule) continue;
+        const dmMs = toMs_(o.dateMontage);
+        if (dmMs == null) continue;
+        if (dmMs < fromMs || dmMs > toMs) continue;
+        const cid = o.clientId || "";
+        if (!cid) continue;
+        clientIds.add(cid);
+        const dayISO = new Date(dmMs).toISOString().slice(0, 10);
+        const key: SessionKey = `${cid}|${dayISO}`;
+        const claimMs = toMs_(o.montageClaimAt);
+        let s = sessions.get(key);
+        if (!s) {
+          s = {
+            clientId: cid,
+            jour: dayISO,
+            debutMs: claimMs ?? dmMs,
+            finMs: dmMs,
+            velos: [],
+          };
+          sessions.set(key, s);
+        } else {
+          if (claimMs != null && claimMs < s.debutMs) s.debutMs = claimMs;
+          if (dmMs > s.finMs) s.finMs = dmMs;
+          if (claimMs == null && dmMs < s.debutMs) s.debutMs = dmMs;
+        }
+        s.velos.push({
+          fnuci: o.fnuci ?? null,
+          dateMontage: new Date(dmMs).toISOString(),
+          montageClaimAt: claimMs != null ? new Date(claimMs).toISOString() : null,
+        });
+      }
+
+      // Récup nom des clients (1 read par client, batchable plus tard)
+      const clientNames: Record<string, string> = {};
+      for (const cid of clientIds) {
+        try {
+          const c = await getDoc(doc(db, "clients", cid));
+          if (c.exists()) clientNames[cid] = ((c.data() as { entreprise?: string }).entreprise) || "";
+        } catch {}
+      }
+
+      const result = Array.from(sessions.values())
+        .map((s) => ({
+          clientId: s.clientId,
+          entreprise: clientNames[s.clientId] || "",
+          jour: s.jour,
+          heureDebut: new Date(s.debutMs).toISOString(),
+          heureFin: new Date(s.finMs).toISOString(),
+          dureeMin: Math.max(0, Math.round((s.finMs - s.debutMs) / 60000)),
+          nbVelos: s.velos.length,
+          velos: s.velos.sort((a, b) => (a.dateMontage || "").localeCompare(b.dateMontage || "")),
+        }))
+        .sort((a, b) => b.heureDebut.localeCompare(a.heureDebut));
+
+      return { ok: true, monteurId, from: fromStr, to: toStr, sessions: result };
+    }
+
     case "getFinancesSummary": {
       // Page /finances (super-admin). Calcul du coût main d'œuvre sur [from, to].
       //
