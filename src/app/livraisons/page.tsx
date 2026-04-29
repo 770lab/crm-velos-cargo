@@ -2313,6 +2313,81 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           </div>
         )}
 
+        {/* Export CSV preparation (29-04 13h58) : visible des que la prep est
+            terminee (prepare === total). Une ligne par velo : Client, FNUCI,
+            Date de livraison. Format Excel-friendly (BOM UTF-8 + ;). */}
+        {tournee.tourneeId && progression && progression.totals.total > 0 && progression.totals.prepare >= progression.totals.total && (
+          <div className="mb-3 flex items-center gap-3 px-3 py-2 rounded-lg border bg-emerald-50 border-emerald-300 text-emerald-900">
+            <span className="text-lg">📥</span>
+            <div className="flex-1 text-sm">
+              <div className="font-medium">Export CSV préparation</div>
+              <div className="text-xs opacity-80">
+                {progression.totals.prepare} vélos préparés · Client / FNUCI / Date de livraison
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={async () => {
+                if (!tournee.tourneeId) return;
+                setBusy("exportCsvPrep");
+                try {
+                  type BlData = {
+                    tourneeId: string;
+                    datePrevue: string | null;
+                    clients: Array<{
+                      clientId: string;
+                      entreprise: string;
+                      velos: Array<{ veloId: string; fnuci: string | null }>;
+                    }>;
+                    error?: string;
+                  };
+                  const data = (await gasGet("getBlForTournee", { tourneeId: tournee.tourneeId })) as BlData;
+                  if (!data || data.error) {
+                    alert("Erreur récupération données : " + (data?.error || "?"));
+                    return;
+                  }
+                  const dateLiv = data.datePrevue
+                    ? new Date(data.datePrevue).toLocaleDateString("fr-FR")
+                    : "";
+                  const csvEscape = (s: string) => {
+                    if (s.includes(";") || s.includes('"') || s.includes("\n")) {
+                      return `"${s.replace(/"/g, '""')}"`;
+                    }
+                    return s;
+                  };
+                  const lines = ["Client;FNUCI;Date de livraison"];
+                  for (const c of data.clients) {
+                    for (const v of c.velos) {
+                      lines.push(`${csvEscape(c.entreprise || "")};${csvEscape(v.fnuci || "")};${csvEscape(dateLiv)}`);
+                    }
+                  }
+                  // BOM UTF-8 pour qu'Excel ouvre correctement les accents
+                  const blob = new Blob(["﻿" + lines.join("\r\n")], {
+                    type: "text/csv;charset=utf-8",
+                  });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  a.href = url;
+                  const dateStr = new Date().toISOString().slice(0, 10);
+                  a.download = `preparation-tournee-${tournee.numero ?? tournee.tourneeId.slice(0, 8)}-${dateStr}.csv`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                } catch (e) {
+                  alert("Export échoué : " + (e instanceof Error ? e.message : String(e)));
+                } finally {
+                  setBusy(null);
+                }
+              }}
+              disabled={busy === "exportCsvPrep"}
+              className="text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-700 font-medium whitespace-nowrap disabled:opacity-50"
+            >
+              {busy === "exportCsvPrep" ? "⏳ Export…" : "📥 Télécharger CSV"}
+            </button>
+          </div>
+        )}
+
         {/* Suivi opérationnel global tournée */}
         {tournee.tourneeId && progression && progression.totals.total > 0 && (() => {
           const t = progression.totals;
