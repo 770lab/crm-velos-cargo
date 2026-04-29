@@ -1113,7 +1113,13 @@ function computeArrivalTimes(
     // Yoann 29-04 02h25 : avant on arrondissait juste l'arrivée → toutes les
     // fourchettes étaient de 30 min indépendamment du nb de vélos. Maintenant
     // un client à 1 vélo a ~30 min de fenêtre, à 10 vélos ~1h30 → annonce juste.
-    const montageMin = ((liv.nbVelos ?? 0) * MINUTES_PAR_VELO) / eff;
+    // Source de vérité du nb vélos pour le calcul de montage : _count.velos
+    // (toujours défini après backfill data-context). liv.nbVelos est optionnel
+    // et undefined sur des livraisons importées du sheet GAS → si on l'utilise
+    // on obtient montage=0 et toutes les arrivées des clients consécutifs
+    // s'écrasent sur la même heure. Bug observé Yoann 29-04 02h38.
+    const nbVelosClient = liv._count?.velos ?? liv.nbVelos ?? 0;
+    const montageMin = (nbVelosClient * MINUTES_PAR_VELO) / eff;
     out.push({
       // floor au :30 inférieur pour la borne min (arrondi prudent : on ne
       // promet pas plus tôt que ce qui est réaliste)
