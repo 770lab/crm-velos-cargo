@@ -1034,8 +1034,34 @@ export async function runFirestoreAction(
 
     case "assignFnuciToClient": {
       // Trouve un vélo du client sans FNUCI et lui assigne.
+      // Anti-doublon (29-04 11h) : si ce FNUCI est déjà sur un autre vélo
+      // (ce client OU un autre), on refuse. Sans ce check, Gemini pouvant
+      // extraire 2× le même code dans 2 photos différentes consommait 2 slots.
       const clientId = getRequired(body, "clientId");
       const fnuci = getRequired(body, "fnuci");
+      const dupSnap = await getDocs(
+        query(collection(db, "velos"), where("fnuci", "==", fnuci)),
+      );
+      if (!dupSnap.empty) {
+        const existing = dupSnap.docs[0];
+        const existingClientId = existing.get("clientId") as string | null;
+        let existingClientName: string | null = null;
+        if (existingClientId) {
+          const cDoc = await getDoc(doc(db, "clients", existingClientId));
+          existingClientName = cDoc.exists() ? (cDoc.get("entreprise") as string) : null;
+        }
+        const alreadySameClient = existingClientId === clientId;
+        return {
+          ok: false,
+          code: "FNUCI_DEJA_AFFILIE",
+          error: alreadySameClient
+            ? `FNUCI déjà affilié à ce client`
+            : `FNUCI déjà affilié à ${existingClientName || "un autre client"}`,
+          existingClientId,
+          existingClientName,
+          alreadySameClient,
+        };
+      }
       const q = query(
         collection(db, "velos"),
         where("clientId", "==", clientId),

@@ -28,13 +28,19 @@ type ExtractResp =
   | { error: string; rawText?: string; body?: string };
 
 // Wrapper autour de gasUpload qui :
-//   1. timeout au bout de TIMEOUT_MS (30s par défaut) — sinon une requête
-//      hung bloquerait la carte sur "🤖 Gemini analyse…" indéfiniment ;
-//   2. retry automatiquement 1× après ~1s si la 1re tentative timeout/fail.
+//   1. timeout au bout de TIMEOUT_MS — sinon une requête hung bloquerait la
+//      carte sur "🤖 Gemini analyse…" indéfiniment ;
+//   2. retry automatiquement 1× si la 1re tentative timeout/fail.
+//   3. retry aussi sur 503/UNAVAILABLE renvoyé en JSON (Gemini saturé).
 // Au-delà de 2 essais, l'erreur remonte → la carte passe en rouge avec son
 // bouton "↻ Réessayer" et l'utilisateur peut retenter manuellement.
-const TIMEOUT_MS = 30000;
-const RETRY_DELAY_MS = 1000;
+//
+// 50s de timeout (29-04 11h) : la Cloud Function fait elle-même 3 retries en
+// backoff (1s/3s/7s) sur 503, donc une 1re tentative légitime peut durer ~30s.
+// Avec un timeout de 30s côté front on coupait avant le retry backend → le
+// front ré-appelait, doublait la charge sur Gemini, et boom cascade de 503.
+const TIMEOUT_MS = 50000;
+const RETRY_DELAY_MS = 2000;
 
 // Pour chaque résultat Gemini "ok" : écrit dans Firestore l'équivalent de ce
 // que GAS a fait dans son Sheet, pour que le reste de l'app (qui lit Firestore)
@@ -119,6 +125,7 @@ async function callExtractWithRetry(
   body: Record<string, unknown>,
 ): Promise<ExtractResp> {
   let lastErr: unknown = null;
+  let lastResp: ExtractResp | null = null;
   for (let attempt = 1; attempt <= 2; attempt++) {
     try {
       const resp = await Promise.race([
@@ -127,6 +134,16 @@ async function callExtractWithRetry(
           setTimeout(() => reject(new Error(`Timeout après ${TIMEOUT_MS / 1000}s`)), TIMEOUT_MS),
         ),
       ]);
+      // Si la Cloud Function renvoie un { error: "Gemini HTTP 503 …" } malgré
+      // ses propres retries internes, on retente une fois côté front (2s plus
+      // tard) — Gemini était peut-être en peak, ça libère vite.
+      if ("error" in resp && /503|UNAVAILABLE|429/i.test(resp.error || "")) {
+        lastResp = resp;
+        if (attempt < 2) {
+          await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+          continue;
+        }
+      }
       return resp;
     } catch (e) {
       lastErr = e;
@@ -135,6 +152,7 @@ async function callExtractWithRetry(
       }
     }
   }
+  if (lastResp) return lastResp;
   throw lastErr instanceof Error ? lastErr : new Error(String(lastErr));
 }
 
@@ -325,35 +343,48 @@ export default function PhotoGeminiCapture({
       prev.map((i) => (pendingIds.includes(i.id) ? { ...i, status: "processing" } : i)),
     );
 
+    // Pool de concurrence MAX_PARALLEL (29-04 11h : un Promise.all sur 28 photos
+    // saturait Gemini → 503 UNAVAILABLE en cascade + 27/28 timeouts). On lance
+    // au plus 3 requêtes en parallèle, le reste attend dans la queue. Combiné
+    // au retry exponentiel côté Cloud Function (1s/3s/7s + jitter), ça absorbe
+    // les pics sans saturer l'API.
+    const MAX_PARALLEL = 3;
     const collectedResps: ExtractResp[] = [];
-    await Promise.all(
-      pendingIds.map(async (id) => {
-        const item = items.find((it) => it.id === id);
-        if (!item) return;
-        try {
-          const resp = await callExtractWithRetry({
-            imageBase64: item.base64,
-            mimeType: item.mimeType,
-            tourneeId,
-            userId,
-            etape,
-            forceClientId: forceClientId || undefined,
-          });
-          collectedResps.push(resp);
-          setItems((prev) =>
-            prev.map((it) => (it.id === id ? { ...it, status: "done", resp } : it)),
-          );
-        } catch (e) {
-          setItems((prev) =>
-            prev.map((it) =>
-              it.id === id
-                ? { ...it, status: "error", errorMsg: e instanceof Error ? e.message : String(e) }
-                : it,
-            ),
-          );
-        }
-      }),
-    );
+    const queue = [...pendingIds];
+    const runOne = async (id: string) => {
+      const item = items.find((it) => it.id === id);
+      if (!item) return;
+      try {
+        const resp = await callExtractWithRetry({
+          imageBase64: item.base64,
+          mimeType: item.mimeType,
+          tourneeId,
+          userId,
+          etape,
+          forceClientId: forceClientId || undefined,
+        });
+        collectedResps.push(resp);
+        setItems((prev) =>
+          prev.map((it) => (it.id === id ? { ...it, status: "done", resp } : it)),
+        );
+      } catch (e) {
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === id
+              ? { ...it, status: "error", errorMsg: e instanceof Error ? e.message : String(e) }
+              : it,
+          ),
+        );
+      }
+    };
+    const workers = Array.from({ length: Math.min(MAX_PARALLEL, queue.length) }, async () => {
+      while (queue.length > 0) {
+        const next = queue.shift();
+        if (!next) break;
+        await runOne(next);
+      }
+    });
+    await Promise.all(workers);
 
     // Mirror Firestore SÉQUENTIEL : assignFnuciToClient pose un FNUCI sur
     // le 1er slot vide du client → race condition si parallèle, d'où l'appel

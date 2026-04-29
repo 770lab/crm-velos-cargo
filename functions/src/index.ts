@@ -797,44 +797,68 @@ type ExtractFnuciPayload = {
   mimeType?: string;
 };
 
+// Retry exponentiel sur 503/429/500 (29-04 11h : burst 28 photos en parallèle
+// déclenchait UNAVAILABLE en cascade sur Gemini). Backoff 1s/3s/7s + jitter pour
+// désynchroniser les requêtes simultanées qui retombent du même 503. Reste sous
+// le timeoutSeconds de la Cloud Function (45s) : 1+3+7 = 11s de wait + 4×~5s d'appel = ~30s max.
 async function callGeminiVisionForFnuci(
   apiKey: string,
   base64: string,
   mimeType: string,
 ): Promise<{ ok: true; rawText: string } | { ok: false; error: string }> {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-  let res: Response;
-  try {
-    res = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        contents: [{
-          parts: [
-            { text: FNUCI_PROMPT },
-            { inline_data: { mime_type: mimeType, data: base64 } },
-          ],
-        }],
-        generationConfig: {
-          temperature: 0,
-          responseMimeType: "application/json",
-          // OCR pur : pas de "thinking" → 1-2s gagnées par appel.
-          thinkingConfig: { thinkingBudget: 0 },
-          maxOutputTokens: 256,
-        },
-      }),
-    });
-  } catch (err) {
-    return { ok: false, error: `Gemini fetch failed: ${err instanceof Error ? err.message : String(err)}` };
-  }
-  if (!res.ok) {
+  const RETRY_DELAYS_MS = [1000, 3000, 7000];
+  let lastErr = "Gemini call failed";
+  for (let attempt = 0; attempt <= RETRY_DELAYS_MS.length; attempt++) {
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            parts: [
+              { text: FNUCI_PROMPT },
+              { inline_data: { mime_type: mimeType, data: base64 } },
+            ],
+          }],
+          generationConfig: {
+            temperature: 0,
+            responseMimeType: "application/json",
+            // OCR pur : pas de "thinking" → 1-2s gagnées par appel.
+            thinkingConfig: { thinkingBudget: 0 },
+            maxOutputTokens: 256,
+          },
+        }),
+      });
+    } catch (err) {
+      lastErr = `Gemini fetch failed: ${err instanceof Error ? err.message : String(err)}`;
+      if (attempt < RETRY_DELAYS_MS.length) {
+        const jitter = Math.random() * 500;
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt] + jitter));
+        continue;
+      }
+      return { ok: false, error: lastErr };
+    }
+    if (res.ok) {
+      const data = await res.json();
+      const parts = data?.candidates?.[0]?.content?.parts || [];
+      const rawText = parts.map((p: { text?: string }) => p.text || "").join("");
+      return { ok: true, rawText };
+    }
     const body = await res.text();
-    return { ok: false, error: `Gemini HTTP ${res.status} : ${body.slice(0, 200)}` };
+    lastErr = `Gemini HTTP ${res.status} : ${body.slice(0, 200)}`;
+    // Retryable : 429 (rate limit), 500/502/503/504 (transient).
+    const retryable = res.status === 429 || (res.status >= 500 && res.status < 600);
+    if (retryable && attempt < RETRY_DELAYS_MS.length) {
+      const jitter = Math.random() * 500;
+      logger.warn("Gemini retry", { status: res.status, attempt: attempt + 1, delayMs: RETRY_DELAYS_MS[attempt] });
+      await new Promise((r) => setTimeout(r, RETRY_DELAYS_MS[attempt] + jitter));
+      continue;
+    }
+    return { ok: false, error: lastErr };
   }
-  const data = await res.json();
-  const parts = data?.candidates?.[0]?.content?.parts || [];
-  const rawText = parts.map((p: { text?: string }) => p.text || "").join("");
-  return { ok: true, rawText };
+  return { ok: false, error: lastErr };
 }
 
 export const extractFnuciFromImage = onCall<ExtractFnuciPayload>(
