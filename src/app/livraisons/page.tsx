@@ -2079,12 +2079,19 @@ Réponds STRICTEMENT en JSON sans markdown, format :
   };
 
   const setAllLivrees = async () => {
+    const aFaire = tournee.livraisons.filter((l) => l.statut !== "livree");
+    if (aFaire.length === 0) return;
+    const ok = confirm(
+      `Marquer ${aFaire.length} livraison${aFaire.length > 1 ? "s" : ""} comme « livrée » SANS aucun scan vélo ?\n\n` +
+      `Cette action ne touche PAS aux vélos eux-mêmes (les compteurs Prép/Charg/Livr resteront à 0).\n` +
+      `À utiliser seulement pour réconcilier une tournée ancienne ou en cas exceptionnel.\n\n` +
+      `OK pour confirmer, Annuler pour revenir.`,
+    );
+    if (!ok) return;
     setBusy("all");
     const now = new Date().toISOString();
     await Promise.all(
-      tournee.livraisons
-        .filter((l) => l.statut !== "livree")
-        .map((l) => gasPost("updateLivraison", { id: l.id, data: { statut: "livree", dateEffective: now } })),
+      aFaire.map((l) => gasPost("updateLivraison", { id: l.id, data: { statut: "livree", dateEffective: now } })),
     );
     onChanged();
     setBusy(null);
@@ -3329,8 +3336,9 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             onClick={setAllLivrees}
             disabled={busy === "all"}
             className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
+            title="Réconciliation manuelle — sans scan, à utiliser uniquement en cas exceptionnel"
           >
-            {busy === "all" ? "Mise à jour…" : "Tout marquer livré"}
+            {busy === "all" ? "Mise à jour…" : "Tout marquer livré ⚠ sans scan"}
           </button>
         </div>
       </div>
