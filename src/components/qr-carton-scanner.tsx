@@ -1,35 +1,20 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import jsQR from "jsqr";
 
-// Scan QR de l'étiquette carton (29-04 11h30) : remplace le scan BicyCode pour
-// le chargement et la livraison. Le QR encode le `clientId`. Utilise l'API
-// BarcodeDetector native (Safari iOS 17+, Chrome Android, Edge). Si pas dispo
-// (Safari macOS, anciens navigateurs), affiche un message + saisie manuelle.
+// Scan QR de l'étiquette carton (29-04 11h30, fix 12h17 : jsQR au lieu de
+// BarcodeDetector). BarcodeDetector n'est PAS supporté par Safari iOS (même
+// iOS 18) → tous les iPhones tombaient sur "Scan QR non supporté". jsQR est
+// une lib JS pure (~10KB), marche sur tous les navigateurs récents.
 //
-// Différent de PhotoGeminiCapture : pas d'upload Gemini, lecture purement
-// locale → instantané, pas de coût API, pas de timeout 503. La caméra reste
-// ouverte en mode "rafale", chaque QR détecté déclenche onScan(clientId)
-// avec un cooldown anti-double-scan (un QR scanné tourne en boucle dans le
-// frame buffer si on ne déduplique pas).
+// Le QR encode le `clientId`. Lecture purement locale → instantané, pas de
+// coût API, pas de timeout. Caméra ouverte en mode rafale, chaque QR détecté
+// déclenche onScan(clientId) avec un cooldown 1.5s anti-double-scan.
 
 type ScanResult = {
   clientId: string;
   at: number;
 };
-
-declare global {
-  interface Window {
-    // Polyfill type minimal pour BarcodeDetector (pas dans lib.dom.d.ts encore).
-    BarcodeDetector?: {
-      new (options?: { formats?: string[] }): {
-        detect(source: HTMLVideoElement | HTMLCanvasElement | ImageBitmap): Promise<
-          Array<{ rawValue: string; format: string }>
-        >;
-      };
-      getSupportedFormats?: () => Promise<string[]>;
-    };
-  }
-}
 
 export default function QrCartonScanner({
   onScan,
@@ -47,12 +32,11 @@ export default function QrCartonScanner({
   subtitle?: string;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
-  const detectorRef = useRef<InstanceType<NonNullable<typeof window.BarcodeDetector>> | null>(null);
   const lastScanRef = useRef<ScanResult | null>(null);
   const rafRef = useRef<number | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [unsupported, setUnsupported] = useState(false);
   const [manualValue, setManualValue] = useState("");
   const [flash, setFlash] = useState(false);
 
@@ -62,17 +46,6 @@ export default function QrCartonScanner({
 
   const start = useCallback(async () => {
     setError(null);
-    if (typeof window === "undefined" || !window.BarcodeDetector) {
-      setUnsupported(true);
-      return;
-    }
-    try {
-      detectorRef.current = new window.BarcodeDetector({ formats: ["qr_code"] });
-    } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
-      setUnsupported(true);
-      return;
-    }
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
@@ -108,37 +81,56 @@ export default function QrCartonScanner({
     return () => stop();
   }, [start, stop]);
 
-  // Boucle de détection. Tourne via requestAnimationFrame pour ne pas saturer
-  // le CPU (~60fps max, BarcodeDetector skip si la frame n'est pas prête).
+  // Boucle de détection jsQR. Tourne via requestAnimationFrame, downsample
+  // l'image à ~640px max sur le côté long pour rester rapide sur mobile.
   useEffect(() => {
-    if (unsupported || error) return;
+    if (error) return;
     let cancelled = false;
-    const tick = async () => {
+    // Réutilise un seul canvas pour éviter alloc/release à chaque frame.
+    if (!canvasRef.current && typeof document !== "undefined") {
+      canvasRef.current = document.createElement("canvas");
+    }
+    const tick = () => {
       if (cancelled) return;
       const v = videoRef.current;
-      const det = detectorRef.current;
-      if (v && det && v.readyState >= 2 && v.videoWidth > 0) {
-        try {
-          const codes = await det.detect(v);
-          for (const c of codes) {
-            const value = (c.rawValue || "").trim();
-            if (!value) continue;
-            const now = Date.now();
-            const last = lastScanRef.current;
-            if (last && last.clientId === value && now - last.at < SCAN_COOLDOWN_MS) {
-              continue; // dédoublonnage
+      const canvas = canvasRef.current;
+      if (v && canvas && v.readyState >= 2 && v.videoWidth > 0) {
+        // Downsample : un QR de ~200px à l'écran reste lisible à 640px.
+        // Skipper le downsample sur des frames < 800px ne change rien.
+        const longest = Math.max(v.videoWidth, v.videoHeight);
+        const targetMax = 640;
+        const scale = longest > targetMax ? targetMax / longest : 1;
+        const w = Math.round(v.videoWidth * scale);
+        const h = Math.round(v.videoHeight * scale);
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        if (ctx) {
+          ctx.drawImage(v, 0, 0, w, h);
+          try {
+            const imgData = ctx.getImageData(0, 0, w, h);
+            const code = jsQR(imgData.data, imgData.width, imgData.height, {
+              inversionAttempts: "dontInvert",
+            });
+            if (code && code.data) {
+              const value = code.data.trim();
+              if (value) {
+                const now = Date.now();
+                const last = lastScanRef.current;
+                if (!(last && last.clientId === value && now - last.at < SCAN_COOLDOWN_MS)) {
+                  lastScanRef.current = { clientId: value, at: now };
+                  if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+                    navigator.vibrate(30);
+                  }
+                  setFlash(true);
+                  setTimeout(() => setFlash(false), 150);
+                  onScan(value);
+                }
+              }
             }
-            lastScanRef.current = { clientId: value, at: now };
-            // Vibration + flash pour feedback immédiat.
-            if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
-              navigator.vibrate(30);
-            }
-            setFlash(true);
-            setTimeout(() => setFlash(false), 150);
-            onScan(value);
+          } catch {
+            // jsQR / getImageData peut throw sur tainted canvas ou frame invalide
           }
-        } catch {
-          // BarcodeDetector peut throw sur des frames invalides ; on continue.
         }
       }
       rafRef.current = requestAnimationFrame(tick);
@@ -148,7 +140,7 @@ export default function QrCartonScanner({
       cancelled = true;
       if (rafRef.current !== null) cancelAnimationFrame(rafRef.current);
     };
-  }, [onScan, unsupported, error]);
+  }, [onScan, error]);
 
   const handleManualSubmit = () => {
     const v = manualValue.trim();
@@ -178,12 +170,16 @@ export default function QrCartonScanner({
       )}
 
       <div className="relative flex-1 bg-black overflow-hidden">
-        {unsupported ? (
+        {error ? (
           <div className="absolute inset-0 flex flex-col items-center justify-center text-white p-4 text-center gap-3">
-            <div className="text-5xl">📷</div>
-            <div className="text-sm">Scan QR non supporté par ce navigateur.</div>
+            <div className="text-5xl">📷❌</div>
+            <div className="text-sm">Caméra inaccessible.</div>
+            <div className="text-xs opacity-70 break-words max-w-xs">{error}</div>
             <div className="text-xs opacity-70 max-w-xs">
-              Utilise Safari sur iOS 17+ ou Chrome récent. En attendant, colle le clientId à la main :
+              Sur iOS : Réglages → Safari → Caméra → Autoriser pour ce site.
+            </div>
+            <div className="text-xs opacity-70 max-w-xs mt-2">
+              Ou colle le clientId manuellement :
             </div>
             <div className="flex gap-2 w-full max-w-xs">
               <input
@@ -200,15 +196,6 @@ export default function QrCartonScanner({
               >
                 Valider
               </button>
-            </div>
-          </div>
-        ) : error ? (
-          <div className="absolute inset-0 flex flex-col items-center justify-center text-white p-4 text-center gap-3">
-            <div className="text-5xl">📷❌</div>
-            <div className="text-sm">Caméra inaccessible.</div>
-            <div className="text-xs opacity-70 break-words max-w-xs">{error}</div>
-            <div className="text-xs opacity-70 max-w-xs">
-              Sur iOS : Réglages → Safari → Caméra → Autoriser pour ce site.
             </div>
           </div>
         ) : (
