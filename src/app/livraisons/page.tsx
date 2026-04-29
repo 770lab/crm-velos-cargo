@@ -1697,6 +1697,7 @@ function TourneeModal({
     return { canSeeAdminBlocs, canSeeBonAxdis, canEditEquipe, canSeeEquipeRecap };
   }, [currentUser?.role, currentUser?.estChefMonteur]);
   const [showRappel, setShowRappel] = useState(false);
+  const [showBrief, setShowBrief] = useState(false);
   const clientInfo = useMemo(() => {
     const map = new Map<string, typeof allClients[number]>();
     for (const c of allClients) map.set(c.id, c);
@@ -2350,6 +2351,15 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             >
               📧 Rappels veille
             </button>
+            {perms.canSeeAdminBlocs && (
+              <button
+                onClick={() => setShowBrief(true)}
+                className="px-3 py-1 text-xs bg-purple-600 text-white rounded-lg hover:bg-purple-700 flex items-center gap-1"
+                title="Génère un brief texte à copier-coller pour les équipes (WhatsApp / mail)"
+              >
+                📋 Brief équipe
+              </button>
+            )}
             <button
               onClick={async () => {
                 const { url } = buildAxdisCommandeMail(tournee);
@@ -2613,14 +2623,28 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             La CF récupère les vélos en Firestore admin, génère le CSV et envoie
             par mail à Tiffany@axdis.fr avec le CSV en pièce jointe. Pas de
             manipulation manuelle, vraie auto. */}
-        {perms.canSeeAdminBlocs && tournee.tourneeId && progression && progression.totals.total > 0 && progression.totals.prepare >= progression.totals.total && (
-          <div className="mb-3 px-3 py-2.5 rounded-lg border bg-emerald-50 border-emerald-300 text-emerald-900 space-y-2">
+        {perms.canSeeAdminBlocs && tournee.tourneeId && progression && progression.totals.total > 0 && progression.totals.prepare >= progression.totals.total && (() => {
+          const sentAt = tournee.livraisons[0]?.csvAxdisSentAt;
+          const sentTo = tournee.livraisons[0]?.csvAxdisSentTo;
+          const sentDate = sentAt ? new Date(sentAt) : null;
+          return (
+          <div className={`mb-3 px-3 py-2.5 rounded-lg border space-y-2 ${
+            sentAt
+              ? "bg-emerald-100 border-emerald-500 text-emerald-900"
+              : "bg-emerald-50 border-emerald-300 text-emerald-900"
+          }`}>
             <div className="flex items-center gap-3">
-              <span className="text-lg">📤</span>
+              <span className="text-lg">{sentAt ? "✅" : "📤"}</span>
               <div className="flex-1 text-sm">
-                <div className="font-medium">Envoyer le CSV préparation à Tiffany</div>
+                <div className="font-medium">
+                  {sentAt
+                    ? `Mail envoyé à ${sentTo || "Tiffany"}`
+                    : "Envoyer le CSV préparation à Tiffany"}
+                </div>
                 <div className="text-xs opacity-80">
-                  {progression.totals.prepare} vélos préparés · pièce jointe Client / FNUCI / Date de livraison
+                  {sentAt && sentDate
+                    ? `Envoyé le ${sentDate.toLocaleDateString("fr-FR")} à ${sentDate.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })} · ${progression.totals.prepare} vélos`
+                    : `${progression.totals.prepare} vélos préparés · pièce jointe Client / FNUCI / Date de livraison`}
                 </div>
               </div>
               <button
@@ -2698,11 +2722,12 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                 disabled={busy === "exportCsvPrep"}
                 className="text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-700 font-medium whitespace-nowrap disabled:opacity-50"
               >
-                {busy === "exportCsvPrep" ? "⏳ Envoi…" : "📤 Envoyer à Tiffany"}
+                {busy === "exportCsvPrep" ? "⏳ Envoi…" : sentAt ? "↻ Renvoyer" : "📤 Envoyer à Tiffany"}
               </button>
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* Suivi opérationnel global tournée */}
         {tournee.tourneeId && progression && progression.totals.total > 0 && (() => {
@@ -3244,6 +3269,17 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           equipe={equipe}
           clientInfo={clientInfo}
           onClose={() => setShowRappel(false)}
+        />
+      )}
+      {showBrief && (
+        <BriefEquipeModal
+          tournee={tournee}
+          tourneeNumber={tourneeNumber}
+          monteurs={monteurs}
+          equipe={equipe}
+          clientInfo={clientInfo}
+          deployPlan={deployPlan}
+          onClose={() => setShowBrief(false)}
         />
       )}
       {reportTargets && (
@@ -4235,6 +4271,145 @@ function RappelVeilleModal({
 // Pattern : bouton qui affiche le résumé, panneau qui s'ouvre avec checkboxes
 // groupées par rôle. Tous les groupes filtrent par OR (tournée visible si au
 // moins un filtre matche).
+// Modale « Brief équipe » : génère un texte narratif à copier-coller dans
+// WhatsApp / mail pour briefer les équipes la veille au soir.
+function BriefEquipeModal({
+  tournee,
+  tourneeNumber,
+  monteurs,
+  equipe,
+  clientInfo,
+  deployPlan,
+  onClose,
+}: {
+  tournee: Tournee;
+  tourneeNumber: number | null;
+  monteurs: number;
+  equipe: EquipeMember[];
+  clientInfo: Map<string, ClientPoint>;
+  deployPlan: { steps: DeployStep[]; totalElapsed: number };
+  onClose: () => void;
+}) {
+  const departures = useContext(TourneeDeparturesContext);
+  const dep = departures?.get(tourneeKeyForDeparture(tournee));
+  const departMin = dep?.min ?? DEPART_MIN_DEFAULT;
+  const departMax = dep?.max ?? DEPART_MAX_DEFAULT;
+  const arrivals = computeArrivalTimes(tournee, monteurs, departMin, departMax);
+  const findName = (id: string | null | undefined) =>
+    id ? equipe.find((m) => m.id === id)?.nom || "?" : null;
+  const fmtHM = (mins: number) => {
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return `${h}h${String(m).padStart(2, "0")}`;
+  };
+
+  const text = useMemo(() => {
+    const liv0 = tournee.livraisons[0];
+    const dateStr = tournee.datePrevue
+      ? new Date(tournee.datePrevue).toLocaleDateString("fr-FR", {
+          weekday: "long", day: "numeric", month: "long",
+        })
+      : "";
+    const chauffeur = findName(liv0?.chauffeurId);
+    const chefIds = (liv0?.chefEquipeIds && liv0.chefEquipeIds.length > 0)
+      ? liv0.chefEquipeIds
+      : (liv0?.chefEquipeId ? [liv0.chefEquipeId] : []);
+    const chefs = chefIds.map(findName).filter(Boolean);
+    const monteurNames = (liv0?.monteurIds || []).map(findName).filter(Boolean);
+    const prepNames = (liv0?.preparateurIds || []).map(findName).filter(Boolean);
+    const totalVelos = tournee.totalVelos;
+    const heureDepart = liv0?.heureDepartTournee || "8h30";
+    const dejaCharge = !!liv0?.dejaChargee;
+
+    const lines: string[] = [];
+    lines.push(`🚛 *TOURNÉE ${tourneeNumber ?? ""}* — ${dateStr.toUpperCase()}`);
+    lines.push(`${totalVelos} vélos · ${tournee.livraisons.length} arrêt${tournee.livraisons.length > 1 ? "s" : ""}`);
+    lines.push("");
+    lines.push(`📍 Départ : ${dejaCharge ? "direct chez le client (camion déjà chargé)" : "AXDIS PRO Le Blanc-Mesnil"} à *${heureDepart}*`);
+    lines.push("");
+    if (chauffeur) lines.push(`🚐 *Chauffeur* : ${chauffeur}`);
+    if (chefs.length > 0) lines.push(`🚦 *Chef d'équipe* : ${chefs.join(", ")}`);
+    if (monteurNames.length > 0) lines.push(`🔧 *Monteurs* (${monteurNames.length}) : ${monteurNames.join(", ")}`);
+    if (prepNames.length > 0) lines.push(`📦 *Préparateurs* : ${prepNames.join(", ")}`);
+    lines.push("");
+    lines.push("─".repeat(30));
+
+    for (let i = 0; i < tournee.livraisons.length; i++) {
+      const l = tournee.livraisons[i];
+      const c = l.clientId ? clientInfo.get(l.clientId) : null;
+      const arr = arrivals[i];
+      const adresse = [l.client.adresse, l.client.codePostal, l.client.ville]
+        .filter(Boolean).join(", ");
+      const tel = l.client.telephone || "";
+      const apporteur = c?.apporteur || "";
+      const monteursIci = deployPlan.steps[i]?.monteursAffectes ?? monteurNames.length;
+      const tempsMontage = deployPlan.steps[i]?.tempsSurPlace ?? 0;
+      lines.push("");
+      lines.push(`*ARRÊT ${i + 1}* — ${l.client.entreprise}`);
+      lines.push(`  📍 ${adresse || "—"}`);
+      if (tel) lines.push(`  📞 ${tel}`);
+      if (apporteur) lines.push(`  🤝 Apporteur : ${apporteur}`);
+      if (arr) {
+        lines.push(`  ⏰ Arrivée prévue : ${fmtHM(arr.minMin)} – ${fmtHM(arr.maxMin)}`);
+      }
+      lines.push(`  🚲 ${l.nbVelos || l._count.velos} vélos · ${monteursIci} monteur${monteursIci > 1 ? "s" : ""} sur place${tempsMontage ? ` · ~${Math.round(tempsMontage)}min` : ""}`);
+      const valid = l.validationClient;
+      if (valid) {
+        const icon = valid.status === "validee_mail" ? "📧" : "📞";
+        lines.push(`  ${icon} Client validé par ${valid.par || "?"}`);
+      } else {
+        lines.push(`  ⚠ CLIENT NON VALIDÉ — confirmer avant de partir`);
+      }
+    }
+    lines.push("");
+    lines.push("─".repeat(30));
+    lines.push("Bonne tournée 🚴‍♂️");
+    return lines.join("\n");
+  }, [tournee, tourneeNumber, arrivals, equipe, clientInfo, deployPlan]);
+  void findName;
+
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {}
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-2xl max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <div>
+            <h2 className="text-lg font-semibold flex items-center gap-2">📋 Brief équipe</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Texte à envoyer aux équipes la veille (WhatsApp, mail). Format Markdown léger
+              compatible WhatsApp (*gras*).
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+        <textarea
+          value={text}
+          readOnly
+          className="w-full h-96 px-3 py-2 border rounded-lg font-mono text-xs whitespace-pre overflow-auto"
+        />
+        <div className="mt-3 flex justify-end gap-2">
+          <button
+            onClick={copy}
+            className={`px-4 py-2 rounded-lg text-sm font-medium ${
+              copied ? "bg-green-600 text-white" : "bg-purple-600 text-white hover:bg-purple-700"
+            }`}
+          >
+            {copied ? "✓ Copié dans le presse-papier" : "📋 Copier le brief"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function MultiIntervenantSelect({
   value,
   onChange,

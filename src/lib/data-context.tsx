@@ -133,6 +133,10 @@ interface LivraisonRow {
    *  "11:30"). Override le défaut 8h30 quand la marchandise n'arrive pas
    *  au dépôt avant. Posée sur TOUTES les livraisons de la tournée. */
   heureDepartTournee?: string | null;
+  /** Trace de l'envoi du CSV préparation à Tiffany (Axdis). Posé par la
+   *  Cloud Function sendPreparationCsv après envoi SMTP réussi. */
+  csvAxdisSentAt?: string | null;
+  csvAxdisSentTo?: string | null;
   client: {
     entreprise: string;
     ville: string | null;

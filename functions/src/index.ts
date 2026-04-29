@@ -1373,6 +1373,25 @@ export const sendPreparationCsv = onCall<{ tourneeId: string }>(
         messageId: info.messageId,
         to: TIFFANY_EMAIL,
       });
+      // Trace l'envoi sur les livraisons de la tournée pour que l'UI passe le
+      // bouton en vert (Yoann 2026-04-29).
+      try {
+        const livQuery = await db
+          .collection("livraisons")
+          .where("tourneeId", "==", tourneeId)
+          .get();
+        const batch = db.batch();
+        const sentAt = FieldValue.serverTimestamp();
+        for (const d of livQuery.docs) {
+          batch.update(d.ref, {
+            csvAxdisSentAt: sentAt,
+            csvAxdisSentTo: TIFFANY_EMAIL,
+          });
+        }
+        await batch.commit();
+      } catch (e) {
+        logger.warn("sendPreparationCsv : trace persistance KO", { tourneeId, err: String(e) });
+      }
       return {
         ok: true,
         messageId: info.messageId,
