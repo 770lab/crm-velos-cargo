@@ -127,12 +127,16 @@ export default function LivraisonsPage() {
   const [openTournee, setOpenTournee] = useState<Tournee | null>(null);
   const [search, setSearch] = useState("");
   // Pré-remplissage du champ search depuis ?q= (utile depuis la fiche client
-  // « 📅 Voir dans le planning ») — fait une seule fois au mount.
+  // « 📅 Voir dans le planning ») — fait une seule fois au mount. Si ?clientId=
+  // est aussi présent, on cible la tournée qui contient ce client (plus loin).
+  const [pendingClientFocus, setPendingClientFocus] = useState<string | null>(null);
   useEffect(() => {
     if (typeof window === "undefined") return;
     const sp = new URLSearchParams(window.location.search);
     const q = sp.get("q");
     if (q) setSearch(q);
+    const cid = sp.get("clientId");
+    if (cid) setPendingClientFocus(cid);
   }, []);
   // Filtre admin par chauffeur : "" = tous, sinon id d'un membre équipe.
   // Inutile pour les rôles terrain (eux ne voient que leurs tournées via
@@ -319,6 +323,46 @@ export default function LivraisonsPage() {
       setRefDate(new Date(first.datePrevue));
     }
   }, [searchQuery, filteredTournees]);
+
+  // Si on arrive depuis la fiche client (?clientId=...), trouver la tournée
+  // PROCHAINE à venir qui contient ce client + ouvrir la modale + scroller à
+  // la card du client. Préfère statut planifiee à venir, sinon dernière en
+  // date toutes statuts confondus (au cas où le client a déjà été livré).
+  useEffect(() => {
+    if (!pendingClientFocus || tournees.length === 0) return;
+    const now = Date.now();
+    const candidates = tournees.filter((t) =>
+      t.livraisons.some((l) => l.clientId === pendingClientFocus),
+    );
+    if (candidates.length === 0) return;
+    const upcoming = candidates
+      .filter((t) => t.datePrevue && new Date(t.datePrevue).getTime() >= now - 24 * 3600 * 1000)
+      .sort((a, b) => (a.datePrevue && b.datePrevue ? new Date(a.datePrevue).getTime() - new Date(b.datePrevue).getTime() : 0));
+    const past = candidates
+      .filter((t) => !upcoming.includes(t))
+      .sort((a, b) => (a.datePrevue && b.datePrevue ? new Date(b.datePrevue).getTime() - new Date(a.datePrevue).getTime() : 0));
+    const target = upcoming[0] || past[0];
+    if (target?.datePrevue) setRefDate(new Date(target.datePrevue));
+    setOpenTournee(target);
+    // pendingClientFocus reste set ; la 2e useEffect (scroll) le clear.
+  }, [pendingClientFocus, tournees]);
+
+  // Scroll auto vers la card du client ciblé une fois la modale ouverte.
+  // L'id `liv-card-<clientId>` est posé sur chaque card dans la modale.
+  useEffect(() => {
+    if (!openTournee || !pendingClientFocus) return;
+    // Laisse à React le temps de rendre la modale
+    const tid = setTimeout(() => {
+      const el = document.getElementById(`liv-card-${pendingClientFocus}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "center" });
+        el.classList.add("ring-2", "ring-blue-400");
+        setTimeout(() => el.classList.remove("ring-2", "ring-blue-400"), 2000);
+      }
+      setPendingClientFocus(null);
+    }, 400);
+    return () => clearTimeout(tid);
+  }, [openTournee, pendingClientFocus]);
 
   useEffect(() => {
     if (!openTournee) return;
@@ -2611,7 +2655,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                     ? "bg-emerald-50 border-emerald-400"
                     : "";
                 return (
-              <div className={`border rounded-lg p-3 ${wrapperCls}`}>
+              <div id={l.clientId ? `liv-card-${l.clientId}` : undefined} className={`border rounded-lg p-3 transition-all ${wrapperCls}`}>
                 <div className="flex items-start gap-3">
                 <input
                   type="checkbox"
