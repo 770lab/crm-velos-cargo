@@ -33,7 +33,7 @@ import {
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
 import { getFunctions, httpsCallable } from "firebase/functions";
-import { db, firebaseApp, storage } from "./firebase";
+import { auth, db, firebaseApp, storage } from "./firebase";
 
 const functions = getFunctions(firebaseApp, "europe-west1");
 
@@ -3807,9 +3807,29 @@ export async function runFirestoreGet(
     case "getTourneeProgression": {
       const tourneeId = params.tourneeId;
       if (!tourneeId) throw new Error("tourneeId requis");
-      const livSnap = await getDocs(
-        query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
-      );
+      // RBAC chauffeur : tente d'abord la query large, si permission-denied
+      // on retente avec where("chauffeurId","==",uid) — match la rule
+      // serveur qui restreint un chauffeur à ses propres livraisons.
+      // Bug 2026-04-29 (Zinedine sur /chargement → permission-denied).
+      let livSnap;
+      try {
+        livSnap = await getDocs(
+          query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
+        );
+      } catch (e) {
+        const uid = auth.currentUser?.uid;
+        if (uid && (e as { code?: string }).code === "permission-denied") {
+          livSnap = await getDocs(
+            query(
+              collection(db, "livraisons"),
+              where("tourneeId", "==", tourneeId),
+              where("chauffeurId", "==", uid),
+            ),
+          );
+        } else {
+          throw e;
+        }
+      }
       // datePrevue de la tournée = celle de n'importe quelle livraison (toutes égales)
       let datePrevue: string | null = null;
       // Tri par ordre tournée :
@@ -4325,9 +4345,26 @@ export async function runFirestoreGet(
       const tourneeId = params.tourneeId;
       if (!tourneeId) throw new Error("tourneeId requis");
 
-      const livSnap = await getDocs(
-        query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
-      );
+      // RBAC chauffeur fallback (cf. getTourneeProgression).
+      let livSnap;
+      try {
+        livSnap = await getDocs(
+          query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
+        );
+      } catch (e) {
+        const uid = auth.currentUser?.uid;
+        if (uid && (e as { code?: string }).code === "permission-denied") {
+          livSnap = await getDocs(
+            query(
+              collection(db, "livraisons"),
+              where("tourneeId", "==", tourneeId),
+              where("chauffeurId", "==", uid),
+            ),
+          );
+        } else {
+          throw e;
+        }
+      }
       if (livSnap.empty) {
         return { error: "Tournée introuvable", tourneeId };
       }
