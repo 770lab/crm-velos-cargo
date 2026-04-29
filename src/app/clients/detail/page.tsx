@@ -268,13 +268,36 @@ function ClientDetailPage() {
           )}
         </div>
         <div className="flex flex-col gap-2 items-end">
-          <a
-            href={`${BASE_PATH}/livraisons?clientId=${encodeURIComponent(id)}&q=${encodeURIComponent(client.entreprise)}`}
-            className="px-3 py-1 text-sm text-blue-700 border border-blue-300 rounded-lg hover:bg-blue-50 whitespace-nowrap"
-            title="Ouvrir la tournée de ce client et scroller à la card"
-          >
-            📅 Voir dans le planning
-          </a>
+          {(() => {
+            // Bouton "Voir dans le planning" seulement si une livraison
+            // non-annulée et planifiée existe — sinon click sans effet.
+            // (Yoann 29-04 23h56 : "ne dois pas atterrir sur le planning"
+            // pour ALL FRET SERVICE qui n'a pas encore de tournée).
+            const hasPlanned = (client.velos || []).some((v) =>
+              v.livraison &&
+              v.livraison.datePrevue &&
+              v.livraison.statut !== "annulee"
+            );
+            if (!hasPlanned) {
+              return (
+                <span
+                  className="px-3 py-1 text-sm text-gray-400 border border-gray-200 rounded-lg whitespace-nowrap cursor-not-allowed bg-gray-50"
+                  title="Aucune livraison planifiée pour ce client"
+                >
+                  📅 Pas encore planifié
+                </span>
+              );
+            }
+            return (
+              <a
+                href={`${BASE_PATH}/livraisons?clientId=${encodeURIComponent(id)}&q=${encodeURIComponent(client.entreprise)}`}
+                className="px-3 py-1 text-sm text-blue-700 border border-blue-300 rounded-lg hover:bg-blue-50 whitespace-nowrap"
+                title="Ouvrir la tournée de ce client et scroller à la card"
+              >
+                📅 Voir dans le planning
+              </a>
+            );
+          })()}
           {client.statut === "annulee" ? (
             <button
               onClick={restoreClient}

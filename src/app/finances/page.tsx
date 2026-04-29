@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { gasGet } from "@/lib/gas";
 import { useCurrentUser } from "@/lib/current-user";
 import type { EquipeRole } from "@/lib/data-context";
+import { ChargesOperationnellesSection } from "./charges-operationnelles";
 
 interface MemberRow {
   id: string;
@@ -181,6 +182,12 @@ export default function FinancesPage() {
       )}
       {loading && !data && (
         <div className="text-sm text-gray-400 italic">Calcul en cours…</div>
+      )}
+
+      {/* === Charges opérationnelles (frais saisis + achats vélos Axdis) ===
+          Indépendant du chargement GAS — utilise Firestore en temps réel. */}
+      {(user?.role === "superadmin" || user?.role === "admin") && (
+        <ChargesOperationnellesSection from={from} to={to} />
       )}
 
       {data?.ok && (
