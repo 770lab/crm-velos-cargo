@@ -287,14 +287,17 @@ export default function LivraisonsPage() {
         const tourneeKey = (t.tourneeId || "no-tid") + "|" + (t.datePrevue ? isoDate(t.datePrevue) : "");
         result.set(tourneeKey, { min: curMin, max: curMax });
         const monteurs = t.nbMonteurs > 0 ? t.nbMonteurs : MONTEURS_PAR_EQUIPE;
-        const dureeMin = estimateTourneeMinutes(t, monteurs);
-        // Pause si T1 traverse midi (45 min systématique pour les tournées du
-        // matin, qui finissent l'après-midi). Estimation grossière : pause
-        // prise si départ avant 12h ET fin après 12h.
-        const fin = curMin + dureeMin;
-        const pauseDelay = curMin < PAUSE_DEJEUNER_DEBUT && fin > PAUSE_DEJEUNER_DEBUT ? PAUSE_DEJEUNER_DUREE : 0;
-        curMin += dureeMin + pauseDelay + 30; // 30 min recharge dépôt avant T2
-        curMax += dureeMin + pauseDelay + 30;
+        // estimateDureeChauffeur (vs estimateTourneeMinutes) : ne compte pas
+        // le montage du dernier client. Le chauffeur file au dépôt dès le
+        // déchargement, l'équipe reste sur place pour finir le montage +
+        // pause. Yoann 29-04 02h46.
+        const dureeMin = estimateDureeChauffeur(t, monteurs);
+        // La pause déjeuner du chauffeur est implicitement prise pendant son
+        // trajet retour ou au dépôt avant T2. On ne l'ajoute donc PAS au
+        // chaînage (sinon double-comptage). Si T2 traverse midi à son tour,
+        // computeArrivalTimes décalera ses arrêts post-midi de 45 min.
+        curMin += dureeMin + 30; // 30 min recharge dépôt avant T2
+        curMax += dureeMin + 30;
       }
     }
     return result;
@@ -1366,6 +1369,55 @@ function estimateTourneeMinutes(tournee: Tournee, monteurs: number = MONTEURS_PA
   const plan = computeDeployPlan(tournee.livraisons, segments, monteurs);
   const hasParallel = plan.steps.some((s) => !s.camionAttend);
   return hasParallel ? plan.totalElapsed : simple;
+}
+
+// Durée de la tournée du POINT DE VUE DU CHAUFFEUR (vs estimateTourneeMinutes
+// qui mesure la durée totale équipe). Le chauffeur ne reste PAS pour le
+// montage du dernier client : dès que les cartons sont déchargés, il file au
+// dépôt pour démarrer la T2 (Yoann 29-04 02h46 — "il fonce directement").
+// L'équipe reste sur place finir le montage et prendre sa pause.
+//
+// Calcul : trajets dépôt→1→2→…→N→dépôt + montages chez clients 1..N-1
+// (le chauffeur attend l'équipe pour repartir vers le client suivant) +
+// déchargement chez client N (1 min/vélo, on pose les cartons et c'est tout).
+//
+// Sert à positionner T2 d'un même chauffeur dans le chaînage tourneeDepartures :
+// avec cette mesure, T2 démarre plus tôt que si on attendait que l'équipe
+// finisse le montage du dernier client de T1.
+function estimateDureeChauffeur(tournee: Tournee, monteurs: number): number {
+  if (tournee.mode === "retrait") return 0;
+  const livs = tournee.livraisons;
+  if (livs.length === 0) return 0;
+  const eff = Math.max(1, monteurs);
+  let totalTrajet = 0;
+  let prev = { lat: ENTREPOT.lat, lng: ENTREPOT.lng };
+  for (const liv of livs) {
+    const c = liv.client;
+    if (c.lat && c.lng && prev.lat && prev.lng) {
+      const km = haversineKm(prev.lat, prev.lng, c.lat, c.lng) * 1.3;
+      totalTrajet += km / 0.5;
+      prev = { lat: c.lat, lng: c.lng };
+    }
+  }
+  // Retour dépôt après le dernier client (depuis prev = dernier client).
+  if (prev.lat && prev.lng) {
+    const km = haversineKm(prev.lat, prev.lng, ENTREPOT.lat, ENTREPOT.lng) * 1.3;
+    totalTrajet += km / 0.5;
+  }
+  let temps = 0;
+  for (let i = 0; i < livs.length; i++) {
+    const nbV = livs[i]._count?.velos ?? livs[i].nbVelos ?? 0;
+    if (i < livs.length - 1) {
+      // Clients intermédiaires : le chauffeur attend que les monteurs finissent
+      // (toute l'équipe repart ensemble vers le client suivant dans le camion).
+      temps += (nbV * MINUTES_PAR_VELO) / eff;
+    } else {
+      // Dernier client : juste le déchargement (≈ 1 min/vélo). L'équipe
+      // reste sur place pour le montage, le chauffeur file au dépôt.
+      temps += nbV * 1;
+    }
+  }
+  return Math.round(totalTrajet + temps);
 }
 
 function formatDureeShort(min: number): string {

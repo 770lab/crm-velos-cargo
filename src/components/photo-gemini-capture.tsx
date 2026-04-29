@@ -46,6 +46,7 @@ async function mirrorGeminiResultsToFirestore(
   clientId: string | null,
   tourneeId: string,
   userId: string | null,
+  bypassOrderLock: boolean = false,
 ): Promise<{ failed: Array<{ fnuci: string; error: string }> }> {
   // Important: depuis la migration Firestore, gasPost résout DIRECTEMENT
   // sur Firestore (USE_FIREBASE=1) — il n'y a plus de filet GAS en aval.
@@ -83,20 +84,21 @@ async function mirrorGeminiResultsToFirestore(
           return null;
         };
         let serverErr: string | null = null;
+        const bypass = bypassOrderLock || undefined;
         if (etape === "preparation") {
           if (clientId) {
             const a = await gasPost("assignFnuciToClient", { fnuci: r.fnuci, clientId });
             serverErr = checkResp(a);
           }
           if (!serverErr) {
-            const m = await gasPost("markVeloPrepare", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
+            const m = await gasPost("markVeloPrepare", { fnuci: r.fnuci, tourneeId, userId: userId || "", bypassOrderLock: bypass });
             serverErr = checkResp(m);
           }
         } else if (etape === "chargement") {
-          const m = await gasPost("markVeloCharge", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
+          const m = await gasPost("markVeloCharge", { fnuci: r.fnuci, tourneeId, userId: userId || "", bypassOrderLock: bypass });
           serverErr = checkResp(m);
         } else if (etape === "livraisonScan") {
-          const m = await gasPost("markVeloLivreScan", { fnuci: r.fnuci, tourneeId, userId: userId || "" });
+          const m = await gasPost("markVeloLivreScan", { fnuci: r.fnuci, tourneeId, userId: userId || "", bypassOrderLock: bypass });
           serverErr = checkResp(m);
         }
         if (serverErr) {
@@ -166,6 +168,7 @@ export default function PhotoGeminiCapture({
   lockedClientId,
   nextEligibleClientId,
   onCameraToggle,
+  bypassOrderLock = false,
 }: {
   tourneeId: string;
   userId: string | null;
@@ -188,6 +191,10 @@ export default function PhotoGeminiCapture({
    * désactiver le scanner Strich (qui tient la caméra) le temps que Gemini
    * Vision en prenne le contrôle — iOS Safari = 1 seule appli active. */
   onCameraToggle?: (open: boolean) => void;
+  /** Mode admin : désactive les verrous d'ordre côté serveur. Visible
+   * uniquement pour admin/superadmin via le toggle dans tournee-scan-flow.
+   * Permet de scanner dans le désordre lors de tests/exception. */
+  bypassOrderLock?: boolean;
 }) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
@@ -353,7 +360,7 @@ export default function PhotoGeminiCapture({
     // séquentiel. Si Firestore tombe (4G coupée terrain), on remonte les
     // FNUCI échoués pour que l'opérateur puisse re-scanner.
     const { failed } = await mirrorGeminiResultsToFirestore(
-      collectedResps, etape, forceClientId, tourneeId, userId,
+      collectedResps, etape, forceClientId, tourneeId, userId, bypassOrderLock,
     );
     if (failed.length) {
       const summary = failed.map((f) => `${f.fnuci}: ${f.error}`).join("\n");
@@ -403,7 +410,7 @@ export default function PhotoGeminiCapture({
         prev.map((it) => (it.id === item.id ? { ...it, status: "done", resp } : it)),
       );
       const { failed } = await mirrorGeminiResultsToFirestore(
-        [resp], etape, forceClientId, tourneeId, userId,
+        [resp], etape, forceClientId, tourneeId, userId, bypassOrderLock,
       );
       if (failed.length) {
         setMirrorErrors((prev) => [...prev, ...failed]);

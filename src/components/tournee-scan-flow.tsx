@@ -139,6 +139,12 @@ function Inner({ mode }: { mode: ScanMode }) {
   // Code FNUCI extrait du dernier QR scanné, affiché brièvement le temps de
   // l'aller-retour API pour confirmer que l'extraction du code BicyCode a marché.
   const [scanPreview, setScanPreview] = useState<string | null>(null);
+  // Mode dépannage admin (Yoann 29-04 02h42) : désactive les verrous d'ordre
+  // côté serveur (ETAPE_PRECEDENTE_MANQUANTE + ORDRE_VERROUILLE). Visible
+  // UNIQUEMENT pour les rôles admin/superadmin. Utile lors de tests/exceptions
+  // où il faut livrer dans le désordre.
+  const isAdminRole = currentUser?.role === "admin" || currentUser?.role === "superadmin";
+  const [bypassOrderLock, setBypassOrderLock] = useState<boolean>(false);
 
   const loadProgression = useCallback(async () => {
     if (!tourneeId) return;
@@ -167,7 +173,7 @@ function Inner({ mode }: { mode: ScanMode }) {
     setBusy(true);
     setScannerEnabled(false);
     try {
-      const r = (await gasPost(cfg.endpoint, { fnuci, tourneeId, userId })) as ScanResp;
+      const r = (await gasPost(cfg.endpoint, { fnuci, tourneeId, userId, bypassOrderLock: bypassOrderLock || undefined })) as ScanResp;
       if ("ok" in r && r.ok) {
         beep(true);
         const evt: ScanEvent = {
@@ -298,7 +304,7 @@ function Inner({ mode }: { mode: ScanMode }) {
         };
         setHistory((h) => [evt, ...h].slice(0, 10));
       } else {
-        const r = (await gasPost(cfg.endpoint, { fnuci, tourneeId, userId })) as ScanResp;
+        const r = (await gasPost(cfg.endpoint, { fnuci, tourneeId, userId, bypassOrderLock: bypassOrderLock || undefined })) as ScanResp;
         if ("ok" in r && r.ok) {
           beep(true);
           const evt: ScanEvent = {
@@ -397,6 +403,32 @@ function Inner({ mode }: { mode: ScanMode }) {
           <h1 className="text-xl font-bold">{cfg.emoji} {cfg.title}</h1>
           <a href={`${BASE_PATH}/livraisons`} className="text-sm text-gray-500 hover:text-gray-700">← Planning</a>
         </div>
+
+        {/* Toggle admin pour scanner dans le désordre. Visible UNIQUEMENT pour
+            admin/superadmin. Quand activé, les 2 verrous serveur (étape
+            précédente + LIFO inter-clients) sont contournés. À utiliser en
+            test/exception ; en usage normal, laisser désactivé. */}
+        {isAdminRole && (
+          <label
+            className={`flex items-center gap-2 mb-3 px-3 py-2 rounded-lg text-xs cursor-pointer ${
+              bypassOrderLock
+                ? "bg-amber-100 border-2 border-amber-400 text-amber-900 font-semibold"
+                : "bg-gray-50 border border-gray-200 text-gray-600"
+            }`}
+            title="Permet de scanner dans le désordre (test/exception). Désactivé en usage normal."
+          >
+            <input
+              type="checkbox"
+              checked={bypassOrderLock}
+              onChange={(e) => setBypassOrderLock(e.target.checked)}
+            />
+            <span>
+              {bypassOrderLock
+                ? "🔓 MODE ADMIN ACTIVÉ — verrous d'ordre désactivés"
+                : "🔒 Mode admin (scanner dans le désordre)"}
+            </span>
+          </label>
+        )}
 
         {loadError && (
           <div className="bg-red-50 border border-red-200 text-red-800 text-sm rounded p-3 mb-3">
@@ -539,6 +571,7 @@ function Inner({ mode }: { mode: ScanMode }) {
                 lockedClientId={focusClientId || undefined}
                 nextEligibleClientId={firstUnfinishedClientId}
                 onCameraToggle={setGeminiCameraOpen}
+                bypassOrderLock={bypassOrderLock}
               />
             </div>
 

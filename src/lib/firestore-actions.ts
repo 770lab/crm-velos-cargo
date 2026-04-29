@@ -1174,13 +1174,19 @@ export async function runFirestoreAction(
         clientSnapshot?: { entreprise?: string };
       }).clientSnapshot?.entreprise || null;
 
+      // Mode dépannage admin (Yoann 29-04 02h42) : permet de scanner dans le
+      // désordre lors de tests/exception. Le frontend n'expose le toggle qu'aux
+      // admin/superadmin. Côté serveur on accepte le flag tel quel — sécurité
+      // basée sur le fait que seuls les admins voient le toggle.
+      const bypassOrderLock = body.bypassOrderLock === true;
+
       // 3. Verrouillage d'ordre : étapes précédentes obligatoires
       const missing: string[] = [];
       for (let i = 0; i < stage.requires.length; i++) {
         const req = stage.requires[i];
         if (!velo[req as keyof typeof velo]) missing.push(stage.requiresLabels[i]);
       }
-      if (missing.length > 0) {
+      if (!bypassOrderLock && missing.length > 0) {
         return {
           error: `Impossible : étape${missing.length > 1 ? "s" : ""} précédente${missing.length > 1 ? "s" : ""} manquante${missing.length > 1 ? "s" : ""} (${missing.join(", ")})`,
           code: "ETAPE_PRECEDENTE_MANQUANTE",
@@ -1216,7 +1222,10 @@ export async function runFirestoreAction(
       // TOUS les clients de la tournée (champ `ordre` direct OU "arrêt X/N"
       // dans notes legacy). Sinon on laisse passer (zéro régression sur les
       // anciennes tournées sans champ ordre détectable).
+      //
+      // Mode bypass admin (cf. ci-dessus) : skip aussi cette vérif.
       try {
+        if (bypassOrderLock) throw new Error("__bypass_admin__");
         const allLivSnap = await getDocs(
           query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
         );
@@ -1609,11 +1618,13 @@ export async function runFirestoreAction(
       // 1.5 Verrouillage d'ordre : un vélo ne peut être monté que s'il est
       // déjà préparé, chargé ET livré (sinon photos de montage prises avant
       // la livraison effective — incohérent avec le terrain).
+      // Mode bypass admin (Yoann 29-04 02h42) : skip la vérif si flag posé.
+      const bypassMontage = body.bypassOrderLock === true;
       const missingMontage: string[] = [];
       if (!velo.datePreparation) missingMontage.push("préparation");
       if (!velo.dateChargement) missingMontage.push("chargement");
       if (!velo.dateLivraisonScan) missingMontage.push("livraison");
-      if (missingMontage.length > 0) {
+      if (!bypassMontage && missingMontage.length > 0) {
         return {
           error: `Impossible de monter : étape${missingMontage.length > 1 ? "s" : ""} manquante${missingMontage.length > 1 ? "s" : ""} (${missingMontage.join(", ")})`,
           code: "ETAPE_PRECEDENTE_MANQUANTE",
