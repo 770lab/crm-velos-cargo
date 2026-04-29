@@ -267,6 +267,11 @@ export default function LivraisonsPage() {
     const byDayDriver = new Map<string, Tournee[]>();
     for (const t of chauffeurFilteredTournees) {
       if (!t.datePrevue) continue;
+      // Tournée annulée → ne compte pas dans le chaînage. Sinon T3 d'Armel
+      // resterait positionnée à 20h même après annulation de T2 (Yoann 29-04
+      // 02h41 : "si j'annule, ça recalcule tout seul ?"). Réponse oui MAIS
+      // il faut exclure les annulées d'abord.
+      if (t.statutGlobal === "annulee") continue;
       const cid = t.livraisons[0]?.chauffeurId;
       if (!cid) continue; // pas de chaînage sans chauffeur (retraits, non assignés)
       const day = isoDate(t.datePrevue);
