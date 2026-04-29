@@ -168,6 +168,76 @@ function ClientMontageView({
     reload();
   }, [reload]);
 
+  // Restauration de l'état au retour sur la page (29-04 14h02) : si le
+  // monteur sort de la page (autre app, écran verrouillé, iOS purge l'onglet
+  // après 6-10 min de montage), il revient pile où il en était. Sources :
+  //   - claim serveur (montageClaimBy/At) : authoritative pour fnuci+veloId
+  //   - localStorage : step exact (scanFnuci vs photoMonte, le serveur ne
+  //     sait pas si la photo BicyCode a déjà été prise)
+  // Reset du flag quand clientId/tourneeId/monteurId change → rebascule
+  // sur le bon contexte si on navigue entre clients.
+  const restoredRef = useRef(false);
+  useEffect(() => {
+    restoredRef.current = false;
+  }, [clientId, tourneeId, monteurId]);
+
+  const stepStorageKey = `montage-step:${tourneeId}:${clientId}:${monteurId || "anon"}`;
+
+  useEffect(() => {
+    if (restoredRef.current) return;
+    if (!data || "error" in data) return;
+    if (!monteurId) return;
+    restoredRef.current = true;
+
+    // Cherche un vélo claim par moi, non monté, claim < 30 min
+    const CLAIM_FRESH_MS = 30 * 60 * 1000;
+    const nowMs = Date.now();
+    const myClaim = data.velos.find((v) => {
+      if (v.dateMontage) return false;
+      if (v.montageClaimBy !== monteurId) return false;
+      if (!v.montageClaimAt) return true; // pas de timestamp = claim juste posé
+      const claimMs = new Date(v.montageClaimAt).getTime();
+      return claimMs > 0 && nowMs - claimMs < CLAIM_FRESH_MS;
+    });
+
+    if (myClaim) {
+      setCurrentFnuci(myClaim.fnuci);
+      setCurrentVeloId(myClaim.veloId);
+      // Restaure le step exact (scanFnuci ou photoMonte) depuis localStorage.
+      // Par défaut scanFnuci (le claim a été posé au step 1, on est à minima au step 2).
+      let restoredStep: Step = "scanFnuci";
+      try {
+        const persisted = typeof window !== "undefined"
+          ? localStorage.getItem(stepStorageKey)
+          : null;
+        if (persisted === "photoMonte" || persisted === "scanFnuci") {
+          restoredStep = persisted;
+        }
+      } catch {}
+      setStep(restoredStep);
+    } else {
+      // Pas de claim → état initial. Cleanup localStorage si présent.
+      try {
+        if (typeof window !== "undefined") localStorage.removeItem(stepStorageKey);
+      } catch {}
+    }
+  }, [data, monteurId, stepStorageKey]);
+
+  // Persiste le step courant en localStorage (sauf step initial scanCarton qui
+  // signifie "pas de vélo en cours" → on supprime). Permet la restauration au
+  // retour sur la page après une coupure (verrouillage écran iOS, autre app…).
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!monteurId) return;
+    try {
+      if (step === "scanCarton") {
+        localStorage.removeItem(stepStorageKey);
+      } else {
+        localStorage.setItem(stepStorageKey, step);
+      }
+    } catch {}
+  }, [step, monteurId, stepStorageKey]);
+
   if (!data) {
     return <div className="p-6 text-sm text-gray-500">Chargement…</div>;
   }
