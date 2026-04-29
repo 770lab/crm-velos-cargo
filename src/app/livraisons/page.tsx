@@ -319,19 +319,24 @@ export default function LivraisonsPage() {
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(t);
     }
-    // Tri des tournées dans chaque colonne jour : les retraits TOUJOURS en haut
-    // (Yoann 29-04 02h13). Préparation différente du chargement camion ; les
-    // retraits ouvrent la journée pour libérer rapidement le dépôt avant que
-    // les camions ne reviennent. Ordre stable au sein de chaque groupe.
+    // Tri des tournées dans chaque colonne jour :
+    //   1. Retraits TOUJOURS en haut (Yoann 29-04 02h13) — ils ouvrent la
+    //      journée pour libérer rapidement le dépôt.
+    //   2. Ensuite par HEURE DE DÉPART EFFECTIVE (Yoann 29-04 02h32) :
+    //      du matin vers le soir. Pour les tournées chaînées d'un même
+    //      chauffeur, T2 et T3 apparaissent donc plus bas dans la colonne.
     for (const arr of map.values()) {
       arr.sort((a, b) => {
         const ar = a.mode === "retrait" ? 0 : 1;
         const br = b.mode === "retrait" ? 0 : 1;
-        return ar - br;
+        if (ar !== br) return ar - br;
+        const da = tourneeDepartures.get(tourneeKeyForDeparture(a))?.min ?? DEPART_MIN_DEFAULT;
+        const db = tourneeDepartures.get(tourneeKeyForDeparture(b))?.min ?? DEPART_MIN_DEFAULT;
+        return da - db;
       });
     }
     return map;
-  }, [chauffeurFilteredTournees]);
+  }, [chauffeurFilteredTournees, tourneeDepartures]);
 
   const livraisonsSansDate = userLivraisons.filter((l) => !l.datePrevue);
 
@@ -1162,6 +1167,22 @@ function TourneeCard({
   // Si le départ est nettement plus tard que 9h, c'est une 2e+ tournée du
   // chauffeur. On affiche un petit bandeau pour rappeler le contexte.
   const isSecondaryTourneeForDriver = departMinEffectif > DEPART_MAX_DEFAULT + 30;
+  // Heure de fin estimée = présence max chez le dernier client + trajet retour
+  // dépôt. Si > 18h00 (Yoann 29-04 02h32 : "18h max retour à AXDIS"), la
+  // tournée est INFAISABLE et on l'affiche en rouge plein.
+  const FIN_JOURNEE_MAX = 18 * 60; // 18h00
+  const lastArr = arrivals.length > 0 ? arrivals[arrivals.length - 1] : null;
+  let finRetourDepotMin: number | null = null;
+  if (lastArr && tournee.mode !== "retrait") {
+    const lastClient = tournee.livraisons[tournee.livraisons.length - 1]?.client;
+    let trajetRetourMin = 0;
+    if (lastClient && lastClient.lat && lastClient.lng) {
+      const km = haversineKm(lastClient.lat, lastClient.lng, ENTREPOT.lat, ENTREPOT.lng) * 1.3;
+      trajetRetourMin = Math.round(km / 0.5);
+    }
+    finRetourDepotMin = lastArr.maxMin + trajetRetourMin;
+  }
+  const tourneeInfaisable = finRetourDepotMin != null && finRetourDepotMin > FIN_JOURNEE_MAX;
   // Check affectation : on regarde la 1re livraison (les affectations sont
   // par tournée, donc toutes ses livraisons partagent les mêmes équipes via
   // assignTournee).
@@ -1184,8 +1205,16 @@ function TourneeCard({
       onClick={onClick}
       className={`w-full text-left rounded ${palette.bg} ${palette.border} border ${palette.text} ${
         compact ? "px-1.5 py-1 text-[11px]" : "px-2 py-1.5 text-xs"
-      } hover:opacity-90 transition-opacity ${affectIncomplete ? "ring-2 ring-red-400 ring-offset-1" : ""}`}
+      } hover:opacity-90 transition-opacity ${affectIncomplete || tourneeInfaisable ? "ring-2 ring-red-500 ring-offset-1" : ""}`}
     >
+      {tourneeInfaisable && (
+        <div
+          className="block w-full mb-1 rounded bg-red-600 text-white text-[10px] font-bold leading-tight px-1.5 py-1 text-center"
+          title={`Fin estimée à ${fmtHM(finRetourDepotMin!)} — dépasse 18h max`}
+        >
+          ⛔ INFAISABLE — fin {fmtHM(finRetourDepotMin!)} {">"} 18h max
+        </div>
+      )}
       {affectIncomplete && (
         <div
           className="inline-flex items-center gap-1 px-1 mb-0.5 rounded bg-red-100 text-red-800 text-[9px] font-bold leading-tight"
