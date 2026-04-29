@@ -5,11 +5,12 @@ import { gasUpload } from "@/lib/gas";
 // Bloc d'upload du Bon de Livraison signé/tamponné par le client à la fin de
 // la livraison. S'affiche dans tournee-scan-flow.tsx quand mode === "livraison"
 // et que tous les vélos du client ont été scannés (allDone). Le chauffeur prend
-// une photo du BL papier signé, ça monte sur Drive et l'URL est stockée dans
-// le sheet Livraisons (colonne urlBlSigne).
+// une ou plusieurs photos du BL papier signé (recto/verso, plusieurs pages),
+// elles montent sur Drive et les URLs sont stockées dans le sheet Livraisons
+// (colonne urlsBlSigne, tableau ; urlBlSigne legacy = dernière photo).
 
 type UploadResp =
-  | { ok: true; livraisonId: string; clientId: string; tourneeId: string; photoUrl: string }
+  | { ok: true; livraisonId: string; clientId: string; tourneeId: string; photoUrl: string; urls: string[] }
   | { error: string };
 
 async function compressImage(file: File): Promise<{ base64: string; mimeType: string }> {
@@ -45,25 +46,35 @@ export default function BlSignedUploader({
   tourneeId,
   clientId,
   initialUrl,
+  initialUrls,
   onUploaded,
 }: {
   tourneeId: string;
   clientId: string;
-  /** URL de la photo BL signé déjà uploadée (si on revient sur la page après
-   *  avoir déjà pris la photo une 1re fois). Affichée comme vignette + lien. */
+  /** Legacy : URL unique de la photo BL signé déjà uploadée (rétrocompat). */
   initialUrl?: string | null;
-  onUploaded?: (url: string) => void;
+  /** Multi-photos (29-04 14h29) : tableau d'URLs déjà uploadées. */
+  initialUrls?: string[] | null;
+  onUploaded?: (urls: string[]) => void;
 }) {
   const fileRef = useRef<HTMLInputElement | null>(null);
-  const [uploadedUrl, setUploadedUrl] = useState<string | null>(initialUrl || null);
+  const [urls, setUrls] = useState<string[]>(() => {
+    if (initialUrls && initialUrls.length > 0) return initialUrls;
+    if (initialUrl) return [initialUrl];
+    return [];
+  });
   const [busy, setBusy] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
 
-  // Sync state avec initialUrl si la prop change (refresh après reload de la
-  // progression côté parent).
+  // Sync state si les props changent (refresh après reload de la progression
+  // côté parent).
   useEffect(() => {
-    if (initialUrl) setUploadedUrl(initialUrl);
-  }, [initialUrl]);
+    if (initialUrls && initialUrls.length > 0) {
+      setUrls(initialUrls);
+    } else if (initialUrl) {
+      setUrls((prev) => (prev.length === 0 ? [initialUrl] : prev));
+    }
+  }, [initialUrl, initialUrls]);
 
   const onFileChosen = async (file: File) => {
     setErrMsg(null);
@@ -80,8 +91,9 @@ export default function BlSignedUploader({
         setErrMsg(r.error);
         return;
       }
-      setUploadedUrl(r.photoUrl);
-      if (onUploaded) onUploaded(r.photoUrl);
+      const newUrls = r.urls && r.urls.length > 0 ? r.urls : [...urls, r.photoUrl];
+      setUrls(newUrls);
+      if (onUploaded) onUploaded(newUrls);
     } catch (e) {
       setErrMsg(e instanceof Error ? e.message : String(e));
     } finally {
@@ -90,6 +102,8 @@ export default function BlSignedUploader({
     }
   };
 
+  const hasPhotos = urls.length > 0;
+
   return (
     <div className="bg-white border-2 border-emerald-300 rounded-xl p-4 space-y-3">
       <div>
@@ -97,10 +111,35 @@ export default function BlSignedUploader({
           📄 Bon de livraison signé
         </div>
         <div className="text-xs text-gray-600 mt-1">
-          Photographie le BL papier après signature et cachet du client. Il sera
-          archivé dans l&apos;espace de stockage sécurisé du client.
+          Photographie le BL papier après signature et cachet du client (recto/verso, plusieurs pages si besoin).
+          Les photos sont archivées dans l&apos;espace de stockage sécurisé du client.
         </div>
       </div>
+
+      {hasPhotos && (
+        <div className="grid grid-cols-3 gap-2">
+          {urls.map((u, i) => (
+            <a
+              key={`${u}-${i}`}
+              href={u}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="relative bg-emerald-50 border border-emerald-200 rounded-lg overflow-hidden hover:border-emerald-400"
+              title={`Photo ${i + 1}`}
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src={u}
+                alt={`BL signé ${i + 1}`}
+                className="w-full h-24 object-cover"
+              />
+              <div className="absolute top-1 left-1 bg-black/60 text-white text-[10px] rounded px-1.5 py-0.5">
+                {i + 1}
+              </div>
+            </a>
+          ))}
+        </div>
+      )}
 
       <input
         ref={fileRef}
@@ -118,27 +157,21 @@ export default function BlSignedUploader({
         onClick={() => fileRef.current?.click()}
         disabled={busy}
         className={`w-full rounded-lg py-3 font-medium disabled:opacity-50 ${
-          uploadedUrl ? "bg-white border border-emerald-400 text-emerald-800 hover:bg-emerald-50" : "bg-emerald-600 text-white hover:bg-emerald-700"
+          hasPhotos
+            ? "bg-emerald-600 text-white hover:bg-emerald-700"
+            : "bg-emerald-600 text-white hover:bg-emerald-700"
         }`}
       >
         {busy
-          ? "Envoi…"
-          : uploadedUrl
-            ? "🔄 Reprendre la photo du BL"
+          ? "📤 Envoi…"
+          : hasPhotos
+            ? `📸 Ajouter une photo (${urls.length} déjà prise${urls.length > 1 ? "s" : ""})`
             : "📸 Photographier le BL signé"}
       </button>
 
-      {uploadedUrl && (
-        <div className="bg-emerald-50 border border-emerald-200 rounded p-2 text-xs flex items-center justify-between gap-2">
-          <span className="text-emerald-800">✅ BL archivé sur Drive</span>
-          <a
-            href={uploadedUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="text-emerald-700 underline whitespace-nowrap"
-          >
-            📎 Voir
-          </a>
+      {hasPhotos && (
+        <div className="text-[11px] text-emerald-700 text-center italic">
+          ✅ {urls.length} photo{urls.length > 1 ? "s" : ""} archivée{urls.length > 1 ? "s" : ""} sur Drive · clique pour rouvrir
         </div>
       )}
 

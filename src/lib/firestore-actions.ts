@@ -2122,6 +2122,9 @@ export async function runFirestoreAction(
     case "uploadBlSignedPhoto": {
       // Le composant BlSignedUploader n'a pas livraisonId sous la main, juste
       // tourneeId + clientId. On résout côté serveur (parité avec GAS).
+      // Multi-photos (29-04 14h29) : on stocke maintenant un tableau urlsBlSigne
+      // (BL recto/verso, ou plusieurs pages). urlBlSigne (string) reste écrit
+      // avec la dernière photo pour rétrocompat des lecteurs existants.
       const tourneeId = getRequired(body, "tourneeId");
       const clientId = getRequired(body, "clientId");
       const photoData = getRequired(body, "photoData");
@@ -2135,18 +2138,34 @@ export async function runFirestoreAction(
       if (snap.empty) {
         return { error: "Aucune livraison trouvée pour ce client/tournée" };
       }
-      const livraisonId = snap.docs[0].id;
+      const livraisonDoc = snap.docs[0];
+      const livraisonId = livraisonDoc.id;
+      const livData = livraisonDoc.data() as { urlsBlSigne?: string[]; urlBlSigne?: string };
       const fileName = `bl-signed-${Date.now()}.jpg`;
       const url = await uploadDataUrl(
         `bl/${livraisonId}/${fileName}`,
         photoData,
         "image/jpeg",
       );
-      await updateDoc(doc(db, "livraisons", livraisonId), {
-        urlBlSigne: url,
+      // Append au tableau (rétrocompat : si pas de tableau mais legacy urlBlSigne
+      // existe, on inclut l'ancienne URL en 1er).
+      const existingArray = Array.isArray(livData.urlsBlSigne) ? livData.urlsBlSigne : [];
+      const newArray = existingArray.length === 0 && livData.urlBlSigne
+        ? [livData.urlBlSigne, url]
+        : [...existingArray, url];
+      await updateDoc(livraisonDoc.ref, {
+        urlBlSigne: url, // legacy : garde la dernière
+        urlsBlSigne: newArray, // nouveau : tableau complet
         updatedAt: ts(),
       });
-      return { ok: true, livraisonId, clientId, tourneeId, photoUrl: url };
+      return {
+        ok: true,
+        livraisonId,
+        clientId,
+        tourneeId,
+        photoUrl: url,
+        urls: newArray,
+      };
     }
 
     case "claimVeloForMontage": {
