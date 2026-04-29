@@ -300,8 +300,29 @@ export const setMembreCode = onCall<SetMembreCodePayload>(async (request) => {
     throw new HttpsError("not-found", "Membre introuvable dans la collection equipe");
   }
   const data = memberSnap.data() || {};
-  const email = (data.email as string | undefined)?.trim().toLowerCase() || undefined;
   const displayName = (data.nom as string | undefined) || undefined;
+  // Si pas d'email côté doc, on en génère un synthétique cohérent avec
+  // nameToEmail() côté frontend — ainsi l'admin n'a PAS besoin de saisir
+  // un email pour qu'un membre puisse se connecter (Yoann 2026-04-29 :
+  // « identifiant + PIN devraient suffire »).
+  const explicitEmail = (data.email as string | undefined)?.trim().toLowerCase();
+  let email = explicitEmail;
+  if (!email && displayName) {
+    const slug = displayName
+      .normalize("NFD")
+      .replace(/[̀-ͯ]/g, "")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    email = /^\d+[a-z]?$/.test(slug)
+      ? `monteur-${slug}@velos-cargo.local`
+      : `${slug}@velos-cargo.local`;
+    // Persiste sur le doc pour qu'on n'ait pas à re-générer plus tard.
+    await db.collection("equipe").doc(id).update({
+      email,
+      updatedAt: FieldValue.serverTimestamp(),
+    }).catch(() => {});
+  }
 
   // Idempotent (Naomi 2026-04-29 : login KO car uid Firestore ≠ uid Auth) :
   //   1) update by uid (cas standard, seeds)
