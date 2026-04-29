@@ -133,6 +133,7 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "markVeloCharge",
   "markVeloLivreScan",
   "markNextVeloForEtape",
+  "markVeloMontePhoto",
   "markClientAsDelivered",
   "unmarkVeloEtape",
   "unsetVeloClient",
@@ -1820,6 +1821,129 @@ export async function runFirestoreAction(
         updatedAt: ts(),
       });
       return { ok: true, livraisonId, clientId, tourneeId, photoUrl: url };
+    }
+
+    case "markVeloMontePhoto": {
+      // Workflow montage 1-photo (29-04 11h45, demande Yoann) : remplace les
+      // 3 photos legacy (étiquette + QR vélo + monté) par un workflow plus
+      // rapide → scan QR carton + scan FNUCI BicyCode (côté client) + 1 photo
+      // de preuve montage. Le client a déjà validé que le FNUCI ∈ clientId
+      // avant d'appeler cette action. Côté serveur on revérifie + on pose
+      // dateMontage en 1 coup avec la photo dans photoMontageUrl.
+      //
+      // CEE : c'est le logiciel pollueur qui gère la traçabilité officielle ;
+      // ces 3 vérifs sont pour le double-contrôle interne uniquement.
+      const fnuci = getRequired(body, "fnuci").toUpperCase();
+      const clientId = getRequired(body, "clientId");
+      const photoData = getRequired(body, "photoData");
+      const monteurId = getString(body, "monteurId");
+
+      // 1. Résoudre FNUCI → vélo
+      const vSnap = await getDocs(
+        query(collection(db, "velos"), where("fnuci", "==", fnuci)),
+      );
+      const matches = vSnap.docs.filter((d) => !(d.data() as { annule?: boolean }).annule);
+      if (matches.length === 0) {
+        return { error: "FNUCI inconnu", code: "FNUCI_INCONNU", fnuci };
+      }
+      if (matches.length > 1) {
+        return {
+          error: `DOUBLON FNUCI : ce code est sur ${matches.length} vélos en base.`,
+          code: "FNUCI_DOUBLON",
+          fnuci,
+        };
+      }
+      const veloDoc = matches[0];
+      const velo = veloDoc.data() as {
+        clientId?: string;
+        datePreparation?: unknown;
+        dateChargement?: unknown;
+        dateLivraisonScan?: unknown;
+        dateMontage?: { toDate?: () => Date } | string;
+      };
+
+      // 2. Vérifier que le vélo appartient bien au client scanné (= QR carton)
+      if (velo.clientId !== clientId) {
+        let veloClientName: string | null = null;
+        try {
+          if (velo.clientId) {
+            const c = await getDoc(doc(db, "clients", velo.clientId));
+            if (c.exists()) veloClientName = (c.data() as { entreprise?: string }).entreprise || null;
+          }
+        } catch {}
+        return {
+          error: `Le vélo ${fnuci} appartient à ${veloClientName || "un autre client"} — pas au client du carton scanné.`,
+          code: "MAUVAISE_PAIRE_CARTON_VELO",
+          fnuci,
+          veloClientId: velo.clientId || null,
+          veloClientName,
+        };
+      }
+
+      // 3. Vérifier prérequis (préparation + chargement + livraison)
+      const bypassMontage = body.bypassOrderLock === true;
+      const missingMontage: string[] = [];
+      if (!velo.datePreparation) missingMontage.push("préparation");
+      if (!velo.dateChargement) missingMontage.push("chargement");
+      if (!velo.dateLivraisonScan) missingMontage.push("livraison");
+      if (!bypassMontage && missingMontage.length > 0) {
+        return {
+          error: `Impossible de monter : étape${missingMontage.length > 1 ? "s" : ""} manquante${missingMontage.length > 1 ? "s" : ""} (${missingMontage.join(", ")})`,
+          code: "ETAPE_PRECEDENTE_MANQUANTE",
+          fnuci,
+          missing: missingMontage,
+        };
+      }
+
+      // 4. Si déjà monté, renvoyer le statut existant sans re-uploader.
+      if (velo.dateMontage) {
+        const t = velo.dateMontage as { toDate?: () => Date } | string;
+        const dateMontageRet =
+          typeof t === "string"
+            ? t
+            : t?.toDate?.()?.toISOString() || null;
+        return {
+          ok: true,
+          alreadyDone: true,
+          fnuci,
+          veloId: veloDoc.id,
+          clientId,
+          dateMontage: dateMontageRet,
+        };
+      }
+
+      // 5. Upload photo + pose dateMontage en 1 coup
+      const fileName = `${fnuci}_monte_${Date.now()}.jpg`;
+      const url = await uploadDataUrl(
+        `montage/${clientId}/${fileName}`,
+        photoData,
+        "image/jpeg",
+      );
+      const updates: Body = {
+        photoMontageUrl: url,
+        dateMontage: ts(),
+        updatedAt: ts(),
+      };
+      if (monteurId) updates.monteParId = monteurId;
+      await updateDoc(veloDoc.ref, updates);
+
+      // 6. Récupérer nom client pour message UX
+      let clientName: string | null = null;
+      try {
+        const c = await getDoc(doc(db, "clients", clientId));
+        if (c.exists()) clientName = (c.data() as { entreprise?: string }).entreprise || null;
+      } catch {}
+
+      return {
+        ok: true,
+        alreadyDone: false,
+        fnuci,
+        veloId: veloDoc.id,
+        clientId,
+        clientName,
+        photoUrl: url,
+        dateMontage: new Date().toISOString(),
+      };
     }
 
     case "uploadMontagePhoto": {
