@@ -849,15 +849,24 @@ function DayView({
             </span>
           </div>
         </div>
-        {list.length > 0 && (
-          <button
-            onClick={() => onBatchAxdis(new Date(refDate), list)}
-            className="self-center px-3 py-1.5 text-xs bg-amber-600 text-white rounded-lg hover:bg-amber-700 whitespace-nowrap"
-            title={`Envoyer les ${list.length} commandes AXDIS du jour (1 mail par tournée)`}
-          >
-            📧 {list.length} commande{list.length > 1 ? "s" : ""} AXDIS
-          </button>
-        )}
+        {list.length > 0 && (() => {
+          const allSent = list.every((t) => !!t.bonCommandeEnvoyeAt);
+          return (
+            <button
+              onClick={() => onBatchAxdis(new Date(refDate), list)}
+              className={`self-center px-3 py-1.5 text-xs rounded-lg whitespace-nowrap text-white ${
+                allSent ? "bg-emerald-600 hover:bg-emerald-700" : "bg-amber-600 hover:bg-amber-700"
+              }`}
+              title={
+                allSent
+                  ? `Les ${list.length} commandes AXDIS ont déjà été envoyées · clique pour renvoyer`
+                  : `Envoyer les ${list.length} commandes AXDIS du jour (1 mail par tournée)`
+              }
+            >
+              {allSent ? "✅" : "📧"} {list.length} commande{list.length > 1 ? "s" : ""} AXDIS
+            </button>
+          );
+        })()}
       </div>
       <div className="p-3 space-y-2 min-h-[40vh]">
         {list.length === 0 ? (
@@ -914,15 +923,20 @@ function MultiDayView({
                 {d.getDate()}
                 <span className="text-xs font-normal text-gray-500 ml-1">{d.toLocaleDateString("fr-FR", { month: "short" })}</span>
               </div>
-              {list.length > 0 && (
-                <button
-                  onClick={() => onBatchAxdis(new Date(d), list)}
-                  className="mt-1 w-full px-1.5 py-0.5 text-[10px] bg-amber-600 text-white rounded hover:bg-amber-700"
-                  title={`Envoyer les ${list.length} commandes AXDIS de ce jour`}
-                >
-                  📧 {list.length} AXDIS
-                </button>
-              )}
+              {list.length > 0 && (() => {
+                const allSent = list.every((t) => !!t.bonCommandeEnvoyeAt);
+                return (
+                  <button
+                    onClick={() => onBatchAxdis(new Date(d), list)}
+                    className={`mt-1 w-full px-1.5 py-0.5 text-[10px] text-white rounded ${
+                      allSent ? "bg-emerald-600 hover:bg-emerald-700" : "bg-amber-600 hover:bg-amber-700"
+                    }`}
+                    title={allSent ? `Déjà envoyées · clique pour renvoyer` : `Envoyer les ${list.length} commandes AXDIS de ce jour`}
+                  >
+                    {allSent ? "✅" : "📧"} {list.length} AXDIS
+                  </button>
+                );
+              })()}
             </div>
           );
         })}
@@ -982,15 +996,20 @@ function WeekView({
                 {d.getDate()}
                 <span className="text-xs font-normal text-gray-500 ml-1">{d.toLocaleDateString("fr-FR", { month: "short" })}</span>
               </div>
-              {list.length > 0 && (
-                <button
-                  onClick={() => onBatchAxdis(new Date(d), list)}
-                  className="mt-1 w-full px-1.5 py-0.5 text-[10px] bg-amber-600 text-white rounded hover:bg-amber-700"
-                  title={`Envoyer les ${list.length} commandes AXDIS de ce jour`}
-                >
-                  📧 {list.length} AXDIS
-                </button>
-              )}
+              {list.length > 0 && (() => {
+                const allSent = list.every((t) => !!t.bonCommandeEnvoyeAt);
+                return (
+                  <button
+                    onClick={() => onBatchAxdis(new Date(d), list)}
+                    className={`mt-1 w-full px-1.5 py-0.5 text-[10px] text-white rounded ${
+                      allSent ? "bg-emerald-600 hover:bg-emerald-700" : "bg-amber-600 hover:bg-amber-700"
+                    }`}
+                    title={allSent ? `Déjà envoyées · clique pour renvoyer` : `Envoyer les ${list.length} commandes AXDIS de ce jour`}
+                  >
+                    {allSent ? "✅" : "📧"} {list.length} AXDIS
+                  </button>
+                );
+              })()}
             </div>
           );
         })}
