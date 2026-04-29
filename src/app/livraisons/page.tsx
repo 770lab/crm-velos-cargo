@@ -1069,11 +1069,18 @@ function TourneeCard({
 }) {
   // Couleur de la carte = couleur du chauffeur (sauf retrait = violet).
   // On résout l'ID chauffeur via la collection equipe déjà chargée par useData.
-  const { equipe } = useData();
+  // carte sert à récupérer l'apporteur de chaque client (affiché sur chaque
+  // ligne — cf. retour Yoann 29-04 02h19).
+  const { equipe, carte: carteClients } = useData();
   const chauffeurId = tournee.livraisons[0]?.chauffeurId;
   const chauffeurNom = chauffeurId
     ? equipe.find((m) => m.id === chauffeurId)?.nom || null
     : null;
+  const apporteurByClientIdLocal = useMemo(() => {
+    const m = new Map<string, string | null>();
+    for (const c of carteClients) m.set(c.id, c.apporteur);
+    return m;
+  }, [carteClients]);
   const palette = modePalette(tournee.mode, chauffeurNom);
   const libre = capaciteRestante(tournee.mode, tournee.totalVelos);
   const peutAjouter = libre >= SEUIL_2EME_TOURNEE && tournee.statutGlobal !== "livree" && tournee.statutGlobal !== "annulee";
@@ -1121,6 +1128,7 @@ function TourneeCard({
             const len = fullText.length;
             const sizeClass = len <= 14 ? "text-[11px]" : len <= 20 ? "text-[10px]" : len <= 28 ? "text-[9px]" : "text-[8px]";
             const arr = arrivals[i];
+            const apporteurNom = l.clientId ? apporteurByClientIdLocal.get(l.clientId) || null : null;
             return (
               <div key={l.id} className={`font-medium leading-tight break-words ${sizeClass}`} title={l.client.entreprise}>
                 {compact ? (
@@ -1129,6 +1137,9 @@ function TourneeCard({
                     {arr && (
                       <span className="opacity-50 font-mono ml-1">{fmtHM(arr.minMin)}–{fmtHM(arr.maxMin)}</span>
                     )}
+                    {apporteurNom && (
+                      <span className="opacity-50 ml-1">· {apporteurNom}</span>
+                    )}
                   </>
                 ) : (
                   <>
@@ -1136,6 +1147,9 @@ function TourneeCard({
                     <span className="opacity-60 font-mono"> · {l._count.velos}v</span>
                     {arr && (
                       <span className="opacity-50 font-mono ml-1">· {fmtHM(arr.minMin)}–{fmtHM(arr.maxMin)}</span>
+                    )}
+                    {apporteurNom && (
+                      <span className="opacity-50 ml-1">· {apporteurNom}</span>
                     )}
                   </>
                 )}
