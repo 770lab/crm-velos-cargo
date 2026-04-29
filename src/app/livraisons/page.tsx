@@ -162,6 +162,8 @@ export default function LivraisonsPage() {
   const [showAddClient, setShowAddClient] = useState(false);
   const [showPlanner, setShowPlanner] = useState(false);
   const [showBriefJour, setShowBriefJour] = useState(false);
+  const [showFeuilleJour, setShowFeuilleJour] = useState(false);
+  const [feuilleJourData, setFeuilleJourData] = useState<{ date: Date; chauffeurId: string } | null>(null);
   const [batchAxdis, setBatchAxdis] = useState<{ date: Date; tournees: Tournee[] } | null>(null);
 
   useEffect(() => {
@@ -579,6 +581,13 @@ export default function LivraisonsPage() {
                 📋 Brief du jour
               </button>
               <button
+                onClick={() => setShowFeuilleJour(true)}
+                className="px-3 py-1.5 bg-blue-100 text-blue-800 border border-blue-300 rounded-lg hover:bg-blue-200 text-sm font-medium whitespace-nowrap"
+                title="Imprime une feuille de route consolidée par chauffeur (toutes ses tournées de la journée enchaînées)"
+              >
+                📄 Feuille de route chauffeur
+              </button>
+              <button
                 onClick={() => setShowAddClient(true)}
                 className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium whitespace-nowrap"
               >
@@ -718,6 +727,26 @@ export default function LivraisonsPage() {
           clientInfo={clientInfo}
           tourneeDepartures={tourneeDepartures}
           onClose={() => setShowBriefJour(false)}
+        />
+      )}
+      {showFeuilleJour && !feuilleJourData && (
+        <FeuilleJourChooserModal
+          refDate={refDate}
+          tournees={chauffeurFilteredTournees}
+          equipe={equipe}
+          onChoose={(date, chauffeurId) => setFeuilleJourData({ date, chauffeurId })}
+          onClose={() => setShowFeuilleJour(false)}
+        />
+      )}
+      {feuilleJourData && (
+        <FeuilleDeRouteJournee
+          date={feuilleJourData.date}
+          chauffeurId={feuilleJourData.chauffeurId}
+          tournees={chauffeurFilteredTournees}
+          equipe={equipe}
+          clientInfo={clientInfo}
+          tourneeDepartures={tourneeDepartures}
+          onBack={() => { setFeuilleJourData(null); setShowFeuilleJour(false); }}
         />
       )}
     </div>
@@ -4530,6 +4559,272 @@ function BriefJourneeModal({
           >
             {copied ? "✓ Copié dans le presse-papier" : "📋 Copier le brief complet"}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Modale qui demande au user pour quel chauffeur sortir la feuille du jour.
+// Sélecteur date (par défaut demain) + liste cliquable des chauffeurs ayant
+// au moins une tournée non-annulée ce jour-là.
+function FeuilleJourChooserModal({
+  refDate,
+  tournees,
+  equipe,
+  onChoose,
+  onClose,
+}: {
+  refDate: Date;
+  tournees: Tournee[];
+  equipe: EquipeMember[];
+  onChoose: (date: Date, chauffeurId: string) => void;
+  onClose: () => void;
+}) {
+  const tomorrow = useMemo(() => {
+    const d = new Date(refDate); d.setDate(d.getDate() + 1); return d;
+  }, [refDate]);
+  const [selectedDate, setSelectedDate] = useState<string>(isoDate(tomorrow));
+  const briefDate = useMemo(() => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) return tomorrow;
+    return new Date(`${selectedDate}T12:00:00`);
+  }, [selectedDate, tomorrow]);
+  const dayISO = isoDate(briefDate);
+
+  const chauffeursDuJour = useMemo(() => {
+    const counts = new Map<string, { count: number; velos: number }>();
+    for (const t of tournees) {
+      if (!t.datePrevue || isoDate(t.datePrevue) !== dayISO) continue;
+      if (t.statutGlobal === "annulee") continue;
+      const cid = t.livraisons[0]?.chauffeurId;
+      if (!cid) continue;
+      if (!counts.has(cid)) counts.set(cid, { count: 0, velos: 0 });
+      const c = counts.get(cid)!;
+      c.count++; c.velos += t.totalVelos;
+    }
+    return Array.from(counts.entries())
+      .map(([id, c]) => ({ id, name: equipe.find((m) => m.id === id)?.nom || "?", ...c }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [tournees, equipe, dayISO]);
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <h2 className="text-lg font-semibold flex items-center gap-2">📄 Feuille de route chauffeur</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+        <div className="mb-3 flex items-center gap-2 flex-wrap">
+          <label className="text-xs font-medium text-gray-700">Jour :</label>
+          <input type="date" value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="px-2 py-1 border rounded text-sm" />
+          <button onClick={() => setSelectedDate(isoDate(refDate))} className="text-[11px] px-2 py-1 text-gray-600 border rounded hover:bg-gray-50">Aujourd&apos;hui</button>
+          <button onClick={() => setSelectedDate(isoDate(tomorrow))} className="text-[11px] px-2 py-1 text-gray-600 border rounded hover:bg-gray-50">Demain</button>
+        </div>
+        {chauffeursDuJour.length === 0 ? (
+          <div className="text-sm text-gray-500 py-4 text-center">Aucune tournée pour cette date.</div>
+        ) : (
+          <div className="space-y-2">
+            <div className="text-xs text-gray-500 mb-1">Choisis un chauffeur :</div>
+            {chauffeursDuJour.map((c) => (
+              <button
+                key={c.id}
+                onClick={() => onChoose(briefDate, c.id)}
+                className="w-full text-left px-3 py-2 border rounded-lg hover:bg-blue-50 hover:border-blue-300 flex justify-between items-center"
+              >
+                <span className="font-medium">{c.name}</span>
+                <span className="text-xs text-gray-500">{c.count} tournée{c.count > 1 ? "s" : ""} · {c.velos} vélos</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Feuille de route consolidée pour UN chauffeur sur la journée. Toutes ses
+// tournées enchaînées dans un même PDF, avec un en-tête de section par
+// tournée (matin/après-midi). Yoann 29-04 23h54 : éviter d'imprimer 4
+// feuilles séparées (3 Armel + 1 Zinedine).
+function FeuilleDeRouteJournee({
+  date,
+  chauffeurId,
+  tournees,
+  equipe,
+  clientInfo,
+  tourneeDepartures,
+  onBack,
+}: {
+  date: Date;
+  chauffeurId: string;
+  tournees: Tournee[];
+  equipe: EquipeMember[];
+  clientInfo: Map<string, ClientPoint>;
+  tourneeDepartures: DepartureMap;
+  onBack: () => void;
+}) {
+  const dayISO = isoDate(date);
+  const chauffeurName = equipe.find((m) => m.id === chauffeurId)?.nom || "?";
+  const findName = (id: string | null | undefined) =>
+    id ? equipe.find((m) => m.id === id)?.nom || null : null;
+  const fmtHM = (mins: number) => `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, "0")}`;
+
+  const dayTournees = useMemo(() => {
+    return tournees
+      .filter((t) => t.datePrevue && isoDate(t.datePrevue) === dayISO)
+      .filter((t) => t.statutGlobal !== "annulee")
+      .filter((t) => t.livraisons[0]?.chauffeurId === chauffeurId)
+      .sort((a, b) => {
+        const da = tourneeDepartures.get(tourneeKeyForDeparture(a))?.min ?? DEPART_MIN_DEFAULT;
+        const db = tourneeDepartures.get(tourneeKeyForDeparture(b))?.min ?? DEPART_MIN_DEFAULT;
+        return da - db;
+      });
+  }, [tournees, dayISO, chauffeurId, tourneeDepartures]);
+
+  // Slot label (MATIN/APRÈS-MIDI) basé sur l'heure de fin réelle, ≤ 13h = MATIN.
+  const slotMap = useMemo(() => {
+    const CUTOFF = 13 * 60;
+    const endOf = (t: Tournee) => {
+      const dep = tourneeDepartures.get(tourneeKeyForDeparture(t));
+      const departMax = dep?.max ?? DEPART_MAX_DEFAULT;
+      const monteurs = (t.livraisons[0]?.monteurIds || []).length || 1;
+      const plan = computeDeployPlan(t.livraisons, computeSegments(t.livraisons), monteurs);
+      return departMax + Math.round(plan.totalElapsed);
+    };
+    const totals: Record<string, number> = { MATIN: 0, "APRÈS-MIDI": 0 };
+    for (const t of dayTournees) totals[endOf(t) <= CUTOFF ? "MATIN" : "APRÈS-MIDI"]++;
+    const counts: Record<string, number> = { MATIN: 0, "APRÈS-MIDI": 0 };
+    const map = new Map<string, string>();
+    for (const t of dayTournees) {
+      const slot = endOf(t) <= CUTOFF ? "MATIN" : "APRÈS-MIDI";
+      counts[slot]++;
+      const key = t.tourneeId || t.livraisons[0]?.id || "";
+      map.set(key, totals[slot] > 1 ? `${slot} ${counts[slot]}` : slot);
+    }
+    return map;
+  }, [dayTournees, tourneeDepartures]);
+
+  const totalVelos = dayTournees.reduce((s, t) => s + t.totalVelos, 0);
+  const totalArrets = dayTournees.reduce((s, t) => s + t.livraisons.length, 0);
+  const dateStr = date.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" });
+
+  return (
+    <div className="fixed inset-0 bg-white z-50 overflow-auto">
+      <div className="max-w-3xl mx-auto p-6 print:p-4">
+        <div className="flex items-center justify-between mb-6 print:hidden">
+          <button onClick={onBack} className="text-sm text-gray-500 hover:text-gray-700">← Retour</button>
+          <button
+            onClick={() => window.print()}
+            className="px-4 py-2 text-sm bg-green-600 text-white rounded-lg hover:bg-green-700"
+          >
+            Imprimer / PDF
+          </button>
+        </div>
+
+        <div className="text-center mb-5 border-b pb-3">
+          <h1 className="text-xl font-bold">Feuille de route — {chauffeurName.toUpperCase()}</h1>
+          <div className="text-sm text-gray-600 mt-1">{dateStr}</div>
+          <div className="flex justify-center gap-6 mt-3 text-sm">
+            <span><strong>{dayTournees.length}</strong> tournée{dayTournees.length > 1 ? "s" : ""}</span>
+            <span><strong>{totalArrets}</strong> arrêts</span>
+            <span><strong>{totalVelos}</strong> vélos</span>
+          </div>
+        </div>
+
+        {dayTournees.map((t, ti) => {
+          const liv0 = t.livraisons[0];
+          const dep = tourneeDepartures.get(tourneeKeyForDeparture(t));
+          const departMin = dep?.min ?? DEPART_MIN_DEFAULT;
+          const departMax = dep?.max ?? DEPART_MAX_DEFAULT;
+          const monteurs = (liv0?.monteurIds || []).length || 1;
+          const segs = computeSegments(t.livraisons);
+          const arrivals = computeArrivalTimes(t, monteurs, departMin, departMax);
+          const heureDepart = liv0?.heureDepartTournee || fmtHM(departMin);
+          const dejaCharge = !!liv0?.dejaChargee;
+          const slot = slotMap.get(t.tourneeId || t.livraisons[0]?.id || "") || "";
+          const chefIds = (liv0?.chefEquipeIds && liv0.chefEquipeIds.length > 0)
+            ? liv0.chefEquipeIds
+            : (liv0?.chefEquipeId ? [liv0.chefEquipeId] : []);
+          const chefs = chefIds.map(findName).filter(Boolean);
+          const monteurNames = (liv0?.monteurIds || []).map(findName).filter(Boolean);
+
+          return (
+            <section key={t.tourneeId || ti} className="mb-6 print:break-inside-avoid">
+              <div className="bg-blue-50 border border-blue-300 rounded-lg p-3 mb-2">
+                <div className="font-bold text-blue-900">
+                  {slot ? `Tournée ${slot}` : `Tournée ${ti + 1}`} — {t.totalVelos} vélos · {t.livraisons.length} arrêt{t.livraisons.length > 1 ? "s" : ""}
+                </div>
+                <div className="text-xs text-blue-700 mt-1 flex flex-wrap gap-x-4 gap-y-0.5">
+                  <span>📍 Départ {dejaCharge ? "DIRECT chez le client (camion déjà chargé la veille)" : ENTREPOT.label} à {heureDepart}</span>
+                  {chefs.length > 0 && <span>🚦 Chef : {chefs.join(", ")}</span>}
+                  {monteurNames.length > 0 && <span>🔧 Monteurs ({monteurNames.length}) : {monteurNames.join(", ")}</span>}
+                </div>
+              </div>
+
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr className="border-b-2 text-left text-xs">
+                    <th className="py-1.5 w-8">#</th>
+                    <th className="py-1.5">Client</th>
+                    <th className="py-1.5">Adresse</th>
+                    <th className="py-1.5 w-20 text-center">Apporteur</th>
+                    <th className="py-1.5 w-20 text-center">Tél.</th>
+                    <th className="py-1.5 w-12 text-center">Vélos</th>
+                    <th className="py-1.5 w-20 text-center">Arrivée</th>
+                    <th className="py-1.5 w-12 text-center">Fait</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {t.livraisons.map((l, i) => {
+                    const ci = l.clientId ? clientInfo.get(l.clientId) : null;
+                    const arr = arrivals[i];
+                    return (
+                      <tr key={l.id} className="border-b">
+                        <td className="py-1.5 font-bold">{i + 1}</td>
+                        <td className="py-1.5">
+                          <div className="font-medium">{l.client.entreprise}</div>
+                          {ci?.contact && <div className="text-[10px] text-gray-600">{ci.contact}</div>}
+                        </td>
+                        <td className="py-1.5 text-xs text-gray-600">
+                          {[l.client.adresse, l.client.codePostal, l.client.ville].filter(Boolean).join(", ")}
+                        </td>
+                        <td className="py-1.5 text-xs text-center text-orange-600 font-medium">{ci?.apporteur || "—"}</td>
+                        <td className="py-1.5 text-xs text-center">{l.client.telephone || "—"}</td>
+                        <td className="py-1.5 text-center font-medium">{l._count.velos}</td>
+                        <td className="py-1.5 text-xs text-center text-gray-600">
+                          {arr ? `${fmtHM(arr.minMin)}–${fmtHM(arr.maxMin)}` : "—"}
+                        </td>
+                        <td className="py-1.5 text-center">
+                          <div className="w-5 h-5 border-2 border-gray-400 rounded mx-auto" />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                  {segs.length > 0 && (() => {
+                    // Retour entrepôt entre 2 tournées (sauf pour la dernière)
+                    const isLast = ti === dayTournees.length - 1;
+                    if (isLast) return null;
+                    const last = t.livraisons[t.livraisons.length - 1];
+                    if (!last?.client.lat || !last?.client.lng) return null;
+                    const distRetour = haversineKm(last.client.lat, last.client.lng, ENTREPOT.lat, ENTREPOT.lng);
+                    return (
+                      <tr className="border-b bg-gray-50">
+                        <td className="py-1.5 text-gray-400">↩</td>
+                        <td className="py-1.5 text-gray-500" colSpan={5}>Retour entrepôt — {ENTREPOT.label} (recharge tournée suivante)</td>
+                        <td className="py-1.5 text-xs text-center text-gray-500">{Math.round(distRetour * 10) / 10} km</td>
+                        <td className="py-1.5" />
+                      </tr>
+                    );
+                  })()}
+                </tbody>
+              </table>
+            </section>
+          );
+        })}
+
+        <div className="mt-6 border-t pt-4">
+          <div className="text-sm font-medium mb-2">Notes :</div>
+          <div className="h-24 border border-gray-300 rounded" />
         </div>
       </div>
     </div>
