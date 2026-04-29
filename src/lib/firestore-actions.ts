@@ -618,12 +618,19 @@ export async function runFirestoreAction(
           : tourneeId
             ? maxOrdreInTournee + 1
             : null;
+      // Préparateurs par défaut (Naomi) — n'écrase pas si déjà fourni.
+      const defaultPrepIdsCL = Array.isArray(bodyApplied.preparateurIds) && bodyApplied.preparateurIds.length > 0
+        ? null
+        : await getDefaultPreparateurIds();
       const ref = await addDoc(collection(db, "livraisons"), {
         ...bodyApplied,
         tourneeNumero,
         ordre: ordreFinal,
         apporteurLower: apporteurLowerLiv,
         clientSnapshot: clientSnapshotLiv,
+        ...(defaultPrepIdsCL && defaultPrepIdsCL.length > 0
+          ? { preparateurIds: [...defaultPrepIdsCL] }
+          : {}),
         statut: body.statut || "planifiee",
         createdAt: ts(),
       });
@@ -763,6 +770,8 @@ export async function runFirestoreAction(
       // Cap par client (cf. computeRemainingVelos) — décrémenté à chaque stop
       // accepté pour ne pas dépasser le devis sur un même appel.
       const remainingByClient = new Map<string, number>();
+      // Préparateurs par défaut (Naomi) — pré-affectés sur chaque livraison.
+      const defaultPreparateurIds = await getDefaultPreparateurIds();
       let livCount = 0;
       for (const stop of stops) {
         const cid = String(stop.clientId || "");
@@ -824,6 +833,7 @@ export async function runFirestoreAction(
           tourneeNumero,
           apporteurLower: apporteurLowerLiv,
           clientSnapshot: clientSnapshotLiv,
+          preparateurIds: defaultPreparateurIds.length > 0 ? [...defaultPreparateurIds] : [],
           statut: "planifiee",
           createdAt: ts(),
         });
@@ -900,6 +910,8 @@ export async function runFirestoreAction(
       const results: { tourneeId: string; livraisonsCount: number }[] = [];
       // Compte les incréments stats.planifies par client (appliqués en fin de boucle).
       const incParClient = new Map<string, number>();
+      // Préparateurs par défaut (Naomi) — pré-affectés sur chaque livraison.
+      const defaultPreparateurIds = await getDefaultPreparateurIds();
       for (const t of tourneesIn) {
         // 1) Doc tournée
         const tRef = await addDoc(collection(db, "tournees"), {
@@ -979,6 +991,7 @@ export async function runFirestoreAction(
             tourneeNumero,
             apporteurLower: apporteurLowerLiv,
             clientSnapshot: clientSnapshotLiv,
+            preparateurIds: defaultPreparateurIds.length > 0 ? [...defaultPreparateurIds] : [],
             statut: "planifiee",
             createdAt: ts(),
           });
@@ -3636,6 +3649,31 @@ export async function runFirestoreAction(
  * Quelques lectures qui pourraient appeler GAS aujourd'hui.
  * Pas exhaustif — on étend si besoin.
  */
+// Lit les ids des membres équipe marqués `preparateurParDefaut: true`
+// (Naomi en pratique). Utilisé pour pré-remplir `preparateurIds` à la
+// création d'une tournée. Lecture mise en cache 60s pour ne pas refaire la
+// requête à chaque livraison du même batch.
+let _defaultPrepCache: { ids: string[]; at: number } | null = null;
+async function getDefaultPreparateurIds(): Promise<string[]> {
+  if (_defaultPrepCache && Date.now() - _defaultPrepCache.at < 60_000) {
+    return _defaultPrepCache.ids;
+  }
+  try {
+    const snap = await getDocs(
+      query(
+        collection(db, "equipe"),
+        where("preparateurParDefaut", "==", true),
+        where("actif", "==", true),
+      ),
+    );
+    const ids = snap.docs.map((d) => d.id);
+    _defaultPrepCache = { ids, at: Date.now() };
+    return ids;
+  } catch {
+    return [];
+  }
+}
+
 // Calcule le nombre de vélos qu'on peut encore planifier pour un client :
 //   nbVelosCommandes (devis) − stats.livres − sum(nbVelos) des livraisons
 //   actives (planifiee). Retourne null si client introuvable (le caller
