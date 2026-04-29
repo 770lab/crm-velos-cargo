@@ -465,11 +465,15 @@ export async function runFirestoreAction(
         await batch.commit();
         createdN = toCreate;
       } else if (target < cur) {
-        // Supprime des vierges (non locked) jusqu'à atteindre target
-        const toDelete = cur - target;
-        const blanks = existing.filter((v) => !v.locked).slice(0, toDelete);
+        // Soft-cancel des vélos cibles vierges en surplus (au lieu de hard-delete).
+        // Règle Yoann 29-04 : "Ne jamais supprimer un client en définitif" — par
+        // extension les vélos cibles aussi, pour que les stats objectif vs réalisé
+        // restent cohérentes dans le temps. annule=true les exclut des compteurs
+        // mais conserve la trace.
+        const toCancel = cur - target;
+        const blanks = existing.filter((v) => !v.locked).slice(0, toCancel);
         const batch = writeBatch(db);
-        for (const v of blanks) batch.delete(v.ref);
+        for (const v of blanks) batch.update(v.ref, { annule: true, updatedAt: ts() });
         await batch.commit();
         deletedN = blanks.length;
       }
@@ -3954,30 +3958,63 @@ export async function runFirestoreGet(
     }
 
     case "deleteClient": {
-      // Hard delete client + cascade : vélos, livraisons, verifications.
-      // Le bouton "Supprimer ce client et tous ses vélos ?" demande confirm
-      // côté UI, donc on assume la responsabilité utilisateur.
-      // Note : GAS n'avait pas cette action implémentée — clic = no-op.
-      // Implémentation Firestore restaure la fonctionnalité.
+      // ⚠ JAMAIS de hard-delete client (règle Yoann 29-04 : "garde-le en base
+      // pour pouvoir comparer objectif initial vs réalisé dans les stats").
+      // → Soft-cancel équivalent à cancelClient :
+      //   - clients : statut=annulee + raisonAnnulation par défaut + annuleeAt
+      //   - livraisons planifiees → annulee
+      //   - vélos cibles → annule=true (préserve dates scan déjà faites)
+      // Restaurable via "restoreClient".
       const id = params.id;
       if (!id) return { error: "id requis" };
-      // Verifs : supprimées aussi (audit trail mais réf vers client supprimé
-      // n'a plus de valeur).
-      const collsToCascade = ["velos", "livraisons", "verifications"];
-      let cascadeCount = 0;
-      for (const coll of collsToCascade) {
-        const snap = await getDocs(
-          query(collection(db, coll), where("clientId", "==", id)),
-        );
-        for (let i = 0; i < snap.docs.length; i += 400) {
-          const batch = writeBatch(db);
-          for (const d of snap.docs.slice(i, i + 400)) batch.delete(d.ref);
-          await batch.commit();
-          cascadeCount += Math.min(400, snap.docs.length - i);
+      const cRefDC = doc(db, "clients", id);
+      const cSnapDC = await getDoc(cRefDC);
+      if (!cSnapDC.exists()) return { error: "Client introuvable" };
+
+      const raisonAnnulation = "Suppression depuis la fiche client";
+      await updateDoc(cRefDC, {
+        statut: "annulee",
+        raisonAnnulation,
+        annuleeAt: ts(),
+        "stats.planifies": 0,
+        updatedAt: ts(),
+      });
+
+      const livRaison = `Client annulé : ${raisonAnnulation}`;
+      const livSnapDC = await getDocs(
+        query(collection(db, "livraisons"), where("clientId", "==", id)),
+      );
+      let nbLivAnnulees = 0;
+      for (let i = 0; i < livSnapDC.docs.length; i += 400) {
+        const batch = writeBatch(db);
+        for (const d of livSnapDC.docs.slice(i, i + 400)) {
+          const data = d.data() as { statut?: string };
+          if (data.statut !== "planifiee") continue;
+          batch.update(d.ref, {
+            statut: "annulee",
+            dateEffective: null,
+            raisonAnnulation: livRaison,
+            annuleeAt: ts(),
+          });
+          nbLivAnnulees++;
         }
+        await batch.commit();
       }
-      await deleteDoc(doc(db, "clients", id));
-      return { ok: true, cascadeCount };
+
+      const velSnapDC = await getDocs(
+        query(collection(db, "velos"), where("clientId", "==", id)),
+      );
+      let nbVelosAnnules = 0;
+      for (let i = 0; i < velSnapDC.docs.length; i += 400) {
+        const batch = writeBatch(db);
+        for (const d of velSnapDC.docs.slice(i, i + 400)) {
+          batch.update(d.ref, { annule: true, updatedAt: ts() });
+          nbVelosAnnules++;
+        }
+        await batch.commit();
+      }
+
+      return { ok: true, softCancel: true, nbLivAnnulees, nbVelosAnnules };
     }
 
     case "listDisponibilites": {

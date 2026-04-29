@@ -125,6 +125,25 @@ export const gemini = onRequest(
       res.status(405).json({ ok: false, error: "POST only" });
       return;
     }
+    // 🔒 Auth Firebase requis (Yoann 29-04 : "porte d'entrée Gemini ouverte
+    // sur internet"). Avant : endpoint public — n'importe qui pouvait
+    // consommer la clé Gemini. Maintenant on exige un Firebase ID token
+    // valide dans le header Authorization. Le frontend gemini-client.ts
+    // récupère le token via auth.currentUser.getIdToken().
+    const authHeader = req.headers.authorization || "";
+    const idToken = authHeader.startsWith("Bearer ")
+      ? authHeader.slice(7).trim()
+      : "";
+    if (!idToken) {
+      res.status(401).json({ ok: false, error: "Authentification requise" });
+      return;
+    }
+    try {
+      await getAuth().verifyIdToken(idToken);
+    } catch {
+      res.status(401).json({ ok: false, error: "Token invalide ou expiré" });
+      return;
+    }
     const apiKey = GEMINI_API_KEY.value();
     if (!apiKey) {
       res.status(500).json({ ok: false, error: "GEMINI_API_KEY non configurée" });
