@@ -20,6 +20,10 @@ import { db } from "@/lib/firebase";
 // éco-contribution = 402,40 € HT/vélo). Stocké en Firestore config/finances
 // pour pouvoir évoluer sans déploiement.
 const COUT_VELO_HT_DEFAULT = 402.4;
+// Prix de vente TTC par vélo livré (Yoann 30-04 00h03 : 650 € TTC = 541,67 HT
+// avec TVA 20%). Encaissements = vélos livrés × prix vente HT.
+const PRIX_VENTE_VELO_TTC_DEFAULT = 650;
+const TVA_RATE = 0.2;
 
 export const CATEGORIES_FRAIS = {
   vehicules: {
@@ -76,18 +80,21 @@ export function ChargesOperationnellesSection({ from, to }: { from: string; to: 
   const [bons, setBons] = useState<BonRow[]>([]);
   const [veloLivresCount, setVeloLivresCount] = useState(0);
   const [coutVeloHT, setCoutVeloHT] = useState<number>(COUT_VELO_HT_DEFAULT);
+  const [prixVenteVeloTTC, setPrixVenteVeloTTC] = useState<number>(PRIX_VENTE_VELO_TTC_DEFAULT);
   const [showAdd, setShowAdd] = useState(false);
   const [editConfig, setEditConfig] = useState(false);
+  const [editVente, setEditVente] = useState(false);
 
-  // Charge la config (prix achat vélo) une fois.
+  // Charge la config (prix achat + prix vente) une fois.
   useEffect(() => {
     let cancelled = false;
     (async () => {
       try {
         const s = await getDoc(doc(db, "config", "finances"));
         if (cancelled) return;
-        const v = s.data()?.coutVeloHT;
-        if (typeof v === "number" && v > 0) setCoutVeloHT(v);
+        const data = s.data() || {};
+        if (typeof data.coutVeloHT === "number" && data.coutVeloHT > 0) setCoutVeloHT(data.coutVeloHT);
+        if (typeof data.prixVenteVeloTTC === "number" && data.prixVenteVeloTTC > 0) setPrixVenteVeloTTC(data.prixVenteVeloTTC);
       } catch {}
     })();
     return () => { cancelled = true; };
@@ -174,6 +181,10 @@ export function ChargesOperationnellesSection({ from, to }: { from: string; to: 
   const totalFraisOps = frais.reduce((s, f) => s + f.montantHT, 0);
   const totalCharges = totalAchatsVelos + totalFraisOps;
   const coutParVeloLivre = veloLivresCount > 0 ? totalCharges / veloLivresCount : 0;
+  const prixVenteHT = prixVenteVeloTTC / (1 + TVA_RATE);
+  const encaissementsHT = veloLivresCount * prixVenteHT;
+  const margeBruteHT = encaissementsHT - totalCharges;
+  const margeParVeloLivre = veloLivresCount > 0 ? margeBruteHT / veloLivresCount : 0;
 
   // Agrégat par catégorie pour la répartition.
   const fraisParCat = useMemo(() => {
@@ -193,15 +204,61 @@ export function ChargesOperationnellesSection({ from, to }: { from: string; to: 
     setEditConfig(false);
   };
 
+  const savePrixVente = async (val: number) => {
+    setPrixVenteVeloTTC(val);
+    await setDoc(doc(db, "config", "finances"), { prixVenteVeloTTC: val }, { merge: true });
+    setEditVente(false);
+  };
+
   return (
     <>
       {/* KPIs charges */}
-      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-6">
+      <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-3">
         <KpiCard label="Vélos livrés" value={String(veloLivresCount)} />
         <KpiCard label="Achats vélos" value={fmt(totalAchatsVelos)} accent="text-orange-700" />
         <KpiCard label="Frais opérationnels" value={fmt(totalFraisOps)} accent="text-blue-700" />
         <KpiCard label="Total charges" value={fmt(totalCharges)} accent="text-red-700" />
-        <KpiCard label="€ / vélo livré" value={fmt(coutParVeloLivre)} accent="text-emerald-700" />
+        <KpiCard label="Coût / vélo livré" value={fmt(coutParVeloLivre)} accent="text-gray-700" />
+      </div>
+
+      {/* Bandeau Marge */}
+      <div className={`mb-6 rounded-xl border p-4 flex items-center justify-between gap-3 ${
+        margeBruteHT >= 0 ? "bg-emerald-50 border-emerald-200" : "bg-red-50 border-red-200"
+      }`}>
+        <div className="flex-1 min-w-0">
+          <div className="text-[10px] uppercase tracking-wide font-semibold text-emerald-700">
+            Marge brute (avant main d&apos;œuvre)
+          </div>
+          <div className={`text-3xl font-bold mt-0.5 ${margeBruteHT >= 0 ? "text-emerald-900" : "text-red-900"}`}>
+            {fmt(margeBruteHT)}
+          </div>
+          <div className="text-[11px] text-gray-600 mt-1">
+            Encaissements <strong>{fmt(encaissementsHT)}</strong> HT
+            {" "}− charges <strong>{fmt(totalCharges)}</strong>
+            {" "}· <strong>{fmt(margeParVeloLivre)}</strong> par vélo livré
+          </div>
+        </div>
+        <div className="text-right text-[11px] text-gray-600">
+          <div>Prix de vente :</div>
+          {editVente ? (
+            <input
+              type="number"
+              step="0.01"
+              defaultValue={prixVenteVeloTTC}
+              className="px-2 py-0.5 border rounded text-xs w-24 mt-1"
+              onKeyDown={(e) => {
+                if (e.key === "Enter") savePrixVente(Number((e.target as HTMLInputElement).value));
+                if (e.key === "Escape") setEditVente(false);
+              }}
+              autoFocus
+            />
+          ) : (
+            <button onClick={() => setEditVente(true)} className="hover:underline font-medium text-emerald-800">
+              {fmt(prixVenteVeloTTC)} TTC<br />
+              <span className="text-[10px] text-gray-500">{fmt(prixVenteHT)} HT · modifier</span>
+            </button>
+          )}
+        </div>
       </div>
 
       {/* Achats vélos Axdis */}
