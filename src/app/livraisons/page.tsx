@@ -1560,6 +1560,10 @@ function TourneeModal({
     return MONTEURS_PAR_EQUIPE;
   });
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Modal report (29-04 14h56) : liste des livraisons en cours de report.
+  // null = modal fermée. Sert pour le report 1 livraison ET le report bulk.
+  const [reportTargets, setReportTargets] = useState<Array<{ id: string; entreprise: string }> | null>(null);
+  const [reportDate, setReportDate] = useState<string>("");
   const [editingDate, setEditingDate] = useState(false);
   const [newDate, setNewDate] = useState(tournee.datePrevue ? isoDate(tournee.datePrevue) : "");
   const [addingClient, setAddingClient] = useState(false);
@@ -1891,45 +1895,65 @@ Réponds STRICTEMENT en JSON sans markdown, format :
     setBusy(null);
   };
 
-  // Reporter une livraison à un autre jour (29-04 14h56) : détache de la tournée
-  // courante (tourneeId=null) et écrit la nouvelle datePrevue. La livraison
-  // redevient "à planifier" pour cette nouvelle date — Yoann la réintégrera
-  // dans une tournée via le workflow normal (suggestTournee ou drag-drop).
-  const reporter = async (id: string, currentEntreprise: string) => {
-    // Pré-rempli avec demain pour faire gagner un click au cas commun.
+  // Reporter une livraison à un autre jour (29-04 14h56) : ouvre le modal de
+  // sélection de date. Le modal est partagé entre report d'1 livraison (clic
+  // sur la ligne) et report en bulk (cases à cocher + bouton barre d'action).
+  // Détache de la tournée courante (tourneeId=null) et écrit la nouvelle
+  // datePrevue. La livraison redevient "à planifier" pour cette nouvelle date.
+  const reporter = (id: string, currentEntreprise: string) => {
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 1);
-    const defaultDate = tomorrow.toISOString().slice(0, 10);
-    const newDate = prompt(
-      `Reporter la livraison de "${currentEntreprise}" à quelle date ?\n` +
-        `Format YYYY-MM-DD (ex 2026-05-02). La livraison sortira de la tournée courante.`,
-      defaultDate,
-    );
-    if (newDate === null) return; // Échap
-    const clean = newDate.trim();
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
-      alert("Format invalide. Attendu YYYY-MM-DD (ex 2026-05-02).");
+    setReportDate(tomorrow.toISOString().slice(0, 10));
+    setReportTargets([{ id, entreprise: currentEntreprise }]);
+  };
+
+  const reporterBulk = () => {
+    if (selected.size === 0) return;
+    const targets: Array<{ id: string; entreprise: string }> = [];
+    for (const l of tournee.livraisons) {
+      if (selected.has(l.id) && l.statut !== "annulee") {
+        targets.push({ id: l.id, entreprise: l.client?.entreprise || "?" });
+      }
+    }
+    if (targets.length === 0) return;
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    setReportDate(tomorrow.toISOString().slice(0, 10));
+    setReportTargets(targets);
+  };
+
+  const executeReport = async () => {
+    if (!reportTargets || !reportDate) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(reportDate)) {
+      alert("Date invalide.");
       return;
     }
-    const parsed = new Date(`${clean}T09:00:00`);
+    const parsed = new Date(`${reportDate}T09:00:00`);
     if (Number.isNaN(parsed.getTime())) {
       alert("Date invalide.");
       return;
     }
-    if (!confirm(`Confirmer le report au ${parsed.toLocaleDateString("fr-FR")} ? La livraison sortira de la tournée courante.`)) {
-      return;
-    }
-    setBusy(id);
+    setBusy("report");
     try {
-      await gasPost("updateLivraison", {
-        id,
-        data: {
-          datePrevue: parsed.toISOString(),
-          tourneeId: null,
-          statut: "planifiee",
-          dateEffective: null,
-        },
-      });
+      const isoDt = parsed.toISOString();
+      // Parallèle : 1 round-trip par livraison, mais en simultané (4G typique
+      // = 5-10 livraisons en moins de 2 sec).
+      await Promise.all(
+        reportTargets.map((t) =>
+          gasPost("updateLivraison", {
+            id: t.id,
+            data: {
+              datePrevue: isoDt,
+              tourneeId: null,
+              statut: "planifiee",
+              dateEffective: null,
+            },
+          }),
+        ),
+      );
+      setReportTargets(null);
+      setReportDate("");
+      setSelected(new Set()); // reset la sélection après bulk
       onChanged();
     } catch (e) {
       alert("Report échoué : " + (e instanceof Error ? e.message : String(e)));
@@ -2479,7 +2503,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             Tout sélectionner
           </label>
           {selected.size > 0 && (
-            <div className="flex items-center gap-2 ml-auto">
+            <div className="flex items-center gap-2 ml-auto flex-wrap">
               <span className="text-xs text-gray-500">{selected.size} sélectionnée{selected.size > 1 ? "s" : ""}</span>
               <button
                 onClick={() => bulkAction("livree")}
@@ -2487,6 +2511,13 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                 className="px-2 py-1 text-xs bg-green-100 text-green-700 rounded-lg hover:bg-green-200 disabled:opacity-50"
               >
                 Marquer livrées
+              </button>
+              <button
+                onClick={reporterBulk}
+                disabled={busy === "bulk" || busy === "report"}
+                className="px-2 py-1 text-xs bg-blue-100 text-blue-700 rounded-lg hover:bg-blue-200 disabled:opacity-50"
+              >
+                📅 Reporter
               </button>
               <button
                 onClick={() => bulkAction("annulee")}
@@ -2821,6 +2852,76 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           clientInfo={clientInfo}
           onClose={() => setShowRappel(false)}
         />
+      )}
+      {reportTargets && (
+        <div
+          className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4"
+          onClick={() => { if (busy !== "report") { setReportTargets(null); setReportDate(""); } }}
+        >
+          <div
+            className="bg-white rounded-xl p-5 w-full max-w-md space-y-4"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div>
+              <h3 className="text-lg font-bold text-gray-900">📅 Reporter</h3>
+              <p className="text-sm text-gray-600 mt-1">
+                {reportTargets.length === 1
+                  ? <>Reporter la livraison de <strong>{reportTargets[0].entreprise}</strong> à un autre jour.</>
+                  : <><strong>{reportTargets.length} livraisons</strong> seront reportées :</>}
+              </p>
+              {reportTargets.length > 1 && (
+                <ul className="mt-2 max-h-32 overflow-y-auto bg-gray-50 rounded p-2 text-xs space-y-0.5 border border-gray-200">
+                  {reportTargets.map((t) => (
+                    <li key={t.id} className="text-gray-700">· {t.entreprise}</li>
+                  ))}
+                </ul>
+              )}
+              <p className="text-xs text-amber-700 mt-2">
+                ⚠ Sortent de la tournée courante et redeviennent &quot;à planifier&quot; pour la nouvelle date.
+              </p>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Nouvelle date</label>
+              <input
+                type="date"
+                value={reportDate}
+                onChange={(e) => setReportDate(e.target.value)}
+                min={new Date().toISOString().slice(0, 10)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+                autoFocus
+              />
+              {reportDate && /^\d{4}-\d{2}-\d{2}$/.test(reportDate) && (() => {
+                const dt = new Date(`${reportDate}T09:00:00`);
+                if (Number.isNaN(dt.getTime())) return null;
+                return (
+                  <p className="text-xs text-gray-500 mt-1 capitalize">
+                    {dt.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long", year: "numeric" })}
+                  </p>
+                );
+              })()}
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => { setReportTargets(null); setReportDate(""); }}
+                disabled={busy === "report"}
+                className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-50"
+              >
+                Annuler
+              </button>
+              <button
+                type="button"
+                onClick={executeReport}
+                disabled={busy === "report" || !reportDate}
+                className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
+              >
+                {busy === "report"
+                  ? "⏳ Report…"
+                  : `Reporter ${reportTargets.length > 1 ? `${reportTargets.length} livraisons` : "la livraison"}`}
+              </button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
