@@ -1669,6 +1669,22 @@ function TourneeModal({
   const allowedStages: ReadonlySet<StageKey> = currentUser
     ? STAGE_ACCESS[currentUser.role]
     : new Set<StageKey>(["prepare", "charge", "livre", "monte"]);
+  // Permissions par rôle pour les blocs admin / équipe de la modale (cf.
+  // demande Yoann 2026-04-29 « ça pollue ») :
+  //   - admin/superadmin/chef/préparateur : tout (mails + bon Axdis + BL + CSV)
+  //   - chauffeur                         : bon Axdis seulement + récap équipe
+  //   - chef monteur (ricky)              : bloc équipe en édition
+  //   - monteur normal                    : ni admin blocs, ni équipe
+  const perms = useMemo(() => {
+    const role = currentUser?.role;
+    const isChefMonteurLocal = role === "monteur" && currentUser?.estChefMonteur === true;
+    const isFullAdmin = role === "admin" || role === "superadmin" || role === "chef";
+    const canSeeAdminBlocs = isFullAdmin || role === "preparateur";
+    const canSeeBonAxdis = canSeeAdminBlocs || role === "chauffeur";
+    const canEditEquipe = isFullAdmin || isChefMonteurLocal;
+    const canSeeEquipeRecap = canEditEquipe || role === "chauffeur" || role === "preparateur";
+    return { canSeeAdminBlocs, canSeeBonAxdis, canEditEquipe, canSeeEquipeRecap };
+  }, [currentUser?.role, currentUser?.estChefMonteur]);
   const [showRappel, setShowRappel] = useState(false);
   const clientInfo = useMemo(() => {
     const map = new Map<string, typeof allClients[number]>();
@@ -2441,7 +2457,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
         </div>
 
         {/* Bon d'enlèvement de la tournée (Axdis) */}
-        {tournee.tourneeId && (() => {
+        {perms.canSeeBonAxdis && tournee.tourneeId && (() => {
           // Matching priorisé : (1) lien direct via tourneeId si renseigné par
           // le sync Cloud Function, (2) fallback via tourneeNumero (les bons
           // arrivés via gas-inbox+Gemini Vision n'ont QUE le numéro extrait du
@@ -2521,7 +2537,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
         {/* Bons de livraison clients (29-04 13h30) : un BL par client de la
             tournée, tous générés en une page A4 chacun via /bl?tourneeId=...
             avec page-break-after entre chaque client → impression groupée. */}
-        {tournee.tourneeId && progression?.clients && progression.clients.length > 0 && (
+        {perms.canSeeAdminBlocs && tournee.tourneeId && progression?.clients && progression.clients.length > 0 && (
           <div className="mb-3 flex items-center gap-3 px-3 py-2 rounded-lg border bg-blue-50 border-blue-300 text-blue-900">
             <span className="text-lg">📄</span>
             <div className="flex-1 text-sm">
@@ -2546,7 +2562,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             La CF récupère les vélos en Firestore admin, génère le CSV et envoie
             par mail à Tiffany@axdis.fr avec le CSV en pièce jointe. Pas de
             manipulation manuelle, vraie auto. */}
-        {tournee.tourneeId && progression && progression.totals.total > 0 && progression.totals.prepare >= progression.totals.total && (
+        {perms.canSeeAdminBlocs && tournee.tourneeId && progression && progression.totals.total > 0 && progression.totals.prepare >= progression.totals.total && (
           <div className="mb-3 px-3 py-2.5 rounded-lg border bg-emerald-50 border-emerald-300 text-emerald-900 space-y-2">
             <div className="flex items-center gap-3">
               <span className="text-lg">📤</span>
@@ -2667,8 +2683,38 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           );
         })()}
 
-        {/* Affectation équipe */}
-        {tournee.tourneeId && (() => {
+        {/* Affectation équipe — visible selon perms */}
+        {tournee.tourneeId && perms.canSeeEquipeRecap && !perms.canEditEquipe && (() => {
+          // Récap lecture seule pour chauffeur / préparateur : juste les noms
+          // de l'équipe affectée, sans bouton modifier. Pas le « gros carré »
+          // d'admin.
+          const liv0 = tournee.livraisons[0];
+          const find = (id: string | null | undefined) => id ? equipe.find((m) => m.id === id)?.nom || null : null;
+          const chauffeur = find(liv0?.chauffeurId);
+          const chefIds = (liv0?.chefEquipeIds && liv0.chefEquipeIds.length > 0)
+            ? liv0.chefEquipeIds
+            : (liv0?.chefEquipeId ? [liv0.chefEquipeId] : []);
+          const chefs = chefIds.map(find).filter((x): x is string => !!x);
+          const monteurs = (liv0?.monteurIds || []).map(find).filter((x): x is string => !!x);
+          const preps = (liv0?.preparateurIds || []).map(find).filter((x): x is string => !!x);
+          const renderLine = (icon: string, label: string, names: string[]) =>
+            names.length > 0 ? (
+              <div className="flex flex-wrap gap-1.5 items-baseline">
+                <span className="text-[11px] uppercase tracking-wide text-gray-500 w-24">{icon} {label}</span>
+                <span className="text-sm text-gray-800">{names.join(", ")}</span>
+              </div>
+            ) : null;
+          return (
+            <div className="mb-3 px-3 py-2 rounded-lg border bg-gray-50 space-y-1">
+              {chauffeur && renderLine("🚐", "Chauffeur", [chauffeur])}
+              {renderLine("🚦", "Chef d'équipe", chefs)}
+              {renderLine("🔧", "Monteurs", monteurs)}
+              {renderLine("📦", "Préparateurs", preps)}
+            </div>
+          );
+        })()}
+
+        {tournee.tourneeId && perms.canEditEquipe && (() => {
           // Détecte une "tournée virtuelle" : tournee.tourneeId provient de
           // parseTourneeFromNotes (legacy) mais aucune livraison n'a ce
           // tourneeId persisté (ex: livraison reportée → tourneeId=null en
