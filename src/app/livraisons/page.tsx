@@ -1891,6 +1891,53 @@ Réponds STRICTEMENT en JSON sans markdown, format :
     setBusy(null);
   };
 
+  // Reporter une livraison à un autre jour (29-04 14h56) : détache de la tournée
+  // courante (tourneeId=null) et écrit la nouvelle datePrevue. La livraison
+  // redevient "à planifier" pour cette nouvelle date — Yoann la réintégrera
+  // dans une tournée via le workflow normal (suggestTournee ou drag-drop).
+  const reporter = async (id: string, currentEntreprise: string) => {
+    // Pré-rempli avec demain pour faire gagner un click au cas commun.
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    const defaultDate = tomorrow.toISOString().slice(0, 10);
+    const newDate = prompt(
+      `Reporter la livraison de "${currentEntreprise}" à quelle date ?\n` +
+        `Format YYYY-MM-DD (ex 2026-05-02). La livraison sortira de la tournée courante.`,
+      defaultDate,
+    );
+    if (newDate === null) return; // Échap
+    const clean = newDate.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(clean)) {
+      alert("Format invalide. Attendu YYYY-MM-DD (ex 2026-05-02).");
+      return;
+    }
+    const parsed = new Date(`${clean}T09:00:00`);
+    if (Number.isNaN(parsed.getTime())) {
+      alert("Date invalide.");
+      return;
+    }
+    if (!confirm(`Confirmer le report au ${parsed.toLocaleDateString("fr-FR")} ? La livraison sortira de la tournée courante.`)) {
+      return;
+    }
+    setBusy(id);
+    try {
+      await gasPost("updateLivraison", {
+        id,
+        data: {
+          datePrevue: parsed.toISOString(),
+          tourneeId: null,
+          statut: "planifiee",
+          dateEffective: null,
+        },
+      });
+      onChanged();
+    } catch (e) {
+      alert("Report échoué : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const restaurer = async (id: string) => {
     setBusy(id);
     await gasGet("restoreLivraison", { id });
@@ -2618,13 +2665,23 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                       ↺ restaurer
                     </button>
                   ) : (
-                    <button
-                      onClick={() => annuler(l.id)}
-                      disabled={busy === l.id}
-                      className="text-amber-500 hover:text-amber-700 text-xs whitespace-nowrap"
-                    >
-                      annuler
-                    </button>
+                    <>
+                      <button
+                        onClick={() => reporter(l.id, l.client?.entreprise || "ce client")}
+                        disabled={busy === l.id}
+                        className="text-blue-500 hover:text-blue-700 text-xs whitespace-nowrap"
+                        title="Reporter cette livraison à un autre jour (sort de la tournée courante)"
+                      >
+                        📅 reporter
+                      </button>
+                      <button
+                        onClick={() => annuler(l.id)}
+                        disabled={busy === l.id}
+                        className="text-amber-500 hover:text-amber-700 text-xs whitespace-nowrap"
+                      >
+                        annuler
+                      </button>
+                    </>
                   )}
                 </div>
               </div>
