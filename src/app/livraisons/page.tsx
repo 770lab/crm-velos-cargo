@@ -4362,14 +4362,31 @@ function BriefJourneeModal({
   tourneeDepartures: DepartureMap;
   onClose: () => void;
 }) {
-  // Permet de générer le brief pour n'importe quel jour (par défaut on
-  // pré-sélectionne demain — le brief du soir prépare la journée suivante).
+  // Permet de générer le brief pour n'importe quel jour. Défaut = date
+  // visible dans le planning (refDate) si elle a des tournées, sinon le
+  // prochain jour avec des tournées dans la semaine. Avant : défaut = demain
+  // mais à minuit "demain" devenait le surlendemain → brief vide pour la
+  // journée actuelle (Yoann 30-04 00h00).
   const tomorrow = useMemo(() => {
     const d = new Date(refDate);
     d.setDate(d.getDate() + 1);
     return d;
   }, [refDate]);
-  const [selectedDate, setSelectedDate] = useState<string>(isoDate(tomorrow));
+  const initialDate = useMemo(() => {
+    const refIso = isoDate(refDate);
+    const isPlanned = (iso: string) => tournees.some(
+      (t) => t.datePrevue && isoDate(t.datePrevue) === iso && t.statutGlobal !== "annulee",
+    );
+    if (isPlanned(refIso)) return refIso;
+    // sinon cherche le prochain jour planifié dans les 14 jours suivants
+    for (let i = 1; i <= 14; i++) {
+      const d = new Date(refDate); d.setDate(d.getDate() + i);
+      const iso = isoDate(d);
+      if (isPlanned(iso)) return iso;
+    }
+    return refIso;
+  }, [refDate, tournees]);
+  const [selectedDate, setSelectedDate] = useState<string>(initialDate);
   const briefDate = useMemo(() => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) return tomorrow;
     return new Date(`${selectedDate}T12:00:00`);
@@ -4603,7 +4620,20 @@ function FeuilleJourChooserModal({
   const tomorrow = useMemo(() => {
     const d = new Date(refDate); d.setDate(d.getDate() + 1); return d;
   }, [refDate]);
-  const [selectedDate, setSelectedDate] = useState<string>(isoDate(tomorrow));
+  const initialDate = useMemo(() => {
+    const refIso = isoDate(refDate);
+    const isPlanned = (iso: string) => tournees.some(
+      (t) => t.datePrevue && isoDate(t.datePrevue) === iso && t.statutGlobal !== "annulee",
+    );
+    if (isPlanned(refIso)) return refIso;
+    for (let i = 1; i <= 14; i++) {
+      const d = new Date(refDate); d.setDate(d.getDate() + i);
+      const iso = isoDate(d);
+      if (isPlanned(iso)) return iso;
+    }
+    return refIso;
+  }, [refDate, tournees]);
+  const [selectedDate, setSelectedDate] = useState<string>(initialDate);
   const briefDate = useMemo(() => {
     if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) return tomorrow;
     return new Date(`${selectedDate}T12:00:00`);
