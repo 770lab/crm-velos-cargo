@@ -10,6 +10,7 @@
 
 import { onRequest, HttpsError, onCall } from "firebase-functions/v2/https";
 import { onSchedule } from "firebase-functions/v2/scheduler";
+import { onDocumentWritten } from "firebase-functions/v2/firestore";
 import { defineSecret, defineString } from "firebase-functions/params";
 import { setGlobalOptions, logger } from "firebase-functions/v2";
 import { initializeApp } from "firebase-admin/app";
@@ -1404,6 +1405,102 @@ export const sendPreparationCsv = onCall<{ tourneeId: string }>(
       const msg = err instanceof Error ? err.message : String(err);
       logger.error("sendPreparationCsv SMTP failed", { tourneeId, err: msg });
       throw new HttpsError("internal", `Envoi SMTP échoué : ${msg}`);
+    }
+  },
+);
+
+// ─────────────────────────────────────────────────────────────────────────
+// Trigger : maintient clients/{id}.stats.{totalVelos,prepares,charges,livres}
+// en synchro avec les vélos. Détecte les transitions de datePreparation,
+// dateChargement, dateLivraisonScan et statut="annule" et applique des
+// FieldValue.increment idempotents sur le doc client.
+// Avant ce trigger : le compteur stats.livres restait à 0 quand les vélos
+// étaient scannés livrés (Yoann 2026-04-29 — dashboard à 0/13 livrés).
+// ─────────────────────────────────────────────────────────────────────────
+function isSet(v: unknown): boolean {
+  return v != null && v !== "";
+}
+function isCancelled(v: { statut?: string; annule?: boolean } | null | undefined): boolean {
+  if (!v) return false;
+  if (v.annule === true) return true;
+  return String(v.statut || "").toLowerCase() === "annule";
+}
+
+export const onVeloWriteSyncClientStats = onDocumentWritten(
+  "velos/{veloId}",
+  async (event) => {
+    const before = event.data?.before.exists ? (event.data.before.data() as Record<string, unknown>) : null;
+    const after = event.data?.after.exists ? (event.data.after.data() as Record<string, unknown>) : null;
+
+    // Le clientId peut changer (rare mais possible). On gère before.client et
+    // after.client séparément pour décrémenter l'ancien et incrémenter le
+    // nouveau si nécessaire.
+    const beforeClientId = before?.clientId as string | undefined;
+    const afterClientId = after?.clientId as string | undefined;
+
+    const beforeCounted = !!before && !isCancelled(before as { statut?: string; annule?: boolean });
+    const afterCounted = !!after && !isCancelled(after as { statut?: string; annule?: boolean });
+
+    // Pour chaque field on calcule la contribution avant/après en tenant
+    // compte de l'état "annulé" (un vélo annulé ne compte plus, même s'il
+    // a une dateLivraisonScan posée à l'époque où il était actif).
+    const fields: Array<{ src: string; tgt: "totalVelos" | "prepares" | "charges" | "livres" }> = [
+      { src: "__exists__", tgt: "totalVelos" },
+      { src: "datePreparation", tgt: "prepares" },
+      { src: "dateChargement", tgt: "charges" },
+      { src: "dateLivraisonScan", tgt: "livres" },
+    ];
+
+    const contribFor = (data: Record<string, unknown> | null, counted: boolean, src: string): number => {
+      if (!data || !counted) return 0;
+      if (src === "__exists__") return 1;
+      return isSet(data[src]) ? 1 : 0;
+    };
+
+    // Cas 1 : même client avant/après (créa, update, suppression du même client)
+    if (beforeClientId === afterClientId) {
+      const cid = afterClientId || beforeClientId;
+      if (!cid) return;
+      const incs: Record<string, FirebaseFirestore.FieldValue> = {};
+      for (const { src, tgt } of fields) {
+        const delta = contribFor(after, afterCounted, src) - contribFor(before, beforeCounted, src);
+        if (delta !== 0) incs[`stats.${tgt}`] = FieldValue.increment(delta);
+      }
+      if (Object.keys(incs).length === 0) return;
+      try {
+        await db.collection("clients").doc(cid).set(incs, { merge: true });
+      } catch (e) {
+        logger.warn("syncClientStats KO", { cid, err: String(e) });
+      }
+      return;
+    }
+
+    // Cas 2 : changement de clientId — décrémente l'ancien, incrémente le nouveau
+    const updates: Array<Promise<unknown>> = [];
+    if (beforeClientId) {
+      const decs: Record<string, FirebaseFirestore.FieldValue> = {};
+      for (const { src, tgt } of fields) {
+        const delta = -contribFor(before, beforeCounted, src);
+        if (delta !== 0) decs[`stats.${tgt}`] = FieldValue.increment(delta);
+      }
+      if (Object.keys(decs).length > 0) {
+        updates.push(db.collection("clients").doc(beforeClientId).set(decs, { merge: true }));
+      }
+    }
+    if (afterClientId) {
+      const adds: Record<string, FirebaseFirestore.FieldValue> = {};
+      for (const { src, tgt } of fields) {
+        const delta = contribFor(after, afterCounted, src);
+        if (delta !== 0) adds[`stats.${tgt}`] = FieldValue.increment(delta);
+      }
+      if (Object.keys(adds).length > 0) {
+        updates.push(db.collection("clients").doc(afterClientId).set(adds, { merge: true }));
+      }
+    }
+    try {
+      await Promise.all(updates);
+    } catch (e) {
+      logger.warn("syncClientStats clientId-change KO", { beforeClientId, afterClientId, err: String(e) });
     }
   },
 );
