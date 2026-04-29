@@ -16,7 +16,7 @@ const ALLOWED: Record<EquipeRole, string[]> = {
   preparateur: ["/livraisons", "/preparation", "/tournee-execute"],
   chef: ["/livraisons", "/clients", "/equipe", "/preparation", "/chargement", "/livraison", "/montage", "/tournee-execute"],
   chauffeur: ["/livraisons", "/chargement", "/livraison", "/tournee-execute"],
-  monteur: ["/montage", "/tournee-execute"],
+  monteur: ["/livraisons", "/montage", "/tournee-execute"],
   apporteur: ["/", "/clients", "/livraisons"],
 };
 

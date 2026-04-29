@@ -344,10 +344,16 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
     const apporteurLower = currentUser?.role === "apporteur" && currentUser.nom
       ? currentUser.nom.trim().toLowerCase()
       : null;
-    // RBAC chauffeur : un chauffeur ne lit QUE les livraisons où il est
-    // affecté (chauffeurId == son uid). Sans ce filtre, Firestore rejette
-    // le snapshot via la rule serveur (cf. firestore.rules — bug 2026-04-29).
+    // RBAC terrain : chaque rôle terrain ne voit que ses propres livraisons.
+    //   - chauffeur : where("chauffeurId","==",uid)
+    //   - monteur   : where("monteurIds","array-contains",uid)
+    //   - preparateur : where("preparateurIds","array-contains",uid)
+    // Filtrage côté UI uniquement (la rule serveur reste permissive — cf.
+    // commentaire firestore.rules 2026-04-29). Sans ces filtres, un
+    // chauffeur/monteur loggué verrait TOUTES les livraisons dans /livraisons.
     const chauffeurId = currentUser?.role === "chauffeur" ? currentUser.id : null;
+    const monteurId = currentUser?.role === "monteur" ? currentUser.id : null;
+    const preparateurId = currentUser?.role === "preparateur" ? currentUser.id : null;
 
     const clientsQuery = apporteurLower
       ? query(collection(db, "clients"), where("apporteurLower", "==", apporteurLower))
@@ -357,6 +363,10 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
       ? query(collection(db, "livraisons"), where("apporteurLower", "==", apporteurLower))
       : chauffeurId
       ? query(collection(db, "livraisons"), where("chauffeurId", "==", chauffeurId))
+      : monteurId
+      ? query(collection(db, "livraisons"), where("monteurIds", "array-contains", monteurId))
+      : preparateurId
+      ? query(collection(db, "livraisons"), where("preparateurIds", "array-contains", preparateurId))
       : collection(db, "livraisons");
     const unsubLivraisons = onSnapshot(livraisonsQuery, (snap) => {
       const rows: LivraisonRow[] = [];

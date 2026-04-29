@@ -95,17 +95,16 @@ service cloud.firestore {
       allow create, delete: if isAdmin();
     }
 
-    // Livraisons : update ouvert au staff terrain pour passer le statut à
-    // "livree", poser dateEffective et l'urlBlSigne. Apporteur : lecture
-    // seule sur les livraisons de SES clients. Chauffeur : lecture
-    // restreinte aux livraisons où il est affecté (chauffeurId ==
-    // request.auth.uid) — il ne voit pas les tournées des autres
-    // chauffeurs (bug 2026-04-29). Le frontend doit obligatoirement query
-    // avec where("chauffeurId","==",auth.uid) sinon Firestore rejette.
+    // Livraisons : update ouvert au staff terrain. Lecture ouverte au staff
+    // non-apporteur — le filtrage chauffeur/monteur/preparateur (= ne voir
+    // QUE ses tournées) est fait côté frontend (data-context-firebase) pour
+    // simplicité. On garde la lecture serveur permissive parce que les
+    // rôles terrain sont déjà du staff trusted ; cf. décision 2026-04-29
+    // après tentative de rule stricte chauffeurId qui cassait toutes les
+    // queries `where(tourneeId)` (markVeloCharge, getBlForTournee, etc.).
     match /livraisons/{id} {
       allow read: if isAdmin()
-                  || (isStaff() && !isApporteur() && !isChauffeur())
-                  || (isChauffeur() && resource.data.chauffeurId == request.auth.uid)
+                  || (isStaff() && !isApporteur())
                   || (isApporteur() && resource.data.apporteurLower == apporteurNameLower());
       allow update: if isStaff() && !isApporteur();
       allow create, delete: if isAdmin();

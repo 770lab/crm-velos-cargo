@@ -45,6 +45,7 @@ const NAV_BY_ROLE: Record<EquipeRole, NavItem[]> = {
     { href: "/livraisons", label: "Livraisons", icon: "🚚" },
   ],
   monteur: [
+    { href: "/livraisons", label: "Mes tournées", icon: "🚚" },
     { href: "/montage", label: "Montage", icon: "🔧" },
   ],
   apporteur: [
