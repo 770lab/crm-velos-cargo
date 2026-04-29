@@ -279,6 +279,17 @@ export default function LivraisonsPage() {
       if (!map.has(key)) map.set(key, []);
       map.get(key)!.push(t);
     }
+    // Tri des tournées dans chaque colonne jour : les retraits TOUJOURS en haut
+    // (Yoann 29-04 02h13). Préparation différente du chargement camion ; les
+    // retraits ouvrent la journée pour libérer rapidement le dépôt avant que
+    // les camions ne reviennent. Ordre stable au sein de chaque groupe.
+    for (const arr of map.values()) {
+      arr.sort((a, b) => {
+        const ar = a.mode === "retrait" ? 0 : 1;
+        const br = b.mode === "retrait" ? 0 : 1;
+        return ar - br;
+      });
+    }
     return map;
   }, [chauffeurFilteredTournees]);
 
