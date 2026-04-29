@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import { gasPost, gasGet } from "@/lib/gas";
 import { useData, type EquipeMember, type EquipeRole } from "@/lib/data-context";
+import { useCurrentUser } from "@/lib/current-user";
 
 const ROLE_LABEL: Record<EquipeRole, string> = {
   superadmin: "Super admin",
@@ -36,6 +37,8 @@ const ROLE_COLOR: Record<EquipeRole, string> = {
 
 export default function EquipePage() {
   const { equipe, refresh } = useData();
+  const currentUser = useCurrentUser();
+  const isAdmin = currentUser?.role === "admin" || currentUser?.role === "superadmin";
   const [editing, setEditing] = useState<EquipeMember | null>(null);
   const [creatingRole, setCreatingRole] = useState<EquipeRole | null>(null);
   const [showInactifs, setShowInactifs] = useState(false);
@@ -46,6 +49,9 @@ export default function EquipePage() {
     const groups: Record<EquipeRole, EquipeMember[]> = { superadmin: [], admin: [], chauffeur: [], chef: [], monteur: [], preparateur: [], apporteur: [] };
     for (const m of equipe) {
       if (m.actif === false) continue;
+      // Vue restreinte non-admin : on ne voit QUE sa propre fiche (cf.
+      // demande Yoann 2026-04-29 « ethan dois voir que ethan »).
+      if (!isAdmin && m.id !== currentUser?.id) continue;
       if (groups[m.role]) groups[m.role].push(m);
     }
     // Tri alphabétique (insensible à la casse / aux accents) dans chaque
@@ -55,7 +61,7 @@ export default function EquipePage() {
       groups[role].sort((a, b) => cmp(a.nom || "", b.nom || ""));
     }
     return groups;
-  }, [equipe]);
+  }, [equipe, isAdmin, currentUser?.id]);
 
   const loadInactifs = async () => {
     setLoadingInactifs(true);
@@ -79,7 +85,9 @@ export default function EquipePage() {
       </div>
 
       <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
-        {(Object.keys(ROLE_LABEL) as EquipeRole[]).map((role) => (
+        {(Object.keys(ROLE_LABEL) as EquipeRole[])
+          .filter((role) => isAdmin || byRole[role].length > 0)
+          .map((role) => (
           <div key={role} className="bg-white border rounded-xl p-4">
             <div className="flex items-center justify-between mb-3">
               <h2 className="font-semibold flex items-center gap-2">
@@ -87,12 +95,14 @@ export default function EquipePage() {
                 <span>{ROLE_LABEL[role]}s</span>
                 <span className="text-xs text-gray-400">({byRole[role].length})</span>
               </h2>
-              <button
-                onClick={() => setCreatingRole(role)}
-                className="text-xs px-2 py-1 bg-green-600 text-white rounded-lg hover:bg-green-700"
-              >
-                + Ajouter
-              </button>
+              {isAdmin && (
+                <button
+                  onClick={() => setCreatingRole(role)}
+                  className="text-xs px-2 py-1 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                >
+                  + Ajouter
+                </button>
+              )}
             </div>
             <div className="space-y-2">
               {byRole[role].length === 0 ? (
@@ -144,7 +154,7 @@ export default function EquipePage() {
       </div>
 
       <div className="mt-6">
-        {!showInactifs ? (
+        {!isAdmin ? null : !showInactifs ? (
           <button
             onClick={loadInactifs}
             disabled={loadingInactifs}
