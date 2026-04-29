@@ -511,7 +511,10 @@ function Inner({ mode }: { mode: ScanMode }) {
     focusClient &&
     focusClient.totals[cfg.totalsKey] < focusClient.totals.total &&
     firstUnfinishedClientId &&
-    focusClientId !== firstUnfinishedClientId
+    focusClientId !== firstUnfinishedClientId &&
+    // Mode admin (bypassOrderLock) : on autorise l'accès "en avance" pour
+    // gérer les déchargements dans le désordre exceptionnel (29-04 13h35).
+    !bypassOrderLock
   );
 
   // CTA "Passer au client suivant" : pointe sur le firstUnfinished (donc
