@@ -1150,11 +1150,14 @@ export async function runFirestoreAction(
       const tourneeId = getRequired(body, "tourneeId");
       const userId = getString(body, "userId");
 
+      // Verrouillage d'ordre désactivé 2026-04-29 (terrain demande Yoann) :
+      // bloquait chauffeur/monteur en prod quand un client devait être livré
+      // dans le désordre. On laisse `requires` dans la map mais le check
+      // est sauté plus bas (cherche LOCK_ORDER_DISABLED).
       const stageMap = {
         markVeloPrepare: {
           dateField: "datePreparation",
           userField: "preparateurId",
-          // Préparation = étape 1 (assignation FNUCI). Aucun prérequis.
           requires: [] as string[],
           requiresLabels: [] as string[],
         },
@@ -1167,14 +1170,16 @@ export async function runFirestoreAction(
         markVeloLivreScan: {
           dateField: "dateLivraisonScan",
           userField: "livreurId",
-          // Verrouillage d'ordre : un vélo ne peut être livré que s'il est
-          // préparé ET chargé. Sans ça, on a vu des vélos passer en "livré"
-          // alors qu'ils n'avaient jamais été chargés (bug 2026-04-28).
           requires: ["datePreparation", "dateChargement"],
           requiresLabels: ["préparation", "chargement"],
         },
       } as const;
       const stage = stageMap[action as keyof typeof stageMap];
+      // LOCK_ORDER_DISABLED : flag global pour court-circuiter tous les
+      // checks de verrouillage d'ordre (ETAPE_PRECEDENTE_MANQUANTE +
+      // ORDRE_VERROUILLE). Mis à true après que les chauffeurs/monteurs ont
+      // été bloqués en prod le 2026-04-29.
+      const LOCK_ORDER_DISABLED = true;
 
       // 1. Trouve le vélo via FNUCI
       const vSnap = await getDocs(
@@ -1228,7 +1233,7 @@ export async function runFirestoreAction(
       // désordre lors de tests/exception. Le frontend n'expose le toggle qu'aux
       // admin/superadmin. Côté serveur on accepte le flag tel quel — sécurité
       // basée sur le fait que seuls les admins voient le toggle.
-      const bypassOrderLock = body.bypassOrderLock === true;
+      const bypassOrderLock = true; // verrouillage d'ordre désactivé 2026-04-29 (terrain)
 
       // 3. Verrouillage d'ordre : étapes précédentes obligatoires
       const missing: string[] = [];
@@ -1448,7 +1453,7 @@ export async function runFirestoreAction(
         clientSnapshot?: { entreprise?: string };
       }).clientSnapshot?.entreprise || null;
 
-      const bypassOrderLock = body.bypassOrderLock === true;
+      const bypassOrderLock = true; // verrouillage d'ordre désactivé 2026-04-29 (terrain)
 
       // 2. Verrouillage LIFO inter-clients (même logique que markVeloCharge/LivreScan).
       try {
@@ -1754,7 +1759,7 @@ export async function runFirestoreAction(
         };
       }
 
-      const bypassOrderLock = body.bypassOrderLock === true;
+      const bypassOrderLock = true; // verrouillage d'ordre désactivé 2026-04-29 (terrain)
 
       // 4. Étape déjà faite pour ce vélo précis → empêche le double-scan
       if (velo[stage.dateField]) {
@@ -2427,7 +2432,7 @@ export async function runFirestoreAction(
       }
 
       // 3. Vérifier prérequis (préparation + chargement + livraison)
-      const bypassMontage = body.bypassOrderLock === true;
+      const bypassMontage = true; // verrouillage d'ordre désactivé 2026-04-29 (terrain)
       const missingMontage: string[] = [];
       if (!velo.datePreparation) missingMontage.push("préparation");
       if (!velo.dateChargement) missingMontage.push("chargement");
@@ -2546,7 +2551,7 @@ export async function runFirestoreAction(
       // déjà préparé, chargé ET livré (sinon photos de montage prises avant
       // la livraison effective — incohérent avec le terrain).
       // Mode bypass admin (Yoann 29-04 02h42) : skip la vérif si flag posé.
-      const bypassMontage = body.bypassOrderLock === true;
+      const bypassMontage = true; // verrouillage d'ordre désactivé 2026-04-29 (terrain)
       const missingMontage: string[] = [];
       if (!velo.datePreparation) missingMontage.push("préparation");
       if (!velo.dateChargement) missingMontage.push("chargement");
