@@ -132,6 +132,7 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "markVeloPrepare",
   "markVeloCharge",
   "markVeloLivreScan",
+  "markNextVeloForEtape",
   "markClientAsDelivered",
   "unmarkVeloEtape",
   "unsetVeloClient",
@@ -1358,6 +1359,217 @@ export async function runFirestoreAction(
         fnuci,
         clientId: veloClientId,
         clientName: livraisonClientName,
+        date: new Date().toISOString(),
+      };
+    }
+
+    case "markNextVeloForEtape": {
+      // Scan QR carton (29-04 11h30) : à la place de scanner le BicyCode physique
+      // d'un vélo précis pour le chargement / la livraison, l'opérateur scanne le
+      // QR de l'étiquette imprimée (= clientId, identique sur les N étiquettes du
+      // client). On marque le 1er vélo du client non-encore-fait pour cette étape,
+      // avec prérequis OK (préparation pour chargement, prép+chargement pour
+      // livraison). Conformité CEE : les FNUCI individuels restent tracés via la
+      // préparation, on n'a pas besoin du mapping carton↔FNUCI précis pour la
+      // livraison (tous les vélos du client sont sur le même camion / même jour).
+      const clientId = getRequired(body, "clientId");
+      const tourneeId = getRequired(body, "tourneeId");
+      const etape = getRequired(body, "etape"); // "chargement" | "livraisonScan"
+      const userId = getString(body, "userId");
+
+      const stageMap: Record<string, {
+        dateField: string;
+        userField: string;
+        requires: string[];
+        requiresLabels: string[];
+        lifoReverse: boolean;
+      }> = {
+        chargement: {
+          dateField: "dateChargement",
+          userField: "chargeurId",
+          requires: ["datePreparation"],
+          requiresLabels: ["préparation"],
+          lifoReverse: true, // dernier livré entre en premier dans le camion
+        },
+        livraisonScan: {
+          dateField: "dateLivraisonScan",
+          userField: "livreurId",
+          requires: ["datePreparation", "dateChargement"],
+          requiresLabels: ["préparation", "chargement"],
+          lifoReverse: false,
+        },
+      };
+      const stage = stageMap[etape];
+      if (!stage) {
+        return { error: `étape invalide: ${etape}`, code: "ETAPE_INVALIDE" };
+      }
+
+      // 1. Le client doit être dans la tournée
+      const livSnap = await getDocs(
+        query(
+          collection(db, "livraisons"),
+          where("tourneeId", "==", tourneeId),
+          where("clientId", "==", clientId),
+        ),
+      );
+      if (livSnap.empty) {
+        let clientName: string | null = null;
+        try {
+          const c = await getDoc(doc(db, "clients", clientId));
+          if (c.exists()) clientName = (c.data() as { entreprise?: string }).entreprise || null;
+        } catch {}
+        return {
+          error: "Pas dans cette tournée",
+          code: "HORS_TOURNEE",
+          clientId,
+          clientName,
+        };
+      }
+      const clientName = (livSnap.docs[0].data() as {
+        clientSnapshot?: { entreprise?: string };
+      }).clientSnapshot?.entreprise || null;
+
+      const bypassOrderLock = body.bypassOrderLock === true;
+
+      // 2. Verrouillage LIFO inter-clients (même logique que markVeloCharge/LivreScan).
+      try {
+        if (bypassOrderLock) throw new Error("__bypass_admin__");
+        const allLivSnap = await getDocs(
+          query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
+        );
+        const ordreFromNotesScan = (notes: unknown): number | null => {
+          if (typeof notes !== "string") return null;
+          const m = notes.match(/arr[êe]t\s+(\d+)\s*\//i);
+          return m ? parseInt(m[1], 10) : null;
+        };
+        type CDef = { clientId: string; ordre: number | null; entreprise: string };
+        const seen = new Set<string>();
+        const cdefs: CDef[] = [];
+        for (const d of allLivSnap.docs) {
+          const data = d.data() as {
+            clientId?: string;
+            statut?: string;
+            ordre?: number;
+            notes?: string;
+            clientSnapshot?: { entreprise?: string };
+          };
+          if (String(data.statut || "").toLowerCase() === "annulee") continue;
+          const cid = data.clientId;
+          if (!cid || seen.has(cid)) continue;
+          seen.add(cid);
+          const ordre =
+            typeof data.ordre === "number"
+              ? data.ordre
+              : ordreFromNotesScan(data.notes);
+          cdefs.push({
+            clientId: cid,
+            ordre,
+            entreprise: data.clientSnapshot?.entreprise || "",
+          });
+        }
+        const allHaveOrdre = cdefs.length > 0 && cdefs.every((c) => typeof c.ordre === "number");
+        if (allHaveOrdre && cdefs.length > 1) {
+          const sorted = cdefs.slice().sort((a, b) => (a.ordre as number) - (b.ordre as number));
+          const ordered = stage.lifoReverse ? sorted.slice().reverse() : sorted;
+          const cids = ordered.map((c) => c.clientId);
+          const totalsByClient = new Map<string, { total: number; done: number }>();
+          for (let i = 0; i < cids.length; i += 30) {
+            const chunk = cids.slice(i, i + 30);
+            if (!chunk.length) continue;
+            const vSnap2 = await getDocs(
+              query(collection(db, "velos"), where("clientId", "in", chunk)),
+            );
+            for (const d of vSnap2.docs) {
+              const vd = d.data() as Record<string, unknown>;
+              if (vd.annule === true) continue;
+              const cid = vd.clientId as string;
+              if (!cid) continue;
+              const cur = totalsByClient.get(cid) || { total: 0, done: 0 };
+              cur.total++;
+              if (vd[stage.dateField]) cur.done++;
+              totalsByClient.set(cid, cur);
+            }
+          }
+          const firstUnfinished = ordered.find((c) => {
+            const t = totalsByClient.get(c.clientId);
+            return !t || t.done < t.total;
+          });
+          if (firstUnfinished && firstUnfinished.clientId !== clientId) {
+            return {
+              error: `Ordre verrouillé : termine d'abord ${firstUnfinished.entreprise || "le client précédent"}`,
+              code: "ORDRE_VERROUILLE",
+              expectedClientId: firstUnfinished.clientId,
+              expectedClientName: firstUnfinished.entreprise || null,
+            };
+          }
+        }
+      } catch {
+        // Faille silencieuse : si le check d'ordre plante, on laisse passer.
+      }
+
+      // 3. Trouve le 1er vélo du client non-fait pour cette étape, avec prérequis OK.
+      const vSnap = await getDocs(
+        query(collection(db, "velos"), where("clientId", "==", clientId)),
+      );
+      type Velo = {
+        fnuci?: string;
+        annule?: boolean;
+        datePreparation?: unknown;
+        dateChargement?: unknown;
+        dateLivraisonScan?: unknown;
+      };
+      const candidates = vSnap.docs.filter((d) => {
+        const v = d.data() as Velo;
+        if (v.annule === true) return false;
+        if (v[stage.dateField as keyof Velo]) return false; // déjà fait
+        for (const req of stage.requires) {
+          if (!bypassOrderLock && !v[req as keyof Velo]) return false;
+        }
+        return true;
+      });
+      if (candidates.length === 0) {
+        // Distinguer "client complet" vs "prérequis manquants partout"
+        const allDone = vSnap.docs.every((d) => {
+          const v = d.data() as Velo;
+          return v.annule === true || v[stage.dateField as keyof Velo];
+        });
+        if (allDone) {
+          return {
+            ok: false,
+            error: `Tous les vélos de ce client sont déjà ${etape === "chargement" ? "chargés" : "livrés"}`,
+            code: "CLIENT_COMPLET",
+            clientId,
+            clientName,
+          };
+        }
+        // Prérequis manquant : remonter quel(s) prérequis font défaut.
+        return {
+          ok: false,
+          error: `Aucun vélo prêt pour ${etape} chez ${clientName || "ce client"} — vérifie ${stage.requiresLabels.join(" + ")}`,
+          code: "ETAPE_PRECEDENTE_MANQUANTE",
+          clientId,
+          clientName,
+          missing: stage.requiresLabels,
+        };
+      }
+      // On prend le 1er candidat (ordre de création Firestore — stable).
+      const veloDoc = candidates[0];
+      const veloData = veloDoc.data() as Velo;
+      const updates: Body = {
+        [stage.dateField]: ts(),
+        updatedAt: ts(),
+      };
+      if (userId) updates[stage.userField] = userId;
+      await updateDoc(veloDoc.ref, updates);
+
+      return {
+        ok: true,
+        veloId: veloDoc.id,
+        fnuci: veloData.fnuci || null,
+        clientId,
+        clientName,
+        etape: stage.dateField,
+        remaining: candidates.length - 1, // après ce scan
         date: new Date().toISOString(),
       };
     }

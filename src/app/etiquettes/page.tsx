@@ -223,7 +223,6 @@ function EtiquettesPage() {
               // après la préparation, on le garde juste comme info en petit.
               const qrPayload = client.clientId;
               const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(qrPayload)}`;
-              const fnuci = velo.fnuci || velo.veloId;
               // En mode focus 1 client, l'ordre de chargement n'a pas de sens
               // (le seul client est forcément "1/1"). On le masque.
               const showLoadOrder = !focusClientId && totalClients > 1;
@@ -287,9 +286,6 @@ function EtiquettesPage() {
                   <div style={{ fontSize: "13px", color: "#222", lineHeight: 1.3, textAlign: "center", marginTop: "3mm" }}>
                     {client.adresse}<br />
                     {client.codePostal} {client.ville}
-                  </div>
-                  <div style={{ fontFamily: "ui-monospace, Menlo, monospace", fontSize: "10px", color: "#888", letterSpacing: "0.2px", wordBreak: "break-all", textAlign: "center", marginTop: "2mm" }}>
-                    ref. {fnuci}
                   </div>
                 </div>
               );

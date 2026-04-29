@@ -8,6 +8,7 @@ import { useCurrentUser } from "@/lib/current-user";
 import { BASE_PATH } from "@/lib/base-path";
 const PhotoGeminiCapture = dynamic(() => import("@/components/photo-gemini-capture"), { ssr: false });
 const BlSignedUploader = dynamic(() => import("@/components/bl-signed-uploader"), { ssr: false });
+const QrCartonScanner = dynamic(() => import("@/components/qr-carton-scanner"), { ssr: false });
 
 export type ScanMode = "preparation" | "chargement" | "livraison";
 
@@ -133,6 +134,12 @@ function Inner({ mode }: { mode: ScanMode }) {
   // pour libérer la caméra (iOS Safari = un seul flux à la fois).
   const [geminiCameraOpen, setGeminiCameraOpen] = useState<boolean>(false);
   const [busy, setBusy] = useState<boolean>(false);
+  // Scan QR carton (29-04 11h30) : à chargement / livraison, l'opérateur peut
+  // scanner le QR commun de l'étiquette imprimée — chaque scan marque le 1er
+  // vélo du client non-encore-fait pour l'étape. Pas dispo en préparation
+  // (la prép assigne le FNUCI, donc nécessite le BicyCode physique).
+  const [qrScannerOpen, setQrScannerOpen] = useState<boolean>(false);
+  const [qrScanFeedback, setQrScanFeedback] = useState<Array<{ label: string; ok: boolean; at: number }>>([]);
   // En mode préparation, si on scanne un FNUCI inconnu on propose d'assigner
   // à un client de la tournée (fusionne réception + préparation).
   const [pendingFnuci, setPendingFnuci] = useState<string | null>(null);
@@ -331,6 +338,65 @@ function Inner({ mode }: { mode: ScanMode }) {
       setTimeout(() => setScannerEnabled(true), 400);
     }
   }, [pendingFnuci, cfg.endpoint, cfg.title, tourneeId, userId, loadProgression]);
+
+  // Handler appelé par QrCartonScanner à chaque QR détecté. Vérifie que le
+  // clientId existe dans la tournée puis appelle markNextVeloForEtape, qui
+  // marque le 1er vélo du client non-encore-fait pour l'étape en cours
+  // (chargement ou livraison). Si focusClientId est défini (page ouverte
+  // depuis la vignette d'un client précis), on refuse les QR d'autres clients.
+  const handleQrCartonScan = useCallback(async (scannedClientId: string) => {
+    if (mode === "preparation") return; // jamais en prép
+    const etape = mode === "chargement" ? "chargement" : "livraisonScan";
+    if (focusClientId && scannedClientId !== focusClientId) {
+      beep(false);
+      setQrScanFeedback((prev) => [
+        ...prev,
+        { label: `QR pour un autre client — refusé`, ok: false, at: Date.now() },
+      ]);
+      return;
+    }
+    try {
+      const r = (await gasPost("markNextVeloForEtape", {
+        clientId: scannedClientId,
+        tourneeId,
+        etape,
+        userId,
+        bypassOrderLock: bypassOrderLock || undefined,
+      })) as
+        | { ok: true; fnuci: string | null; clientName: string | null; remaining: number }
+        | { ok?: false; error: string; code?: string; clientName?: string | null; expectedClientName?: string | null };
+      if ("ok" in r && r.ok) {
+        beep(true);
+        const fn = r.fnuci || "(sans FNUCI)";
+        setQrScanFeedback((prev) => [
+          ...prev,
+          {
+            label: `${r.clientName || "Client"} · ${fn} · reste ${r.remaining}`,
+            ok: true,
+            at: Date.now(),
+          },
+        ]);
+        // Recharger en arrière-plan pour mettre à jour les compteurs.
+        void loadProgression();
+      } else {
+        beep(false);
+        const err = "error" in r ? r.error : "Erreur";
+        const target = "expectedClientName" in r && r.expectedClientName
+          ? ` (attendu : ${r.expectedClientName})`
+          : "";
+        setQrScanFeedback((prev) => [
+          ...prev,
+          { label: `${r.clientName || "Client"} · ${err}${target}`, ok: false, at: Date.now() },
+        ]);
+      }
+    } catch (e) {
+      beep(false);
+      setQrScanFeedback((prev) => [
+        ...prev,
+        { label: e instanceof Error ? e.message : String(e), ok: false, at: Date.now() },
+      ]);
+    }
+  }, [mode, focusClientId, tourneeId, userId, bypassOrderLock, loadProgression]);
 
   if (!tourneeId) {
     return (
@@ -551,6 +617,28 @@ function Inner({ mode }: { mode: ScanMode }) {
                 Le bloc Strich n'est plus rendu — `handleScan` reste défini car
                 il est encore utilisé par le panneau "FNUCI inconnu — à quel
                 client ?" plus haut. */}
+
+            {/* Scan QR carton : remplace le scan BicyCode pour chargement / livraison.
+                Pas dispo en préparation (la prép assigne le FNUCI, le QR carton n'existe pas
+                encore à ce moment-là). */}
+            {(mode === "chargement" || mode === "livraison") && (
+              <div className="bg-white rounded-xl shadow p-4 mb-3">
+                <button
+                  type="button"
+                  disabled={allDone}
+                  onClick={() => {
+                    setQrScanFeedback([]);
+                    setQrScannerOpen(true);
+                  }}
+                  className="w-full px-3 py-3 bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 disabled:opacity-60 text-sm"
+                >
+                  📦 Scanner QR carton ({cfg.title.toLowerCase()})
+                </button>
+                <p className="text-[11px] text-gray-500 text-center mt-2">
+                  Ouvre la caméra et mitraille les étiquettes carton — chaque QR scanné marque automatiquement le prochain vélo du client.
+                </p>
+              </div>
+            )}
 
             <div className="bg-white rounded-xl shadow p-4 mb-3">
               <PhotoGeminiCapture
@@ -785,6 +873,22 @@ function Inner({ mode }: { mode: ScanMode }) {
           </>
         )}
       </div>
+      {qrScannerOpen && (
+        <QrCartonScanner
+          title={`📦 ${cfg.title} — scan QR carton`}
+          subtitle={
+            focusClient
+              ? `Pour ${focusClient.entreprise} uniquement`
+              : "Scanne n'importe quelle étiquette carton de la tournée"
+          }
+          onScan={handleQrCartonScan}
+          onClose={() => {
+            setQrScannerOpen(false);
+            void loadProgression();
+          }}
+          recentScans={qrScanFeedback}
+        />
+      )}
     </div>
   );
 }
