@@ -1047,9 +1047,11 @@ function computeArrivalTimes(
       arriveeMax += PAUSE_DEJEUNER_DUREE;
       pausePrise = true;
     }
+    // Arrondi au :30 le plus proche pour donner des heures rondes
+    // (Yoann 29-04 02h20). 8h47 → 9h00, 9h45 → 10h00, 10h15 → 10h30.
     out.push({
-      minMin: Math.round(arriveeMin),
-      maxMin: Math.round(arriveeMax),
+      minMin: Math.round(arriveeMin / 30) * 30,
+      maxMin: Math.round(arriveeMax / 30) * 30,
     });
     const montageMin = ((liv.nbVelos ?? 0) * MINUTES_PAR_VELO) / eff;
     cumulMin += montageMin;
@@ -1135,7 +1137,9 @@ function TourneeCard({
                   <>
                     <span className="opacity-60">{i + 1}.</span> {l.client.entreprise}
                     {arr && (
-                      <span className="opacity-50 font-mono ml-1">{fmtHM(arr.minMin)}–{fmtHM(arr.maxMin)}</span>
+                      <span className="opacity-50 font-mono ml-1">
+                        {arr.minMin === arr.maxMin ? fmtHM(arr.minMin) : `${fmtHM(arr.minMin)}–${fmtHM(arr.maxMin)}`}
+                      </span>
                     )}
                     {apporteurNom && (
                       <span className="opacity-50 ml-1">· {apporteurNom}</span>
@@ -1146,7 +1150,9 @@ function TourneeCard({
                     <span className="opacity-60">{i + 1}.</span> {l.client.entreprise}
                     <span className="opacity-60 font-mono"> · {l._count.velos}v</span>
                     {arr && (
-                      <span className="opacity-50 font-mono ml-1">· {fmtHM(arr.minMin)}–{fmtHM(arr.maxMin)}</span>
+                      <span className="opacity-50 font-mono ml-1">
+                        · {arr.minMin === arr.maxMin ? fmtHM(arr.minMin) : `${fmtHM(arr.minMin)}–${fmtHM(arr.maxMin)}`}
+                      </span>
                     )}
                     {apporteurNom && (
                       <span className="opacity-50 ml-1">· {apporteurNom}</span>
