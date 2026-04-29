@@ -177,14 +177,24 @@ export function ChargesOperationnellesSection({ from, to }: { from: string; to: 
     return () => unsub();
   }, [from, to]);
 
-  const totalAchatsVelos = bons.reduce((s, b) => s + b.quantite * coutVeloHT, 0);
+  // Achats commandés (cash sorti) = somme bons Tiffany de la période.
+  const totalAchatsCommandes = bons.reduce((s, b) => s + b.quantite * coutVeloHT, 0);
+  const totalAchatsCommandesQte = bons.reduce((s, b) => s + b.quantite, 0);
+  // Coût des vélos LIVRÉS (économique, aligné avec encaissements de la période).
+  // C'est ce qu'on utilise pour le calcul marge — sinon le coût/vélo livré
+  // explose artificiellement quand on commande 47 vélos en 1 fois pour
+  // n'en livrer que 13 dans le mois (Yoann 30-04 00h10).
+  const coutVelosLivres = veloLivresCount * coutVeloHT;
   const totalFraisOps = frais.reduce((s, f) => s + f.montantHT, 0);
-  const totalCharges = totalAchatsVelos + totalFraisOps;
+  const totalCharges = coutVelosLivres + totalFraisOps;
   const coutParVeloLivre = veloLivresCount > 0 ? totalCharges / veloLivresCount : 0;
   const prixVenteHT = prixVenteVeloTTC / (1 + TVA_RATE);
   const encaissementsHT = veloLivresCount * prixVenteHT;
   const margeBruteHT = encaissementsHT - totalCharges;
   const margeParVeloLivre = veloLivresCount > 0 ? margeBruteHT / veloLivresCount : 0;
+  // Cash flow vélos = écart entre cash sorti et coût livré reconnu.
+  // Si positif → on a payé d'avance pour livrer plus tard.
+  const cashFlowVelos = totalAchatsCommandes - coutVelosLivres;
 
   // Agrégat par catégorie pour la répartition.
   const fraisParCat = useMemo(() => {
@@ -212,14 +222,38 @@ export function ChargesOperationnellesSection({ from, to }: { from: string; to: 
 
   return (
     <>
-      {/* KPIs charges */}
+      {/* KPIs charges - calcul économique (au prorata des vélos livrés) */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-3">
         <KpiCard label="Vélos livrés" value={String(veloLivresCount)} />
-        <KpiCard label="Achats vélos" value={fmt(totalAchatsVelos)} accent="text-orange-700" />
+        <KpiCard
+          label="Coût vélos livrés"
+          value={fmt(coutVelosLivres)}
+          accent="text-orange-700"
+          hint={`${veloLivresCount} × ${fmt(coutVeloHT)}`}
+        />
         <KpiCard label="Frais opérationnels" value={fmt(totalFraisOps)} accent="text-blue-700" />
-        <KpiCard label="Total charges" value={fmt(totalCharges)} accent="text-red-700" />
+        <KpiCard label="Total charges" value={fmt(totalCharges)} accent="text-red-700" hint="hors masse salariale" />
         <KpiCard label="Coût / vélo livré" value={fmt(coutParVeloLivre)} accent="text-gray-700" />
       </div>
+
+      {/* Note pédagogique sur le calcul */}
+      {totalAchatsCommandes > coutVelosLivres && (
+        <div className="mb-3 px-3 py-2 rounded-lg border border-amber-200 bg-amber-50 text-[11px] text-amber-800 flex items-start gap-2">
+          <span>ℹ️</span>
+          <div className="flex-1">
+            Cash sorti pour les vélos sur la période : <strong>{fmt(totalAchatsCommandes)}</strong>
+            ({totalAchatsCommandesQte} vélos commandés à Axdis).
+            Mais on ne reconnaît que <strong>{fmt(coutVelosLivres)}</strong> dans les charges
+            ({veloLivresCount} vélos livrés × {fmt(coutVeloHT)}) — les
+            <strong> {totalAchatsCommandesQte - veloLivresCount} vélos restants </strong>
+            sont en stock et leur coût sera imputé quand ils seront livrés.
+            Avance de trésorerie : <strong>{fmt(cashFlowVelos)}</strong>.
+            <br />
+            Le calcul de marge n&apos;intègre PAS la masse salariale tant qu&apos;elle
+            n&apos;est pas saisie en pointeuse (section ci-dessous).
+          </div>
+        </div>
+      )}
 
       {/* Bandeau Marge */}
       <div className={`mb-6 rounded-xl border p-4 flex items-center justify-between gap-3 ${
@@ -264,7 +298,7 @@ export function ChargesOperationnellesSection({ from, to }: { from: string; to: 
       {/* Achats vélos Axdis */}
       <div className="mb-6 bg-white rounded-xl border overflow-hidden">
         <div className="px-4 py-2.5 border-b bg-orange-50 flex items-center justify-between">
-          <h2 className="text-sm font-semibold flex items-center gap-2">🚲 Achats vélos (Axdis)</h2>
+          <h2 className="text-sm font-semibold flex items-center gap-2">🚲 Achats vélos commandés (Axdis)</h2>
           <div className="flex items-center gap-3 text-[11px] text-orange-700">
             {editConfig ? (
               <span className="flex items-center gap-1">
@@ -288,7 +322,7 @@ export function ChargesOperationnellesSection({ from, to }: { from: string; to: 
             )}
             <span>·</span>
             <span>
-              {bons.reduce((s, b) => s + b.quantite, 0)} vélos · <span className="font-semibold">{fmt(totalAchatsVelos)}</span>
+              {totalAchatsCommandesQte} vélos · <span className="font-semibold">{fmt(totalAchatsCommandes)}</span> cash
             </span>
           </div>
         </div>
@@ -517,11 +551,12 @@ function AddFraisModal({ onClose }: { onClose: () => void }) {
   );
 }
 
-function KpiCard({ label, value, accent }: { label: string; value: string; accent?: string }) {
+function KpiCard({ label, value, accent, hint }: { label: string; value: string; accent?: string; hint?: string }) {
   return (
     <div className="bg-white rounded-xl border px-4 py-3">
       <div className="text-[10px] uppercase tracking-wide text-gray-500 font-medium">{label}</div>
       <div className={`text-lg font-semibold mt-1 ${accent || "text-gray-900"}`}>{value}</div>
+      {hint && <div className="text-[10px] text-gray-400 mt-0.5">{hint}</div>}
     </div>
   );
 }
