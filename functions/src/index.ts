@@ -28,6 +28,10 @@ setGlobalOptions({
 
 const GEMINI_API_KEY = defineSecret("GEMINI_API_KEY");
 const GOOGLE_MAPS_API_KEY = defineSecret("GOOGLE_MAPS_API_KEY");
+// Mot de passe d'application Gmail pour velos-cargo@artisansverts.energy
+// (à générer sur https://myaccount.google.com/apppasswords sur ce compte).
+// Utilisé par sendPreparationCsv pour envoyer le mail à Tiffany via SMTP.
+const GMAIL_APP_PASSWORD = defineSecret("GMAIL_APP_PASSWORD");
 const GAS_URL = defineString("GAS_URL", {
   default: "https://script.google.com/macros/s/AKfycbxcR1mvhpSphNIjuS_mu5GPIaMhxYp1vT1OOPAoGEHNN8h7_iiFIq3Cu_SGR9upgwNgxg/exec",
   // ATTENTION : ce paramètre pointe sur le déploiement GAS PRINCIPAL (gas/),
@@ -1113,5 +1117,184 @@ export const getRouting = onCall<RoutingPayload>(
     }
 
     return { ok: true, segments, apiCalls, cached: cachedCount };
+  },
+);
+
+// ---------- Envoi mail CSV préparation à Tiffany ----------
+//
+// Demande Yoann (29-04 14h07) : à chaque fin de préparation tournée, envoyer
+// automatiquement à Tiffany@axdis.fr un CSV avec une ligne par vélo
+// (Client / FNUCI / Date de livraison). Pas de manipulation manuelle.
+//
+// Implémentation : Cloud Function callable, charge les vélos via Firestore admin,
+// génère le CSV, envoie via SMTP Gmail (nodemailer + mot de passe d'application
+// pour velos-cargo@artisansverts.energy). Le destinataire est Tiffany@axdis.fr
+// (la même adresse que les commandes Axdis sortantes, cf. AXDIS_EMAIL côté front).
+
+import * as nodemailer from "nodemailer";
+
+const SENDER_EMAIL = "velos-cargo@artisansverts.energy";
+const TIFFANY_EMAIL = "Tiffany@axdis.fr";
+
+function csvEscape(s: string): string {
+  if (s.includes(";") || s.includes('"') || s.includes("\n")) {
+    return `"${s.replace(/"/g, '""')}"`;
+  }
+  return s;
+}
+
+export const sendPreparationCsv = onCall<{ tourneeId: string }>(
+  { secrets: [GMAIL_APP_PASSWORD], timeoutSeconds: 90, memory: "256MiB" },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentification requise");
+    }
+    const tourneeId = request.data.tourneeId;
+    if (!tourneeId || typeof tourneeId !== "string") {
+      throw new HttpsError("invalid-argument", "tourneeId requis");
+    }
+    const password = GMAIL_APP_PASSWORD.value();
+    if (!password) {
+      throw new HttpsError(
+        "failed-precondition",
+        "GMAIL_APP_PASSWORD non configurée — génère un mot de passe d'app et pose-le en secret Firebase",
+      );
+    }
+
+    // 1. Récup tournée → datePrevue, numero, clients
+    const livSnap = await db
+      .collection("livraisons")
+      .where("tourneeId", "==", tourneeId)
+      .get();
+    if (livSnap.empty) {
+      throw new HttpsError("not-found", "Aucune livraison pour cette tournée");
+    }
+    let datePrevueStr: string | null = null;
+    let tourneeNumero: number | null = null;
+    const clientIds = new Set<string>();
+    const clientNames = new Map<string, string>();
+    for (const d of livSnap.docs) {
+      const data = d.data() as {
+        datePrevue?: { toDate?: () => Date } | string;
+        numero?: number;
+        clientId?: string;
+        statut?: string;
+        clientSnapshot?: { entreprise?: string };
+      };
+      if (String(data.statut || "").toLowerCase() === "annulee") continue;
+      if (!datePrevueStr && data.datePrevue) {
+        const dp = data.datePrevue;
+        if (typeof dp === "string") {
+          datePrevueStr = dp;
+        } else if (dp?.toDate) {
+          datePrevueStr = dp.toDate().toISOString();
+        }
+      }
+      if (typeof data.numero === "number") tourneeNumero = data.numero;
+      if (data.clientId) {
+        clientIds.add(data.clientId);
+        if (data.clientSnapshot?.entreprise) {
+          clientNames.set(data.clientId, data.clientSnapshot.entreprise);
+        }
+      }
+    }
+
+    // Récupère les noms manquants depuis la collection clients
+    for (const cid of clientIds) {
+      if (clientNames.has(cid)) continue;
+      try {
+        const c = await db.collection("clients").doc(cid).get();
+        if (c.exists) {
+          const cd = c.data() as { entreprise?: string };
+          if (cd?.entreprise) clientNames.set(cid, cd.entreprise);
+        }
+      } catch {}
+    }
+
+    // 2. Récup vélos par client (where in chunks de 30)
+    const cidsArr = [...clientIds];
+    const csvLines = ["Client;FNUCI;Date de livraison"];
+    const dateLiv = datePrevueStr
+      ? new Date(datePrevueStr).toLocaleDateString("fr-FR")
+      : "";
+    let velosCount = 0;
+    for (let i = 0; i < cidsArr.length; i += 30) {
+      const chunk = cidsArr.slice(i, i + 30);
+      if (!chunk.length) continue;
+      const vSnap = await db.collection("velos").where("clientId", "in", chunk).get();
+      for (const d of vSnap.docs) {
+        const v = d.data() as { fnuci?: string; clientId?: string; annule?: boolean };
+        if (v.annule) continue;
+        const cName = clientNames.get(v.clientId || "") || "";
+        csvLines.push(`${csvEscape(cName)};${csvEscape(v.fnuci || "")};${csvEscape(dateLiv)}`);
+        velosCount++;
+      }
+    }
+
+    // 3. Construit le CSV (BOM UTF-8 pour Excel)
+    const csvContent = "﻿" + csvLines.join("\r\n");
+
+    // 4. Envoie le mail
+    const ref = typeof tourneeNumero === "number"
+      ? `VELO CARGO - TOURNEE ${tourneeNumero}`
+      : `VELO CARGO - ${tourneeId}`;
+    const subject = `${ref} — CSV préparation (${velosCount} vélos)`;
+    const dateStr = new Date().toISOString().slice(0, 10);
+    const filename = `preparation-tournee-${tourneeNumero ?? tourneeId.slice(0, 8)}-${dateStr}.csv`;
+    const body = [
+      `Bonjour Tiffany,`,
+      ``,
+      `La préparation de la tournée ${ref} est terminée.`,
+      `Tu trouveras ci-joint le CSV avec ${velosCount} vélos :`,
+      `Client / FNUCI / Date de livraison${dateLiv ? ` (${dateLiv})` : ""}.`,
+      ``,
+      `Merci,`,
+      `Yoann`,
+    ].join("\n");
+
+    const transporter = nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
+      auth: {
+        user: SENDER_EMAIL,
+        pass: password,
+      },
+    });
+
+    try {
+      const info = await transporter.sendMail({
+        from: `"VELO CARGO" <${SENDER_EMAIL}>`,
+        to: TIFFANY_EMAIL,
+        cc: SENDER_EMAIL, // copie à soi pour traçabilité
+        subject,
+        text: body,
+        attachments: [
+          {
+            filename,
+            content: Buffer.from(csvContent, "utf-8"),
+            contentType: "text/csv; charset=utf-8",
+          },
+        ],
+      });
+      logger.info("sendPreparationCsv envoyé", {
+        tourneeId,
+        velosCount,
+        messageId: info.messageId,
+        to: TIFFANY_EMAIL,
+      });
+      return {
+        ok: true,
+        messageId: info.messageId,
+        sentTo: TIFFANY_EMAIL,
+        velosCount,
+        filename,
+        ref,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error("sendPreparationCsv SMTP failed", { tourneeId, err: msg });
+      throw new HttpsError("internal", `Envoi SMTP échoué : ${msg}`);
+    }
   },
 );

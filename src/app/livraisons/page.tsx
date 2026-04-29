@@ -2313,12 +2313,11 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           </div>
         )}
 
-        {/* Export CSV preparation + envoi a Tiffany (29-04 14h07) : visible des
-            que la prep est terminee (prepare === total). DL auto du CSV +
-            ouverture Gmail compose pre-rempli destinataire AXDIS_EMAIL. Yoann
-            n'a qu'a attacher le CSV (qui vient de tomber dans Telechargements)
-            et cliquer Envoyer. Meme flow que le mail commande Axdis qu'il
-            utilise deja. */}
+        {/* Envoi auto du CSV préparation à Tiffany via Cloud Function nodemailer
+            (29-04 14h14) : visible dès que la prep est terminée (prepare === total).
+            La CF récupère les vélos en Firestore admin, génère le CSV et envoie
+            par mail à Tiffany@axdis.fr avec le CSV en pièce jointe. Pas de
+            manipulation manuelle, vraie auto. */}
         {tournee.tourneeId && progression && progression.totals.total > 0 && progression.totals.prepare >= progression.totals.total && (
           <div className="mb-3 px-3 py-2.5 rounded-lg border bg-emerald-50 border-emerald-300 text-emerald-900 space-y-2">
             <div className="flex items-center gap-3">
@@ -2326,7 +2325,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
               <div className="flex-1 text-sm">
                 <div className="font-medium">Envoyer le CSV préparation à Tiffany</div>
                 <div className="text-xs opacity-80">
-                  {progression.totals.prepare} vélos préparés · Client / FNUCI / Date de livraison
+                  {progression.totals.prepare} vélos préparés · pièce jointe Client / FNUCI / Date de livraison
                 </div>
               </div>
               <button
@@ -2335,78 +2334,31 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                   if (!tournee.tourneeId) return;
                   setBusy("exportCsvPrep");
                   try {
-                    type BlData = {
-                      tourneeId: string;
-                      datePrevue: string | null;
-                      clients: Array<{
-                        clientId: string;
-                        entreprise: string;
-                        velos: Array<{ veloId: string; fnuci: string | null }>;
-                      }>;
-                      error?: string;
-                    };
-                    const data = (await gasGet("getBlForTournee", { tourneeId: tournee.tourneeId })) as BlData;
-                    if (!data || data.error) {
-                      alert("Erreur récupération données : " + (data?.error || "?"));
-                      return;
-                    }
-                    const dateLiv = data.datePrevue
-                      ? new Date(data.datePrevue).toLocaleDateString("fr-FR")
-                      : "";
-                    const csvEscape = (s: string) => {
-                      if (s.includes(";") || s.includes('"') || s.includes("\n")) {
-                        return `"${s.replace(/"/g, '""')}"`;
-                      }
-                      return s;
-                    };
-                    const lines = ["Client;FNUCI;Date de livraison"];
-                    for (const c of data.clients) {
-                      for (const v of c.velos) {
-                        lines.push(`${csvEscape(c.entreprise || "")};${csvEscape(v.fnuci || "")};${csvEscape(dateLiv)}`);
-                      }
-                    }
-                    // BOM UTF-8 pour qu'Excel ouvre correctement les accents
-                    const blob = new Blob(["﻿" + lines.join("\r\n")], {
-                      type: "text/csv;charset=utf-8",
-                    });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement("a");
-                    a.href = url;
-                    const dateStr = new Date().toISOString().slice(0, 10);
-                    const csvFilename = `preparation-tournee-${tournee.numero ?? tournee.tourneeId.slice(0, 8)}-${dateStr}.csv`;
-                    a.download = csvFilename;
-                    document.body.appendChild(a);
-                    a.click();
-                    document.body.removeChild(a);
-                    URL.revokeObjectURL(url);
-
-                    // Construit le mail Gmail compose avec destinataire Tiffany
-                    // pré-rempli. Tiffany@axdis.fr vient du même module que le
-                    // mail commande Axdis (cf. AXDIS_EMAIL).
-                    const ref = typeof tournee.numero === "number"
-                      ? `VELO CARGO - TOURNEE ${tournee.numero}`
-                      : `VELO CARGO - ${tournee.tourneeId}`;
-                    const subject = `${ref} — CSV préparation (${progression.totals.prepare} vélos)`;
-                    const body = [
-                      `Bonjour Tiffany,`,
-                      ``,
-                      `La préparation de la tournée ${ref} est terminée.`,
-                      `Tu trouveras ci-joint le CSV avec ${progression.totals.prepare} vélos :`,
-                      `Client / FNUCI / Date de livraison${dateLiv ? ` (${dateLiv})` : ""}.`,
-                      ``,
-                      `📎 Attache le fichier "${csvFilename}" (téléchargé à l'instant) avant d'envoyer.`,
-                      ``,
-                      `Merci,`,
-                      `Yoann`,
-                    ].join("\n");
-                    const composeUrl =
-                      `https://mail.google.com/mail/?authuser=${encodeURIComponent(FROM_EMAIL_RAPPEL)}` +
-                      `&view=cm&fs=1&to=${encodeURIComponent(AXDIS_EMAIL)}` +
-                      `&su=${encodeURIComponent(subject)}` +
-                      `&body=${encodeURIComponent(body)}`;
-                    window.open(composeUrl, "_blank");
+                    const { httpsCallable, getFunctions } = await import("firebase/functions");
+                    const { firebaseApp } = await import("@/lib/firebase");
+                    const fn = httpsCallable<
+                      { tourneeId: string },
+                      { ok: true; messageId: string; sentTo: string; velosCount: number; filename: string; ref: string }
+                    >(getFunctions(firebaseApp, "europe-west1"), "sendPreparationCsv");
+                    const r = await fn({ tourneeId: tournee.tourneeId });
+                    const d = r.data;
+                    alert(
+                      `✅ Mail envoyé à ${d.sentTo}\n` +
+                        `Tournée : ${d.ref}\n` +
+                        `${d.velosCount} vélos · pièce jointe ${d.filename}\n` +
+                        `(une copie t'a été envoyée en CC)`,
+                    );
                   } catch (e) {
-                    alert("Export échoué : " + (e instanceof Error ? e.message : String(e)));
+                    const msg = e instanceof Error ? e.message : String(e);
+                    if (msg.includes("GMAIL_APP_PASSWORD")) {
+                      alert(
+                        "⚠ Le secret Gmail n'est pas encore configuré.\n" +
+                          "Génère un mot de passe d'application sur https://myaccount.google.com/apppasswords " +
+                          "(connecté en velos-cargo@artisansverts.energy) puis partage-le pour qu'il soit posé en secret Firebase.",
+                      );
+                    } else {
+                      alert("Envoi échoué : " + msg);
+                    }
                   } finally {
                     setBusy(null);
                   }
@@ -2414,11 +2366,8 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                 disabled={busy === "exportCsvPrep"}
                 className="text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-700 font-medium whitespace-nowrap disabled:opacity-50"
               >
-                {busy === "exportCsvPrep" ? "⏳…" : "📤 Envoyer à Tiffany"}
+                {busy === "exportCsvPrep" ? "⏳ Envoi…" : "📤 Envoyer à Tiffany"}
               </button>
-            </div>
-            <div className="text-[11px] text-emerald-800 italic">
-              💡 Le CSV se télécharge + Gmail s&apos;ouvre pré-rempli. Attache le fichier dans le mail (bouton 📎) et envoie.
             </div>
           </div>
         )}
