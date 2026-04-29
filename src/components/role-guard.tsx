@@ -16,7 +16,9 @@ const ALLOWED: Record<EquipeRole, string[]> = {
   preparateur: ["/livraisons", "/preparation", "/tournee-execute"],
   chef: ["/livraisons", "/clients", "/equipe", "/preparation", "/chargement", "/livraison", "/montage", "/tournee-execute"],
   chauffeur: ["/livraisons", "/chargement", "/livraison", "/tournee-execute"],
-  monteur: ["/livraisons", "/montage", "/tournee-execute"],
+  // /finances est autorisé pour les monteurs : page elle-même filtre par
+  // estChefMonteur (les monteurs simples voient le 403 amber).
+  monteur: ["/livraisons", "/montage", "/tournee-execute", "/finances"],
   apporteur: ["/", "/clients", "/livraisons"],
 };
 

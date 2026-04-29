@@ -98,9 +98,12 @@ export default function FinancesPage() {
     };
   }, [from, to]);
 
-  // Garde-fou : seul le super-admin a acces a la masse salariale. Les admins
-  // standards ont la gestion ops complete mais sans donnees RH sensibles.
-  if (user && user.role !== "superadmin") {
+  // Garde-fou : super-admin = accès complet. Chef monteur (ricky) = vue
+  // restreinte aux règlements de SES monteurs (pas la masse salariale globale,
+  // pas les chauffeurs/préparateurs/apporteurs). Les admins standards et les
+  // autres rôles n'ont pas accès du tout.
+  const isChefMonteurView = user?.role === "monteur" && user?.estChefMonteur === true;
+  if (user && user.role !== "superadmin" && !isChefMonteurView) {
     return (
       <div className="max-w-2xl mx-auto bg-amber-50 border border-amber-200 rounded-xl p-6 text-amber-800">
         Cette page est réservée au super-admin (accès aux salaires/primes).
@@ -182,6 +185,61 @@ export default function FinancesPage() {
 
       {data?.ok && (
         <>
+          {/* === Règlements monteurs (section dédiée, ultra lisible) === */}
+          {(() => {
+            const monteurs = (data.byMember || [])
+              .filter((m) => m.role === "monteur")
+              .sort((a, b) => b.coutTotal - a.coutTotal);
+            if (monteurs.length === 0) return null;
+            const totalMonteurs = monteurs.reduce((s, m) => s + m.coutTotal, 0);
+            const totalVelosMontes = monteurs.reduce((s, m) => s + (m.velosPrimes || 0), 0);
+            return (
+              <div className="mb-8">
+                <div className="flex items-end justify-between mb-3">
+                  <div>
+                    <h2 className="text-lg font-semibold flex items-center gap-2">
+                      🔧 Règlements monteurs
+                    </h2>
+                    <p className="text-xs text-gray-500 mt-0.5">
+                      {totalVelosMontes} vélos montés · {monteurs.length} monteur{monteurs.length > 1 ? "s" : ""} · {fmt(totalMonteurs)} à régler
+                    </p>
+                  </div>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+                  {monteurs.map((m) => (
+                    <div key={m.id} className="bg-white rounded-xl border-2 border-emerald-200 p-4 hover:border-emerald-400 transition-colors">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="font-semibold text-gray-900 truncate">{m.nom}</div>
+                        <span className="text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-800 whitespace-nowrap">Monteur</span>
+                      </div>
+                      <div className="mt-3 grid grid-cols-2 gap-3">
+                        <div>
+                          <div className="text-[10px] uppercase tracking-wide text-gray-500">Vélos montés</div>
+                          <div className="text-2xl font-bold text-gray-900 leading-tight">{m.velosPrimes || 0}</div>
+                          <div className="text-[10px] text-gray-400">{m.jours || 0} jour{(m.jours||0) > 1 ? "s" : ""} sur le terrain</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-[10px] uppercase tracking-wide text-gray-500">À régler</div>
+                          <div className="text-2xl font-bold text-emerald-700 leading-tight">{fmt(m.coutTotal)}</div>
+                          <div className="text-[10px] text-gray-400">
+                            {m.primeVelo ? `${fmt(m.primeVelo)}/vélo` : "—"}
+                            {m.salaireJournalier ? ` · ${fmt(m.salaireJournalier)}/j` : ""}
+                          </div>
+                        </div>
+                      </div>
+                      <div className="mt-3 pt-3 border-t flex justify-between text-[11px] text-gray-500">
+                        <span>Salaire <span className="text-blue-700 font-medium">{fmt(m.coutSalaire)}</span></span>
+                        <span>Prime <span className="text-amber-700 font-medium">{fmt(m.coutPrime)}</span></span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+
+          {isChefMonteurView ? null : (
+          <>
           {/* Compteurs en tête */}
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
             <KpiCard label="Tournées" value={String(data.nbTournees ?? 0)} />
@@ -271,6 +329,8 @@ export default function FinancesPage() {
             monteurs de l&apos;équipe sur la tournée. Prime apporteur = comptée à la livraison effective (statut « livrée »)
             des clients qu&apos;il a apportés. Pour modifier les barèmes : Équipe → ouvrir une fiche → bloc « Rémunération ».
           </p>
+          </>
+          )}
         </>
       )}
     </div>

@@ -92,7 +92,17 @@ export function Sidebar() {
     };
   }, [pathname, user?.role]);
 
-  const nav = useMemo(() => (user ? NAV_BY_ROLE[user.role] : []), [user]);
+  const nav = useMemo(() => {
+    if (!user) return [];
+    const base = [...NAV_BY_ROLE[user.role]];
+    // Chef monteur (ricky) : on ajoute /finances pour suivre les règlements
+    // de ses monteurs. Garde le menu monteur pour ne pas perdre /livraisons
+    // et /montage.
+    if (user.role === "monteur" && user.estChefMonteur) {
+      base.push({ href: "/finances", label: "Règlements", icon: "💶" });
+    }
+    return base;
+  }, [user]);
 
   const logout = () => {
     clearCurrentUser();

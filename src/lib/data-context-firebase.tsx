@@ -352,7 +352,12 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
     // commentaire firestore.rules 2026-04-29). Sans ces filtres, un
     // chauffeur/monteur loggué verrait TOUTES les livraisons dans /livraisons.
     const chauffeurId = currentUser?.role === "chauffeur" ? currentUser.id : null;
-    const monteurId = currentUser?.role === "monteur" ? currentUser.id : null;
+    // Chef d'équipe monteur (ricky) : monteur avec flag estChefMonteur → voit
+    // TOUTES les livraisons (= toutes les tournées des monteurs qu'il pilote).
+    // Sans ça, il ne verrait que les livraisons où il est lui-même affecté.
+    const monteurId = currentUser?.role === "monteur" && !currentUser.estChefMonteur
+      ? currentUser.id
+      : null;
     const preparateurId = currentUser?.role === "preparateur" ? currentUser.id : null;
 
     const clientsQuery = apporteurLower
@@ -415,7 +420,7 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
     // non. Sans ce dep, un apporteur qui se loggue après un admin garderait
     // l'ancien snapshot global et se ferait rejeter par les rules.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [currentUser?.id, currentUser?.role, currentUser?.nom]);
+  }, [currentUser?.id, currentUser?.role, currentUser?.nom, currentUser?.estChefMonteur]);
 
   // Pas de refresh manuel : Firestore est déjà temps réel.
   // On garde un no-op compatible avec l'API existante.

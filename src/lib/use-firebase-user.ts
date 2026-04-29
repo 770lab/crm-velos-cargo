@@ -25,6 +25,12 @@ export type EquipeMemberDoc = {
   actif: boolean;
   notes?: string | null;
   legacyId?: string;
+  /** Monteur référent qui pilote les autres monteurs : voit toutes les
+   *  tournées des monteurs (pas seulement les siennes). */
+  estChefMonteur?: boolean;
+  /** Taux de règlement par vélo monté (en €). Sert au calcul des règlements
+   *  affichés dans /finances. Si absent, on retombe sur le taux par défaut. */
+  tauxParVeloMonte?: number;
 };
 
 export type FirebaseUserState = {
@@ -91,7 +97,12 @@ export function useFirebaseUser(): FirebaseUserState {
           }
           // Compat legacy : pages qui utilisent encore useCurrentUser() continuent
           // de fonctionner. À retirer quand toutes les pages utilisent useFirebaseUser.
-          setCurrentUser({ id: user.uid, nom: data.nom, role: data.role });
+          setCurrentUser({
+            id: user.uid,
+            nom: data.nom,
+            role: data.role,
+            estChefMonteur: data.estChefMonteur === true,
+          });
           setState({
             loading: false,
             user,
