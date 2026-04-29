@@ -105,6 +105,19 @@ async function uploadDataUrl(path: string, dataUrl: string, mimeOverride?: strin
   return getDownloadURL(r);
 }
 
+// Token unique par étiquette carton (29-04 12h30, demande Yoann anti-double-scan).
+// Format CT-XXXXXXXX, 31 chars sans 0/O/1/I/L pour éviter confusion. 31^8 ≈
+// 852Md combinaisons → collision ultra-rare. Préfixe CT distingue d'un FNUCI
+// (BC...) côté logs/debug.
+const CARTON_TOKEN_CHARS = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+function generateCartonToken(): string {
+  let s = "";
+  for (let i = 0; i < 8; i++) {
+    s += CARTON_TOKEN_CHARS[Math.floor(Math.random() * CARTON_TOKEN_CHARS.length)];
+  }
+  return `CT-${s}`;
+}
+
 // -------- catalog --------
 
 export const FIRESTORE_ACTIONS = new Set<string>([
@@ -133,6 +146,8 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "markVeloCharge",
   "markVeloLivreScan",
   "markNextVeloForEtape",
+  "markVeloByCartonToken",
+  "ensureCartonTokensForClient",
   "markVeloMontePhoto",
   "markClientAsDelivered",
   "unmarkVeloEtape",
@@ -1571,6 +1586,314 @@ export async function runFirestoreAction(
         clientName,
         etape: stage.dateField,
         remaining: candidates.length - 1, // après ce scan
+        date: new Date().toISOString(),
+      };
+    }
+
+    case "ensureCartonTokensForClient": {
+      // Garantit qu'à l'impression des étiquettes, chaque vélo du client a un
+      // cartonToken unique (29-04 12h30 anti-double-scan). Si déjà présent →
+      // no-op. Sinon génère + écrit en batch (1 round-trip Firestore par
+      // client de 28 vélos au lieu de 28 round-trips).
+      //
+      // Unicité globale : on collecte les tokens existants (sur l'ensemble
+      // des vélos non annulés) avant génération pour éviter toute collision.
+      const clientId = getRequired(body, "clientId");
+      const cSnap = await getDocs(
+        query(collection(db, "velos"), where("clientId", "==", clientId)),
+      );
+      const veloDocs = cSnap.docs.filter((d) => !(d.data() as { annule?: boolean }).annule);
+
+      // Collecte tokens existants (globalement) pour anti-collision.
+      const allSnap = await getDocs(collection(db, "velos"));
+      const existing = new Set<string>();
+      for (const d of allSnap.docs) {
+        const t = (d.data() as { cartonToken?: string }).cartonToken;
+        if (t) existing.add(t);
+      }
+      const genUnique = (): string => {
+        for (let i = 0; i < 12; i++) {
+          const t = generateCartonToken();
+          if (!existing.has(t)) {
+            existing.add(t);
+            return t;
+          }
+        }
+        // Statistiquement impossible (31^8 vs <100 tokens existants).
+        throw new Error("Collision cartonToken — improbable, réessayez");
+      };
+
+      const batch = writeBatch(db);
+      const result: Array<{ veloId: string; fnuci: string | null; cartonToken: string }> = [];
+      let written = 0;
+      for (const d of veloDocs) {
+        const data = d.data() as { fnuci?: string | null; cartonToken?: string };
+        let token = data.cartonToken || null;
+        if (!token) {
+          token = genUnique();
+          batch.update(d.ref, { cartonToken: token, updatedAt: ts() });
+          written++;
+        }
+        result.push({
+          veloId: d.id,
+          fnuci: data.fnuci || null,
+          cartonToken: token,
+        });
+      }
+      if (written > 0) await batch.commit();
+      return { ok: true, written, total: veloDocs.length, velos: result };
+    }
+
+    case "markVeloByCartonToken": {
+      // Scan QR carton avec token unique (29-04 12h30) : remplace
+      // markNextVeloForEtape pour chargement / livraison. Empêche le double-
+      // scan d'une même étiquette puisqu'on cible un vélo précis et qu'on
+      // refuse si déjà fait pour cette étape.
+      //
+      // Vérifs identiques à markVeloCharge/LivreScan : HORS_TOURNEE,
+      // ETAPE_PRECEDENTE_MANQUANTE, LIFO ORDRE_VERROUILLE, et nouveauté
+      // CARTON_DEJA_SCANNE quand on rescanne la même étiquette.
+      const cartonToken = getRequired(body, "cartonToken");
+      const tourneeId = getRequired(body, "tourneeId");
+      const etape = getRequired(body, "etape"); // chargement | livraisonScan
+      const userId = getString(body, "userId");
+      const expectedClientId = getString(body, "expectedClientId");
+
+      const stageMap: Record<string, {
+        dateField: string;
+        userField: string;
+        requires: string[];
+        requiresLabels: string[];
+        lifoReverse: boolean;
+        verb: string;
+      }> = {
+        chargement: {
+          dateField: "dateChargement",
+          userField: "chargeurId",
+          requires: ["datePreparation"],
+          requiresLabels: ["préparation"],
+          lifoReverse: true,
+          verb: "chargé",
+        },
+        livraisonScan: {
+          dateField: "dateLivraisonScan",
+          userField: "livreurId",
+          requires: ["datePreparation", "dateChargement"],
+          requiresLabels: ["préparation", "chargement"],
+          lifoReverse: false,
+          verb: "livré",
+        },
+      };
+      const stage = stageMap[etape];
+      if (!stage) {
+        return { error: `étape invalide: ${etape}`, code: "ETAPE_INVALIDE" };
+      }
+
+      // 1. Résoudre cartonToken → vélo
+      const vSnap = await getDocs(
+        query(collection(db, "velos"), where("cartonToken", "==", cartonToken)),
+      );
+      const matches = vSnap.docs.filter((d) => !(d.data() as { annule?: boolean }).annule);
+      if (matches.length === 0) {
+        return {
+          error: "Étiquette inconnue — réimprime les étiquettes de cette tournée",
+          code: "TOKEN_INCONNU",
+          cartonToken,
+        };
+      }
+      if (matches.length > 1) {
+        return {
+          error: `Token en doublon (${matches.length} vélos) — incident à corriger`,
+          code: "TOKEN_DOUBLON",
+          cartonToken,
+        };
+      }
+      const veloDoc = matches[0];
+      const velo = veloDoc.data() as Record<string, unknown>;
+      const veloClientId = velo.clientId as string | undefined;
+      if (!veloClientId) {
+        return { error: "Vélo non affilié à un client", code: "VELO_ORPHELIN", cartonToken };
+      }
+
+      // 2. Le client doit être dans la tournée
+      const livSnap = await getDocs(
+        query(
+          collection(db, "livraisons"),
+          where("tourneeId", "==", tourneeId),
+          where("clientId", "==", veloClientId),
+        ),
+      );
+      if (livSnap.empty) {
+        let veloClientName: string | null = null;
+        try {
+          const c = await getDoc(doc(db, "clients", veloClientId));
+          if (c.exists()) veloClientName = (c.data() as { entreprise?: string }).entreprise || null;
+        } catch {}
+        return {
+          error: "Étiquette d'une autre tournée",
+          code: "HORS_TOURNEE",
+          veloClientId,
+          veloClientName,
+        };
+      }
+      const livraisonClientName = (livSnap.docs[0].data() as {
+        clientSnapshot?: { entreprise?: string };
+      }).clientSnapshot?.entreprise || null;
+
+      // 3. Si verrou client côté front, refuse direct si pas le bon
+      if (expectedClientId && expectedClientId !== veloClientId) {
+        return {
+          error: `QR autre client — termine ${livraisonClientName || "le client courant"} d'abord`,
+          code: "VERROU_CLIENT",
+          veloClientId,
+          veloClientName: livraisonClientName,
+          expectedClientId,
+        };
+      }
+
+      const bypassOrderLock = body.bypassOrderLock === true;
+
+      // 4. Étape déjà faite pour ce vélo précis → empêche le double-scan
+      if (velo[stage.dateField]) {
+        const t = velo[stage.dateField] as { toDate?: () => Date } | string | undefined;
+        const dateExisting = typeof t === "string" ? t : t?.toDate?.()?.toISOString() || null;
+        return {
+          ok: true,
+          alreadyDone: true,
+          code: "CARTON_DEJA_SCANNE",
+          fnuci: (velo.fnuci as string) || null,
+          veloId: veloDoc.id,
+          clientId: veloClientId,
+          clientName: livraisonClientName,
+          etape: stage.dateField,
+          date: dateExisting,
+          message: `Cette étiquette a déjà été ${stage.verb}e — passe au carton suivant`,
+        };
+      }
+
+      // 5. Prérequis (étapes précédentes obligatoires)
+      const missing: string[] = [];
+      for (let i = 0; i < stage.requires.length; i++) {
+        if (!velo[stage.requires[i]]) missing.push(stage.requiresLabels[i]);
+      }
+      if (!bypassOrderLock && missing.length > 0) {
+        return {
+          error: `Impossible : étape${missing.length > 1 ? "s" : ""} précédente${missing.length > 1 ? "s" : ""} manquante${missing.length > 1 ? "s" : ""} (${missing.join(", ")})`,
+          code: "ETAPE_PRECEDENTE_MANQUANTE",
+          veloClientId,
+          veloClientName: livraisonClientName,
+          missing,
+        };
+      }
+
+      // 6. Verrou LIFO inter-clients (même logique que markVeloCharge/LivreScan)
+      try {
+        if (bypassOrderLock) throw new Error("__bypass_admin__");
+        const allLivSnap = await getDocs(
+          query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
+        );
+        const ordreFromNotesScan = (notes: unknown): number | null => {
+          if (typeof notes !== "string") return null;
+          const m = notes.match(/arr[êe]t\s+(\d+)\s*\//i);
+          return m ? parseInt(m[1], 10) : null;
+        };
+        type CDef = { clientId: string; ordre: number | null; entreprise: string };
+        const seen = new Set<string>();
+        const cdefs: CDef[] = [];
+        for (const d of allLivSnap.docs) {
+          const data = d.data() as {
+            clientId?: string;
+            statut?: string;
+            ordre?: number;
+            notes?: string;
+            clientSnapshot?: { entreprise?: string };
+          };
+          if (String(data.statut || "").toLowerCase() === "annulee") continue;
+          const cid = data.clientId;
+          if (!cid || seen.has(cid)) continue;
+          seen.add(cid);
+          const ordre =
+            typeof data.ordre === "number"
+              ? data.ordre
+              : ordreFromNotesScan(data.notes);
+          cdefs.push({
+            clientId: cid,
+            ordre,
+            entreprise: data.clientSnapshot?.entreprise || "",
+          });
+        }
+        const allHaveOrdre = cdefs.length > 0 && cdefs.every((c) => typeof c.ordre === "number");
+        if (allHaveOrdre && cdefs.length > 1) {
+          const sorted = cdefs.slice().sort((a, b) => (a.ordre as number) - (b.ordre as number));
+          const ordered = stage.lifoReverse ? sorted.slice().reverse() : sorted;
+          const cids = ordered.map((c) => c.clientId);
+          const totalsByClient = new Map<string, { total: number; done: number }>();
+          for (let i = 0; i < cids.length; i += 30) {
+            const chunk = cids.slice(i, i + 30);
+            if (!chunk.length) continue;
+            const vSnap2 = await getDocs(
+              query(collection(db, "velos"), where("clientId", "in", chunk)),
+            );
+            for (const d of vSnap2.docs) {
+              const vd = d.data() as Record<string, unknown>;
+              if (vd.annule === true) continue;
+              const cid = vd.clientId as string;
+              if (!cid) continue;
+              const cur = totalsByClient.get(cid) || { total: 0, done: 0 };
+              cur.total++;
+              if (vd[stage.dateField]) cur.done++;
+              totalsByClient.set(cid, cur);
+            }
+          }
+          const firstUnfinished = ordered.find((c) => {
+            const t = totalsByClient.get(c.clientId);
+            return !t || t.done < t.total;
+          });
+          if (firstUnfinished && firstUnfinished.clientId !== veloClientId) {
+            return {
+              error: `Ordre verrouillé : termine d'abord ${firstUnfinished.entreprise || "le client précédent"}`,
+              code: "ORDRE_VERROUILLE",
+              veloClientId,
+              veloClientName: livraisonClientName,
+              expectedClientId: firstUnfinished.clientId,
+              expectedClientName: firstUnfinished.entreprise || null,
+            };
+          }
+        }
+      } catch {
+        // Faille silencieuse OK : on protège le scan terrain.
+      }
+
+      // 7. Marque l'étape
+      const updates: Body = {
+        [stage.dateField]: ts(),
+        updatedAt: ts(),
+      };
+      if (userId) updates[stage.userField] = userId;
+      await updateDoc(veloDoc.ref, updates);
+
+      // 8. Compteur restant pour le client (côté UX "reste N")
+      const allClientVelosSnap = await getDocs(
+        query(collection(db, "velos"), where("clientId", "==", veloClientId)),
+      );
+      let remaining = 0;
+      for (const d of allClientVelosSnap.docs) {
+        const vd = d.data() as Record<string, unknown>;
+        if (vd.annule === true) continue;
+        if (d.id === veloDoc.id) continue; // on vient de le marquer
+        if (!vd[stage.dateField]) remaining++;
+      }
+
+      return {
+        ok: true,
+        alreadyDone: false,
+        veloId: veloDoc.id,
+        fnuci: (velo.fnuci as string) || null,
+        cartonToken,
+        clientId: veloClientId,
+        clientName: livraisonClientName,
+        etape: stage.dateField,
+        remaining,
         date: new Date().toISOString(),
       };
     }

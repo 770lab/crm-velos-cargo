@@ -360,42 +360,69 @@ function Inner({ mode }: { mode: ScanMode }) {
   // marque le 1er vélo du client non-encore-fait pour l'étape en cours
   // (chargement ou livraison). Si focusClientId est défini (page ouverte
   // depuis la vignette d'un client précis), on refuse les QR d'autres clients.
-  const handleQrCartonScan = useCallback(async (scannedClientId: string) => {
+  const handleQrCartonScan = useCallback(async (scanned: string) => {
     if (mode === "preparation") return; // jamais en prép
     const etape = mode === "chargement" ? "chargement" : "livraisonScan";
 
-    // Le client effectivement verrouillé : URL focus > verrou auto
+    // Détection format scanné : nouvelle étiquette = "CT-XXXXXXXX", legacy = clientId.
+    const isCartonToken = /^CT-[A-Z0-9]{6,}$/.test(scanned);
+    // Client verrouillé (URL focus > verrou auto)
     const lockedClientId = focusClientId || autoLockedClientId;
 
-    // Si un client est déjà verrouillé et le QR scanné ne match pas → refus.
-    if (lockedClientId && scannedClientId !== lockedClientId) {
-      beep(false);
-      const lockedName = (progression && "clients" in progression)
-        ? progression.clients.find((c) => c.clientId === lockedClientId)?.entreprise
-        : null;
-      setQrScanFeedback((prev) => [
-        ...prev,
-        { label: `⛔ QR autre client — termine ${lockedName || "le client en cours"}`, ok: false, at: Date.now() },
-      ]);
-      return;
-    }
-
     try {
-      const r = (await gasPost("markNextVeloForEtape", {
-        clientId: scannedClientId,
-        tourneeId,
-        etape,
-        userId,
-        bypassOrderLock: bypassOrderLock || undefined,
-      })) as
-        | { ok: true; fnuci: string | null; clientName: string | null; remaining: number }
-        | { ok?: false; error: string; code?: string; clientName?: string | null; expectedClientName?: string | null };
+      let r:
+        | { ok: true; alreadyDone?: boolean; code?: string; fnuci: string | null; clientId: string; clientName: string | null; remaining: number; message?: string }
+        | { ok?: false; error: string; code?: string; veloClientId?: string; veloClientName?: string | null; clientName?: string | null; expectedClientName?: string | null };
+
+      if (isCartonToken) {
+        // Nouvelle voie : token unique → markVeloByCartonToken (anti-double-scan)
+        r = (await gasPost("markVeloByCartonToken", {
+          cartonToken: scanned,
+          tourneeId,
+          etape,
+          userId,
+          expectedClientId: lockedClientId || undefined,
+          bypassOrderLock: bypassOrderLock || undefined,
+        })) as typeof r;
+      } else {
+        // Legacy : QR encode un clientId → markNextVeloForEtape (1er vélo non-fait)
+        if (lockedClientId && scanned !== lockedClientId) {
+          beep(false);
+          const lockedName = (progression && "clients" in progression)
+            ? progression.clients.find((c) => c.clientId === lockedClientId)?.entreprise
+            : null;
+          setQrScanFeedback((prev) => [
+            ...prev,
+            { label: `⛔ QR autre client — termine ${lockedName || "le client en cours"}`, ok: false, at: Date.now() },
+          ]);
+          return;
+        }
+        r = (await gasPost("markNextVeloForEtape", {
+          clientId: scanned,
+          tourneeId,
+          etape,
+          userId,
+          bypassOrderLock: bypassOrderLock || undefined,
+        })) as typeof r;
+      }
+
       if ("ok" in r && r.ok) {
+        const clientId = r.clientId;
+        // Cas double-scan : alreadyDone=true → on n'incrémente pas mais on
+        // affiche un feedback orange (pas erreur, juste avertissement)
+        if (r.alreadyDone) {
+          beep(false);
+          setQrScanFeedback((prev) => [
+            ...prev,
+            { label: `⚠ ${r.clientName || "Client"} · ${r.message || "déjà scanné"}`, ok: false, at: Date.now() },
+          ]);
+          return;
+        }
         beep(true);
         const fn = r.fnuci || "(sans FNUCI)";
-        // Verrouille auto sur ce client si pas déjà fait (et pas de focusClientId).
-        if (!focusClientId && !autoLockedClientId) {
-          setAutoLockedClientId(scannedClientId);
+        // Verrouille auto sur ce client si pas déjà fait
+        if (!focusClientId && !autoLockedClientId && clientId) {
+          setAutoLockedClientId(clientId);
         }
         setQrScanFeedback((prev) => [
           ...prev,
@@ -405,7 +432,6 @@ function Inner({ mode }: { mode: ScanMode }) {
             at: Date.now(),
           },
         ]);
-        // Si remaining == 0, le client est complet → libère le verrou auto.
         if (r.remaining === 0 && !focusClientId) {
           setAutoLockedClientId(null);
           setQrScanFeedback((prev) => [
@@ -413,7 +439,6 @@ function Inner({ mode }: { mode: ScanMode }) {
             { label: `✅ ${r.clientName || "Client"} terminé — scanne le client suivant`, ok: true, at: Date.now() },
           ]);
         }
-        // Recharger en arrière-plan pour mettre à jour les compteurs.
         void loadProgression();
       } else {
         beep(false);
@@ -421,9 +446,10 @@ function Inner({ mode }: { mode: ScanMode }) {
         const target = "expectedClientName" in r && r.expectedClientName
           ? ` (attendu : ${r.expectedClientName})`
           : "";
+        const cn = "clientName" in r ? r.clientName : "veloClientName" in r ? r.veloClientName : null;
         setQrScanFeedback((prev) => [
           ...prev,
-          { label: `${r.clientName || "Client"} · ${err}${target}`, ok: false, at: Date.now() },
+          { label: `${cn || "Client"} · ${err}${target}`, ok: false, at: Date.now() },
         ]);
       }
     } catch (e) {

@@ -1,13 +1,20 @@
 "use client";
 import { Suspense, useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { gasGet } from "@/lib/gas";
+import { gasGet, gasPost } from "@/lib/gas";
 
-type Velo = { veloId: string; fnuci: string | null };
+type Velo = { veloId: string; fnuci: string | null; cartonToken?: string | null };
 type Client = { clientId: string; entreprise: string; ville: string; adresse: string; codePostal: string; velos: Velo[] };
 type Progression =
   | { tourneeId: string; datePrevue: string | null; clients: Client[] }
   | { error: string };
+
+type EnsureTokensResp = {
+  ok: true;
+  written: number;
+  total: number;
+  velos: Array<{ veloId: string; fnuci: string | null; cartonToken: string }>;
+};
 
 // Format imprimante thermique 100×150 mm (rouleau standard) — 1 étiquette
 // par "planche" (pas de découpe à faire). Anciennement A4 6/feuille.
@@ -31,8 +38,52 @@ function EtiquettesPage() {
 
   useEffect(() => {
     if (!tourneeId) return;
-    gasGet("getTourneeProgression", { tourneeId }).then(setData);
-  }, [tourneeId]);
+    let cancelled = false;
+    (async () => {
+      const prog = (await gasGet("getTourneeProgression", { tourneeId })) as Progression;
+      if (cancelled) return;
+      if ("error" in prog) {
+        setData(prog);
+        return;
+      }
+      // Génère les cartonToken manquants pour chaque client (1 batch / client),
+      // puis patch les vélos avec le token retourné. Indispensable pour que
+      // chaque étiquette ait un QR unique (anti-double-scan 29-04 12h30).
+      const targetClients = focusClientId
+        ? prog.clients.filter((c) => c.clientId === focusClientId)
+        : prog.clients;
+      const tokenByVeloId = new Map<string, string>();
+      for (const c of targetClients) {
+        try {
+          const r = (await gasPost("ensureCartonTokensForClient", {
+            clientId: c.clientId,
+          })) as EnsureTokensResp;
+          if (r && "ok" in r && r.ok) {
+            for (const v of r.velos) {
+              if (v.cartonToken) tokenByVeloId.set(v.veloId, v.cartonToken);
+            }
+          }
+        } catch {
+          // Si l'écriture des tokens échoue (réseau, perms), on imprime quand
+          // même avec les tokens existants — l'étiquette sans token affichera
+          // un QR vide et l'opérateur saura qu'il faut réimprimer.
+        }
+      }
+      if (cancelled) return;
+      // Re-mappe la progression avec les tokens enrichis.
+      setData({
+        ...prog,
+        clients: prog.clients.map((c) => ({
+          ...c,
+          velos: c.velos.map((v) => ({
+            ...v,
+            cartonToken: tokenByVeloId.get(v.veloId) || v.cartonToken || null,
+          })),
+        })),
+      });
+    })();
+    return () => { cancelled = true; };
+  }, [tourneeId, focusClientId]);
 
   if (!tourneeId) return <div className="p-6 text-red-600">Paramètre tourneeId manquant.</div>;
 
@@ -222,11 +273,14 @@ function EtiquettesPage() {
         {pages.map((pageItems, pi) => (
           <div key={pi} className="sheet mx-auto print:mx-0 my-3 print:my-0 shadow print:shadow-none">
             {pageItems.map(({ client, velo, index, total, clientLoadOrder, totalClients }) => {
-              // QR identique pour TOUTES les étiquettes d'un même client : on
-              // encode le clientId (= identifiant interne CRM, sert au suivi
-              // chargement/livraison/montage). Le BicyCode FNUCI est hors CRM
-              // après la préparation, on le garde juste comme info en petit.
-              const qrPayload = client.clientId;
+              // QR UNIQUE par étiquette (29-04 12h30 anti-double-scan) : on
+              // encode le cartonToken du vélo (= slot précis du client). Plus
+              // de risque que l'opérateur scanne 28× la même étiquette pour
+              // valider 28 vélos fictifs : chaque token ne peut être marqué
+              // qu'une fois par étape. Si cartonToken absent (rare, ex erreur
+              // ensureCartonTokensForClient), fallback sur clientId mais le
+              // serveur retournera TOKEN_INCONNU → l'opérateur réimprime.
+              const qrPayload = velo.cartonToken || client.clientId;
               const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(qrPayload)}`;
               // En mode focus 1 client, l'ordre de chargement n'a pas de sens
               // (le seul client est forcément "1/1"). On le masque.
