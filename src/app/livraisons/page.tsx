@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import { gasGet, gasPost } from "@/lib/gas";
 import { useData, type LivraisonRow, type EquipeMember, type ClientPoint, type EquipeRole } from "@/lib/data-context";
 import { useCurrentUser } from "@/lib/current-user";
@@ -255,6 +255,46 @@ export default function LivraisonsPage() {
     return filteredTournees.filter((t) => t.livraisons[0]?.chauffeurId === filtreChauffeurId);
   }, [filteredTournees, filtreChauffeurId]);
 
+  // Chaînage des départs par chauffeur. Quand un chauffeur a 2+ tournées
+  // dans la même journée (ex Armel le 4 mai), T2 ne peut PAS démarrer à 8h30
+  // comme T1 — il faut attendre que T1 soit finie + 30 min de rechargement.
+  // Sans ça, mes calculs computeArrivalTimes affichent T1 et T2 du même
+  // chauffeur démarrant à la même heure (incohérent — cf. retour Yoann
+  // 29-04 02h23). On chaîne par tourneeNumero ascendant (= ordre de création
+  // qui reflète l'ordre Gemini).
+  const tourneeDepartures = useMemo(() => {
+    const result = new Map<string, { min: number; max: number }>();
+    const byDayDriver = new Map<string, Tournee[]>();
+    for (const t of chauffeurFilteredTournees) {
+      if (!t.datePrevue) continue;
+      const cid = t.livraisons[0]?.chauffeurId;
+      if (!cid) continue; // pas de chaînage sans chauffeur (retraits, non assignés)
+      const day = isoDate(t.datePrevue);
+      const key = `${day}|${cid}`;
+      if (!byDayDriver.has(key)) byDayDriver.set(key, []);
+      byDayDriver.get(key)!.push(t);
+    }
+    for (const ts of byDayDriver.values()) {
+      ts.sort((a, b) => (a.numero || 0) - (b.numero || 0));
+      let curMin = DEPART_MIN_DEFAULT;
+      let curMax = DEPART_MAX_DEFAULT;
+      for (const t of ts) {
+        const tourneeKey = (t.tourneeId || "no-tid") + "|" + (t.datePrevue ? isoDate(t.datePrevue) : "");
+        result.set(tourneeKey, { min: curMin, max: curMax });
+        const monteurs = t.nbMonteurs > 0 ? t.nbMonteurs : MONTEURS_PAR_EQUIPE;
+        const dureeMin = estimateTourneeMinutes(t, monteurs);
+        // Pause si T1 traverse midi (45 min systématique pour les tournées du
+        // matin, qui finissent l'après-midi). Estimation grossière : pause
+        // prise si départ avant 12h ET fin après 12h.
+        const fin = curMin + dureeMin;
+        const pauseDelay = curMin < PAUSE_DEJEUNER_DEBUT && fin > PAUSE_DEJEUNER_DEBUT ? PAUSE_DEJEUNER_DUREE : 0;
+        curMin += dureeMin + pauseDelay + 30; // 30 min recharge dépôt avant T2
+        curMax += dureeMin + pauseDelay + 30;
+      }
+    }
+    return result;
+  }, [chauffeurFilteredTournees]);
+
   // Auto-navigation : quand une recherche filtre, naviguer à la date de la première tournée trouvée
   useEffect(() => {
     if (!searchQuery || filteredTournees.length === 0) return;
@@ -364,6 +404,7 @@ export default function LivraisonsPage() {
   }
 
   return (
+    <TourneeDeparturesContext.Provider value={tourneeDepartures}>
     <div>
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <div className="min-w-0">
@@ -508,6 +549,7 @@ export default function LivraisonsPage() {
         />
       )}
     </div>
+    </TourneeDeparturesContext.Provider>
   );
 }
 
@@ -1014,9 +1056,21 @@ const DEPART_MAX_DEFAULT = 9 * 60; // 9h00
 const PAUSE_DEJEUNER_DEBUT = 12 * 60; // 12h00 = début de la fenêtre de pause
 const PAUSE_DEJEUNER_DUREE = 45; // 45 min de pause moyenne (cf. retour Yoann)
 
+// Map des départs réels par tournée (chaînés par chauffeur). Calculé dans
+// LivraisonsPage et exposé via context pour que TourneeCard sache quand
+// commencer pour T2/T3 d'un même chauffeur.
+type DepartureMap = Map<string, { min: number; max: number }>;
+const TourneeDeparturesContext = createContext<DepartureMap | null>(null);
+
+function tourneeKeyForDeparture(t: Tournee): string {
+  return (t.tourneeId || "no-tid") + "|" + (t.datePrevue ? isoDate(t.datePrevue) : "");
+}
+
 function computeArrivalTimes(
   tournee: Tournee,
   monteurs: number,
+  departMin: number = DEPART_MIN_DEFAULT,
+  departMax: number = DEPART_MAX_DEFAULT,
 ): Array<{ minMin: number; maxMin: number } | null> {
   if (tournee.mode === "retrait") return tournee.livraisons.map(() => null);
   const eff = Math.max(1, monteurs);
@@ -1037,8 +1091,8 @@ function computeArrivalTimes(
       cumulMin += km / 0.5; // 30 km/h = 0.5 km/min
     }
     // Heure d'arrivée brute (sans pause), bornes min et max.
-    let arriveeMin = DEPART_MIN_DEFAULT + cumulMin;
-    let arriveeMax = DEPART_MAX_DEFAULT + cumulMin;
+    let arriveeMin = departMin + cumulMin;
+    let arriveeMax = departMax + cumulMin;
     if (!pausePrise && arriveeMin >= PAUSE_DEJEUNER_DEBUT) {
       // L'arrivée chez ce client tombe à 12h ou plus tard : on prend la pause
       // AVANT cet arrêt. Décale aussi le cumul pour les arrêts suivants.
@@ -1047,13 +1101,22 @@ function computeArrivalTimes(
       arriveeMax += PAUSE_DEJEUNER_DUREE;
       pausePrise = true;
     }
-    // Arrondi au :30 le plus proche pour donner des heures rondes
-    // (Yoann 29-04 02h20). 8h47 → 9h00, 9h45 → 10h00, 10h15 → 10h30.
-    out.push({
-      minMin: Math.round(arriveeMin / 30) * 30,
-      maxMin: Math.round(arriveeMax / 30) * 30,
-    });
+    // La fourchette annoncée au client = fenêtre de présence du chauffeur.
+    // borne min = arrivée min (au plus tôt il peut être chez vous)
+    // borne max = arrivée max + temps de montage chez ce client
+    //            (au plus tard il aura terminé chez vous)
+    // Yoann 29-04 02h25 : avant on arrondissait juste l'arrivée → toutes les
+    // fourchettes étaient de 30 min indépendamment du nb de vélos. Maintenant
+    // un client à 1 vélo a ~30 min de fenêtre, à 10 vélos ~1h30 → annonce juste.
     const montageMin = ((liv.nbVelos ?? 0) * MINUTES_PAR_VELO) / eff;
+    out.push({
+      // floor au :30 inférieur pour la borne min (arrondi prudent : on ne
+      // promet pas plus tôt que ce qui est réaliste)
+      minMin: Math.floor(arriveeMin / 30) * 30,
+      // ceil au :30 supérieur pour la borne max (on ne promet pas plus tard
+      // que ce qui couvre le temps de montage chez le client)
+      maxMin: Math.ceil((arriveeMax + montageMin) / 30) * 30,
+    });
     cumulMin += montageMin;
     if (c.lat && c.lng) prev = { lat: c.lat, lng: c.lng };
   }
@@ -1086,9 +1149,19 @@ function TourneeCard({
   const palette = modePalette(tournee.mode, chauffeurNom);
   const libre = capaciteRestante(tournee.mode, tournee.totalVelos);
   const peutAjouter = libre >= SEUIL_2EME_TOURNEE && tournee.statutGlobal !== "livree" && tournee.statutGlobal !== "annulee";
-  // Fourchette horaire estimée chez chaque client (départ dépôt 8h30-9h00).
+  // Fourchette horaire estimée chez chaque client. Le départ est SOIT
+  // 8h30-9h00 (1re tournée du chauffeur ce jour-là), SOIT chaîné après la
+  // tournée précédente du même chauffeur (cas T2/T3 d'Armel le 4 mai).
+  // Voir TourneeDeparturesContext rempli par LivraisonsPage.
   const monteursTournee = tournee.nbMonteurs > 0 ? tournee.nbMonteurs : MONTEURS_PAR_EQUIPE;
-  const arrivals = computeArrivalTimes(tournee, monteursTournee);
+  const departures = useContext(TourneeDeparturesContext);
+  const dep = departures?.get(tourneeKeyForDeparture(tournee));
+  const departMinEffectif = dep?.min ?? DEPART_MIN_DEFAULT;
+  const departMaxEffectif = dep?.max ?? DEPART_MAX_DEFAULT;
+  const arrivals = computeArrivalTimes(tournee, monteursTournee, departMinEffectif, departMaxEffectif);
+  // Si le départ est nettement plus tard que 9h, c'est une 2e+ tournée du
+  // chauffeur. On affiche un petit bandeau pour rappeler le contexte.
+  const isSecondaryTourneeForDriver = departMinEffectif > DEPART_MAX_DEFAULT + 30;
   // Check affectation : on regarde la 1re livraison (les affectations sont
   // par tournée, donc toutes ses livraisons partagent les mêmes équipes via
   // assignTournee).
