@@ -89,7 +89,12 @@ function EtiquettesPage() {
         }
         .label {
           width: 100%; height: 100%;
-          padding: 5mm;
+          /* Marges verticales 12mm (au lieu de 5mm) pour absorber le decalage
+             cumule du rouleau thermique : sur 20-30 etiquettes d'affilee, le
+             papier derive et coupait le QR. Avec 12mm haut + 12mm bas, on a
+             24mm de safety total → ~3-4 etiquettes de drift toleres avant
+             risque. Lateraux a 5mm (le contenu ne s'etend pas en largeur). */
+          padding: 12mm 5mm;
           box-sizing: border-box;
           display: flex; flex-direction: column;
           color: #111;
