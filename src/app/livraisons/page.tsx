@@ -4356,10 +4356,22 @@ function BriefJourneeModal({
       return da - db;
     });
 
-    // Label "matin / après-midi / soir" par chauffeur, sur la base de l'heure
-    // de départ. Évite "TOURNÉE 2 / TOURNÉE 37" qui ne parlent pas aux équipes
-    // (Yoann 29-04 23h38).
+    // Label MATIN / APRÈS-MIDI selon l'heure de FIN réelle de la tournée.
+    // Règle Yoann (29-04 23h54) : termine ≤ 13h → MATIN, sinon APRÈS-MIDI.
+    // En cas de collision (2 tournées matin pour le même chauffeur), on
+    // suffixe " 2", " 3"… dans l'ordre chronologique.
     const tKey = (t: Tournee) => t.tourneeId || t.livraisons[0]?.id || "";
+    const CUTOFF_MATIN_MIN = 13 * 60;
+    const computeEndMin = (t: Tournee): number => {
+      const dep = tourneeDepartures.get(tourneeKeyForDeparture(t));
+      const departMax = dep?.max ?? DEPART_MAX_DEFAULT;
+      const liv0 = t.livraisons[0];
+      const monteursCount = (liv0?.monteurIds || []).length || 1;
+      const plan = computeDeployPlan(t.livraisons, computeSegments(t.livraisons), monteursCount);
+      return departMax + Math.round(plan.totalElapsed);
+    };
+    const baseSlot = (t: Tournee) =>
+      computeEndMin(t) <= CUTOFF_MATIN_MIN ? "MATIN" : "APRÈS-MIDI";
     const slotByTourneeId = new Map<string, string>();
     {
       const byChauf = new Map<string, Tournee[]>();
@@ -4371,14 +4383,16 @@ function BriefJourneeModal({
       for (const [, list] of byChauf) {
         if (list.length === 1) {
           slotByTourneeId.set(tKey(list[0]), "");
-        } else if (list.length === 2) {
-          slotByTourneeId.set(tKey(list[0]), "MATIN");
-          slotByTourneeId.set(tKey(list[1]), "APRÈS-MIDI");
-        } else {
-          for (let i = 0; i < list.length; i++) {
-            const lbl = i === 0 ? "MATIN" : i === list.length - 1 ? "SOIR" : `APRÈS-MIDI ${i}`;
-            slotByTourneeId.set(tKey(list[i]), lbl);
-          }
+          continue;
+        }
+        const counts = { MATIN: 0, "APRÈS-MIDI": 0 } as Record<string, number>;
+        const totals: Record<string, number> = { MATIN: 0, "APRÈS-MIDI": 0 };
+        for (const t of list) totals[baseSlot(t)]++;
+        for (const t of list) {
+          const slot = baseSlot(t);
+          counts[slot]++;
+          const lbl = totals[slot] > 1 ? `${slot} ${counts[slot]}` : slot;
+          slotByTourneeId.set(tKey(t), lbl);
         }
       }
     }
