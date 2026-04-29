@@ -773,10 +773,22 @@ const FNUCI_PROMPT =
   "de 8 caractères alphanumériques majuscules (exemples : BCZ9CANA4D, BCA24SN97A, BC38FKZZ7H). " +
   "Le code apparaît soit en clair imprimé sur le sticker, soit encodé dans un QR code " +
   "(qui contient une URL de la forme https://moncompte.bicycode.eu/<CODE>).\n\n" +
+  "ENJEU CRITIQUE : un FNUCI faux = paiement CEE perdu pour le client. " +
+  "Lecture EXACTE obligatoire, ZÉRO devinette.\n\n" +
+  "RÈGLES ANTI-CONFUSION (caractères ambigus en OCR — relis 2 fois) :\n" +
+  "- 0 (zéro) vs O (lettre o) : le 0 a une diagonale ou est plus étroit, le O est rond.\n" +
+  "- 1 (un) vs I (lettre i) vs L (lettre l) : le 1 a un petit empattement en haut, le I est droit.\n" +
+  "- 8 (huit) vs B (lettre b) : le 8 est symétrique haut/bas, le B a deux bosses asymétriques.\n" +
+  "- 5 (cinq) vs S (lettre s) : le 5 a des angles droits, le S est arrondi.\n" +
+  "- 2 (deux) vs Z (lettre z) : le 2 a une courbe, le Z a 3 segments droits.\n" +
+  "- 6 (six) vs G (lettre g) : le 6 est fermé en bas, le G est ouvert.\n\n" +
   "TÂCHE : extrais TOUS les codes FNUCI lisibles dans l'image. Réponds uniquement par un JSON " +
   'valide au format exact : {"fnucis":["BC...","BC..."]}. ' +
   'Ne renvoie aucun texte hors du JSON. Si tu ne vois aucun code lisible, réponds {"fnucis":[]}. ' +
-  "Ne devine jamais : si un code est partiellement masqué, flou ou que tu n'es pas certain, ne le mets pas dans la liste.";
+  "Ne devine JAMAIS : si un code est partiellement masqué, flou, qu'un caractère est ambigu, " +
+  "OU si tu n'es pas 100% certain de chacun des 8 caractères, NE METS PAS le code dans fnucis. " +
+  "Mieux vaut renvoyer une liste vide qu'un code faux. " +
+  "Ne complète jamais un caractère manquant par déduction du contexte.";
 
 const FNUCI_REGEX = /^BC[A-Z0-9]{8}$/;
 
@@ -876,6 +888,23 @@ export const extractFnuciFromImage = onCall<ExtractFnuciPayload>(
       seen.add(f);
       extracted.push(f);
     }
+
+    // Audit trail anti-hallucination Gemini (Yoann 29-04 : "FNUCI faux = CEE
+    // non payé"). On log structuré pour pouvoir retrouver via Cloud Logging
+    // les FNUCI extraits par photo si un dossier est rejeté plus tard.
+    // imageHash = hash simple base64 (premiers + derniers 16 chars) pour
+    // correspondance grossière avec photos Storage.
+    const imageHash = imageBase64.length > 32
+      ? imageBase64.slice(0, 16) + "…" + imageBase64.slice(-16)
+      : imageBase64;
+    logger.info("extractFnuciFromImage", {
+      userId: request.auth?.uid || "?",
+      extracted,
+      invalid,
+      imageSize: imageBase64.length,
+      imageHash,
+      rawTextSnippet: rawText.slice(0, 200),
+    });
 
     // Le frontend (mirrorGeminiResultsToFirestore) skip les results dont
     // `result.ok !== true` → on met un OK factice sur chaque FNUCI valide
