@@ -126,6 +126,14 @@ export default function LivraisonsPage() {
   const [refDate, setRefDate] = useState<Date>(() => new Date());
   const [openTournee, setOpenTournee] = useState<Tournee | null>(null);
   const [search, setSearch] = useState("");
+  // Pré-remplissage du champ search depuis ?q= (utile depuis la fiche client
+  // « 📅 Voir dans le planning ») — fait une seule fois au mount.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const sp = new URLSearchParams(window.location.search);
+    const q = sp.get("q");
+    if (q) setSearch(q);
+  }, []);
   // Filtre admin par chauffeur : "" = tous, sinon id d'un membre équipe.
   // Inutile pour les rôles terrain (eux ne voient que leurs tournées via
   // userLivraisons ci-dessous). On expose le dropdown UNIQUEMENT pour admin.
@@ -1575,7 +1583,13 @@ function TourneeModal({
   const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const [progression, setProgression] = useState<{
     totals: { total: number; prepare: number; charge: number; livre: number; monte: number };
-    clients?: { clientId: string; totals: { total: number; prepare: number; charge: number; livre: number; monte: number } }[];
+    datePrevue?: string | null;
+    clients?: {
+      clientId: string;
+      entreprise?: string;
+      totals: { total: number; prepare: number; charge: number; livre: number; monte: number };
+      velos?: { veloId: string; fnuci: string | null }[];
+    }[];
   } | null>(null);
 
   useEffect(() => {
@@ -2401,6 +2415,43 @@ Réponds STRICTEMENT en JSON sans markdown, format :
               </div>
               <button
                 type="button"
+                onClick={() => {
+                  // Téléchargement local du CSV (même contenu que celui envoyé à
+                  // Tiffany — Client;FNUCI;Date de livraison). On reconstruit
+                  // côté frontend depuis progression.clients[].velos[] pour ne pas
+                  // dépendre du SMTP : utile pour vérifier ou conserver une
+                  // copie locale avant envoi.
+                  if (!progression || !tournee.tourneeId) return;
+                  const dp = progression.datePrevue
+                    ? new Date(progression.datePrevue).toLocaleDateString("fr-FR")
+                    : "";
+                  const escape = (s: string) => /[";\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+                  const lines = ["Client;FNUCI;Date de livraison"];
+                  for (const c of progression.clients ?? []) {
+                    const cName = c.entreprise || "";
+                    for (const v of c.velos ?? []) {
+                      if (!v.fnuci) continue;
+                      lines.push(`${escape(cName)};${escape(v.fnuci)};${escape(dp)}`);
+                    }
+                  }
+                  const csv = "﻿" + lines.join("\r\n");
+                  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement("a");
+                  const dateStr = new Date().toISOString().slice(0, 10);
+                  const num = tournee.numero ?? tournee.tourneeId.slice(0, 8);
+                  a.href = url;
+                  a.download = `preparation-tournee-${num}-${dateStr}.csv`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                }}
+                className="text-xs px-3 py-1.5 rounded bg-white border border-emerald-300 text-emerald-700 hover:bg-emerald-50 font-medium whitespace-nowrap"
+                title="Télécharger une copie locale du CSV"
+              >
+                💾 CSV
+              </button>
+              <button
+                type="button"
                 onClick={async () => {
                   if (!tournee.tourneeId) return;
                   setBusy("exportCsvPrep");
@@ -2546,7 +2597,21 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                   <span>{i === 0 ? `📍 ${ENTREPOT.label} → ` : "↓ "}{segments[i].distKm} km · ~{segments[i].trajetMin} min</span>
                 </div>
               )}
-              <div className={`border rounded-lg p-3 ${selected.has(l.id) ? "bg-blue-50 border-blue-300" : ""}`}>
+              {(() => {
+                // Carte verte si les 4 étapes (prép, charg, livr, mont) sont à 100%.
+                // Lit la progression du client correspondant. Le statut "annulee" et
+                // "selected" priment sur le surlignage vert.
+                const cp = progression?.clients?.find((c) => c.clientId === l.clientId)?.totals;
+                const tot = cp?.total ?? l._count.velos;
+                const allDone = !!cp && tot > 0
+                  && cp.prepare >= tot && cp.charge >= tot && cp.livre >= tot && cp.monte >= tot;
+                const wrapperCls = selected.has(l.id)
+                  ? "bg-blue-50 border-blue-300"
+                  : allDone
+                    ? "bg-emerald-50 border-emerald-400"
+                    : "";
+                return (
+              <div className={`border rounded-lg p-3 ${wrapperCls}`}>
                 <div className="flex items-start gap-3">
                 <input
                   type="checkbox"
@@ -2554,11 +2619,16 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                   onChange={() => toggleSelect(l.id)}
                   className="shrink-0 mt-1"
                 />
-                <span className="w-9 h-9 sm:w-7 sm:h-7 rounded-full bg-green-600 text-white text-base sm:text-sm flex items-center justify-center font-semibold shrink-0">
-                  {i + 1}
+                <span className={`w-9 h-9 sm:w-7 sm:h-7 rounded-full text-white text-base sm:text-sm flex items-center justify-center font-semibold shrink-0 ${allDone ? "bg-emerald-600" : "bg-green-600"}`}>
+                  {allDone ? "✓" : i + 1}
                 </span>
                 <div className="flex-1 min-w-0">
-                  <div className="font-bold text-base sm:font-medium leading-tight">{l.client.entreprise}</div>
+                  <a
+                    href={l.clientId ? `${BASE_PATH}/clients/detail?id=${encodeURIComponent(l.clientId)}` : undefined}
+                    onClick={(e) => e.stopPropagation()}
+                    className="font-bold text-base sm:font-medium leading-tight hover:underline hover:text-blue-700 cursor-pointer block"
+                    title="Ouvrir la fiche client"
+                  >{l.client.entreprise}</a>
                   <div className="text-xs text-gray-500 mt-0.5">
                     {[l.client.adresse, l.client.ville, l.client.codePostal].filter(Boolean).join(", ") || "—"}
                   </div>
@@ -2716,6 +2786,8 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                   )}
                 </div>
               </div>
+                );
+              })()}
             </div>
           ))}
           {retourSegment.distKm > 0 && (

@@ -268,6 +268,13 @@ function ClientDetailPage() {
           )}
         </div>
         <div className="flex flex-col gap-2 items-end">
+          <a
+            href={`${BASE_PATH}/livraisons?q=${encodeURIComponent(client.entreprise)}`}
+            className="px-3 py-1 text-sm text-blue-700 border border-blue-300 rounded-lg hover:bg-blue-50 whitespace-nowrap"
+            title="Ouvrir le planning livraisons filtré sur ce client"
+          >
+            📅 Voir dans le planning
+          </a>
           {client.statut === "annulee" ? (
             <button
               onClick={restoreClient}
