@@ -141,7 +141,15 @@ export default function LivraisonsPage() {
   // Filtre admin par chauffeur : "" = tous, sinon id d'un membre équipe.
   // Inutile pour les rôles terrain (eux ne voient que leurs tournées via
   // userLivraisons ci-dessous). On expose le dropdown UNIQUEMENT pour admin.
-  const [filtreChauffeurId, setFiltreChauffeurId] = useState<string>("");
+  // Filtre intervenant : "" | "chauffeur:<id>" | "chef:<id>" | "monteur:<id>"
+  // | "preparateur:<id>" | "apporteur:<nomLower>". Sert à voir le planning
+  // exactement comme cet intervenant le verra (pour valider/optimiser).
+  const [filtreIntervenant, setFiltreIntervenant] = useState<string>("");
+  // Compat : la valeur "chauffeur:<id>" extrait l'ancien chauffeurId pour le
+  // chaînage des départs (qui dépend du filtre actif).
+  const filtreChauffeurId = filtreIntervenant.startsWith("chauffeur:")
+    ? filtreIntervenant.slice("chauffeur:".length)
+    : "";
   const [showAddClient, setShowAddClient] = useState(false);
   const [showPlanner, setShowPlanner] = useState(false);
   const [batchAxdis, setBatchAxdis] = useState<{ date: Date; tournees: Tournee[] } | null>(null);
@@ -262,10 +270,62 @@ export default function LivraisonsPage() {
       .filter((m) => ids.has(m.id))
       .sort((a, b) => (a.nom || "").localeCompare(b.nom || ""));
   }, [tournees, equipe]);
+
+  // Présence des autres intervenants dans les tournées visibles, pour le
+  // dropdown filtre intervenant (= dynamique, ne propose que les noms qui
+  // ont effectivement des tournées).
+  const intervenantsPresents = useMemo(() => {
+    const chefIds = new Set<string>();
+    const monteurIds = new Set<string>();
+    const prepIds = new Set<string>();
+    const apporteursLower = new Set<string>();
+    for (const t of tournees) {
+      const liv0 = t.livraisons[0];
+      for (const id of liv0?.chefEquipeIds || []) chefIds.add(id);
+      if (liv0?.chefEquipeId) chefIds.add(liv0.chefEquipeId);
+      for (const id of liv0?.monteurIds || []) monteurIds.add(id);
+      for (const id of liv0?.preparateurIds || []) prepIds.add(id);
+      for (const l of t.livraisons) {
+        const a = (l as { apporteurLower?: string }).apporteurLower;
+        if (a) apporteursLower.add(a.toLowerCase());
+      }
+    }
+    const filterByIds = (ids: Set<string>) =>
+      equipe.filter((m) => ids.has(m.id)).sort((a, b) => (a.nom || "").localeCompare(b.nom || ""));
+    const apporteurs = equipe
+      .filter((m) => m.role === "apporteur" && apporteursLower.has((m.nom || "").trim().toLowerCase()))
+      .sort((a, b) => (a.nom || "").localeCompare(b.nom || ""));
+    return {
+      chefs: filterByIds(chefIds),
+      monteurs: filterByIds(monteurIds),
+      preparateurs: filterByIds(prepIds),
+      apporteurs,
+    };
+  }, [tournees, equipe]);
+
   const chauffeurFilteredTournees = useMemo(() => {
-    if (!filtreChauffeurId) return filteredTournees;
-    return filteredTournees.filter((t) => t.livraisons[0]?.chauffeurId === filtreChauffeurId);
-  }, [filteredTournees, filtreChauffeurId]);
+    if (!filtreIntervenant) return filteredTournees;
+    const [role, key] = filtreIntervenant.split(":");
+    return filteredTournees.filter((t) => {
+      const liv0 = t.livraisons[0];
+      switch (role) {
+        case "chauffeur":
+          return liv0?.chauffeurId === key;
+        case "chef":
+          return (liv0?.chefEquipeIds || []).includes(key) || liv0?.chefEquipeId === key;
+        case "monteur":
+          return (liv0?.monteurIds || []).includes(key);
+        case "preparateur":
+          return (liv0?.preparateurIds || []).includes(key);
+        case "apporteur":
+          return t.livraisons.some(
+            (l) => ((l as { apporteurLower?: string }).apporteurLower || "").toLowerCase() === key,
+          );
+        default:
+          return true;
+      }
+    });
+  }, [filteredTournees, filtreIntervenant]);
 
   // Chaînage des départs par chauffeur. Quand un chauffeur a 2+ tournées
   // dans la même journée (ex Armel le 4 mai), T2 ne peut PAS démarrer à 8h30
@@ -503,20 +563,59 @@ export default function LivraisonsPage() {
             placeholder="Rechercher client, ville, tél..."
             className="px-3 py-1.5 border-2 border-green-300 rounded-lg text-sm w-56 focus:border-green-500 focus:outline-none"
           />
-          {/* Filtre par chauffeur — admin/superadmin uniquement. Les rôles
-              terrain (chauffeur, monteur, chef, préparateur) ont déjà leur
-              propre filtrage via userLivraisons (rôle = vue ciblée). */}
-          {(currentUser?.role === "admin" || currentUser?.role === "superadmin") && chauffeursPresents.length > 0 && (
+          {/* Filtre intervenant — admin/superadmin uniquement. Permet de voir
+              le planning du point de vue d'un chauffeur, chef, monteur,
+              préparateur ou apporteur (= valider/optimiser). Les rôles
+              terrain ont déjà leur filtrage via userLivraisons. */}
+          {(currentUser?.role === "admin" || currentUser?.role === "superadmin") && (
+            chauffeursPresents.length > 0 ||
+            intervenantsPresents.chefs.length > 0 ||
+            intervenantsPresents.monteurs.length > 0 ||
+            intervenantsPresents.preparateurs.length > 0 ||
+            intervenantsPresents.apporteurs.length > 0
+          ) && (
             <select
-              value={filtreChauffeurId}
-              onChange={(e) => setFiltreChauffeurId(e.target.value)}
-              className="px-3 py-1.5 border-2 border-gray-200 rounded-lg text-sm bg-white focus:border-green-500 focus:outline-none"
-              title="Ne voir que les tournées d'un chauffeur"
+              value={filtreIntervenant}
+              onChange={(e) => setFiltreIntervenant(e.target.value)}
+              className="px-3 py-1.5 border-2 border-gray-200 rounded-lg text-sm bg-white focus:border-green-500 focus:outline-none max-w-[220px]"
+              title="Voir les tournées d'un intervenant précis"
             >
-              <option value="">🚐 Tous les chauffeurs</option>
-              {chauffeursPresents.map((c) => (
-                <option key={c.id} value={c.id}>🚐 {c.nom}</option>
-              ))}
+              <option value="">👁️ Tous les intervenants</option>
+              {chauffeursPresents.length > 0 && (
+                <optgroup label="🚐 Chauffeurs">
+                  {chauffeursPresents.map((c) => (
+                    <option key={`chauffeur:${c.id}`} value={`chauffeur:${c.id}`}>{c.nom}</option>
+                  ))}
+                </optgroup>
+              )}
+              {intervenantsPresents.chefs.length > 0 && (
+                <optgroup label="🚦 Chefs d'équipe">
+                  {intervenantsPresents.chefs.map((c) => (
+                    <option key={`chef:${c.id}`} value={`chef:${c.id}`}>{c.nom}</option>
+                  ))}
+                </optgroup>
+              )}
+              {intervenantsPresents.monteurs.length > 0 && (
+                <optgroup label="🔧 Monteurs">
+                  {intervenantsPresents.monteurs.map((m) => (
+                    <option key={`monteur:${m.id}`} value={`monteur:${m.id}`}>{m.nom}</option>
+                  ))}
+                </optgroup>
+              )}
+              {intervenantsPresents.preparateurs.length > 0 && (
+                <optgroup label="📦 Préparateurs">
+                  {intervenantsPresents.preparateurs.map((p) => (
+                    <option key={`preparateur:${p.id}`} value={`preparateur:${p.id}`}>{p.nom}</option>
+                  ))}
+                </optgroup>
+              )}
+              {intervenantsPresents.apporteurs.length > 0 && (
+                <optgroup label="🤝 Apporteurs">
+                  {intervenantsPresents.apporteurs.map((a) => (
+                    <option key={`apporteur:${(a.nom || "").trim().toLowerCase()}`} value={`apporteur:${(a.nom || "").trim().toLowerCase()}`}>{a.nom}</option>
+                  ))}
+                </optgroup>
+              )}
             </select>
           )}
           <div className="inline-flex rounded-lg border bg-white overflow-hidden">
