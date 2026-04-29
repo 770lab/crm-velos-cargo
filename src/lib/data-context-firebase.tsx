@@ -177,6 +177,7 @@ function livraisonFromDoc(id: string, d: DocumentData): LivraisonRow {
         }
       : null,
     dejaChargee: d.dejaChargee === true,
+    heureDepartTournee: typeof d.heureDepartTournee === "string" ? d.heureDepartTournee : null,
     client: {
       entreprise: d.clientSnapshot?.entreprise ?? "",
       ville: d.clientSnapshot?.ville ?? null,

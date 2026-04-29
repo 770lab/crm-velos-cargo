@@ -129,6 +129,10 @@ interface LivraisonRow {
    *  où on n'a pas eu besoin de tout décharger). On part directement chez
    *  le client le matin (pas de passage dépôt → arrivée typiquement 8h00). */
   dejaChargee?: boolean;
+  /** Heure de départ du dépôt pour cette tournée, format "HH:MM" (ex
+   *  "11:30"). Override le défaut 8h30 quand la marchandise n'arrive pas
+   *  au dépôt avant. Posée sur TOUTES les livraisons de la tournée. */
+  heureDepartTournee?: string | null;
   client: {
     entreprise: string;
     ville: string | null;

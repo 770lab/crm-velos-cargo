@@ -360,6 +360,16 @@ export default function LivraisonsPage() {
       let curMin = DEPART_MIN_DEFAULT;
       let curMax = DEPART_MAX_DEFAULT;
       for (const t of ts) {
+        // Heure de départ custom posée sur la tournée (« 11h30 si je n'ai pas
+        // de marchandise avant »). Si présente, on RESET le curMin/curMax à
+        // cette heure (pas de chaînage au-dessous d'un départ explicite).
+        const customHM = t.livraisons[0]?.heureDepartTournee;
+        if (customHM && /^\d{2}:\d{2}$/.test(customHM)) {
+          const [hh, mm] = customHM.split(":").map((n) => parseInt(n, 10));
+          const minOfDay = hh * 60 + mm;
+          curMin = Math.max(curMin, minOfDay);
+          curMax = Math.max(curMax, minOfDay + 30);
+        }
         const tourneeKey = (t.tourneeId || "no-tid") + "|" + (t.datePrevue ? isoDate(t.datePrevue) : "");
         result.set(tourneeKey, { min: curMin, max: curMax });
         const monteurs = t.nbMonteurs > 0 ? t.nbMonteurs : MONTEURS_PAR_EQUIPE;
@@ -2382,9 +2392,49 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             <span className="text-sm font-medium text-blue-900">Estimation journée</span>
             <span className="text-xs text-blue-600">{MINUTES_PAR_VELO} min/vélo · ~30 km/h en ville</span>
           </div>
-          <div className="text-[10px] text-blue-700 flex items-center gap-1">
+          <div className="text-[10px] text-blue-700 flex items-center gap-1 flex-wrap">
             <span>📍</span>
             <span className="truncate">Départ : {ENTREPOT.label}</span>
+            {perms.canEditEquipe && (() => {
+              // Permet de décaler l'heure de départ tournée (ex : marchandise
+              // qui n'arrive qu'à 11h30). Posée sur TOUTES les livraisons de
+              // la tournée. Affecte tourneeDepartures + computeArrivalTimes.
+              const cur = tournee.livraisons[0]?.heureDepartTournee || "";
+              const lids = tournee.livraisons.map((l) => l.id);
+              const setHeure = async (val: string | null) => {
+                setBusy("heureDepart");
+                try {
+                  await Promise.all(
+                    lids.map((id) =>
+                      gasPost("updateLivraison", { id, data: { heureDepartTournee: val } }),
+                    ),
+                  );
+                  onChanged();
+                } finally { setBusy(null); }
+              };
+              return (
+                <span className="ml-auto inline-flex items-center gap-1.5">
+                  <span className="text-blue-700">·</span>
+                  <span className="text-blue-900 font-medium">🕐 Départ</span>
+                  <input
+                    type="time"
+                    value={cur}
+                    onChange={(e) => setHeure(e.target.value || null)}
+                    className="px-1.5 py-0.5 border rounded text-[11px] bg-white"
+                    title="Heure de démarrage de la journée — laisse vide pour 8h30 par défaut"
+                  />
+                  {cur && (
+                    <button
+                      onClick={() => setHeure(null)}
+                      className="text-[10px] text-gray-500 underline"
+                      title="Restaurer le défaut 8h30"
+                    >
+                      reset
+                    </button>
+                  )}
+                </span>
+              );
+            })()}
           </div>
           <div className="grid gap-2 text-center grid-cols-5">
             <div className="bg-white rounded-lg p-2">
