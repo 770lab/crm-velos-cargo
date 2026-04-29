@@ -1,6 +1,6 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { gasGet, gasPost } from "@/lib/gas";
 import { useData, type LivraisonRow, type EquipeMember, type ClientPoint, type EquipeRole } from "@/lib/data-context";
 import { useCurrentUser } from "@/lib/current-user";
@@ -141,15 +141,17 @@ export default function LivraisonsPage() {
   // Filtre admin par chauffeur : "" = tous, sinon id d'un membre équipe.
   // Inutile pour les rôles terrain (eux ne voient que leurs tournées via
   // userLivraisons ci-dessous). On expose le dropdown UNIQUEMENT pour admin.
-  // Filtre intervenant : "" | "chauffeur:<id>" | "chef:<id>" | "monteur:<id>"
-  // | "preparateur:<id>" | "apporteur:<nomLower>". Sert à voir le planning
-  // exactement comme cet intervenant le verra (pour valider/optimiser).
-  const [filtreIntervenant, setFiltreIntervenant] = useState<string>("");
-  // Compat : la valeur "chauffeur:<id>" extrait l'ancien chauffeurId pour le
-  // chaînage des départs (qui dépend du filtre actif).
-  const filtreChauffeurId = filtreIntervenant.startsWith("chauffeur:")
-    ? filtreIntervenant.slice("chauffeur:".length)
-    : "";
+  // Filtres intervenants (multi) : array de "chauffeur:<id>" / "chef:<id>" /
+  // "monteur:<id>" / "preparateur:<id>" / "apporteur:<nomLower>". Une tournée
+  // est visible si AU MOINS UN filtre matche. Permet de comparer visuellement
+  // plusieurs charges (ex: ricky + ETHAN sur la même semaine).
+  const [filtresIntervenants, setFiltresIntervenants] = useState<string[]>([]);
+  // Compat : pour le chaînage des départs par chauffeur (ne s'active que si
+  // un seul chauffeur est sélectionné).
+  const filtreChauffeurId = (() => {
+    const cs = filtresIntervenants.filter((f) => f.startsWith("chauffeur:"));
+    return cs.length === 1 ? cs[0].slice("chauffeur:".length) : "";
+  })();
   const [showAddClient, setShowAddClient] = useState(false);
   const [showPlanner, setShowPlanner] = useState(false);
   const [batchAxdis, setBatchAxdis] = useState<{ date: Date; tournees: Tournee[] } | null>(null);
@@ -304,9 +306,9 @@ export default function LivraisonsPage() {
   }, [tournees, equipe]);
 
   const chauffeurFilteredTournees = useMemo(() => {
-    if (!filtreIntervenant) return filteredTournees;
-    const [role, key] = filtreIntervenant.split(":");
-    return filteredTournees.filter((t) => {
+    if (filtresIntervenants.length === 0) return filteredTournees;
+    const matchOne = (t: Tournee, filter: string) => {
+      const [role, key] = filter.split(":");
       const liv0 = t.livraisons[0];
       switch (role) {
         case "chauffeur":
@@ -322,10 +324,12 @@ export default function LivraisonsPage() {
             (l) => ((l as { apporteurLower?: string }).apporteurLower || "").toLowerCase() === key,
           );
         default:
-          return true;
+          return false;
       }
-    });
-  }, [filteredTournees, filtreIntervenant]);
+    };
+    // OR : la tournée est visible si AU MOINS UN filtre matche.
+    return filteredTournees.filter((t) => filtresIntervenants.some((f) => matchOne(t, f)));
+  }, [filteredTournees, filtresIntervenants]);
 
   // Chaînage des départs par chauffeur. Quand un chauffeur a 2+ tournées
   // dans la même journée (ex Armel le 4 mai), T2 ne peut PAS démarrer à 8h30
@@ -574,49 +578,17 @@ export default function LivraisonsPage() {
             intervenantsPresents.preparateurs.length > 0 ||
             intervenantsPresents.apporteurs.length > 0
           ) && (
-            <select
-              value={filtreIntervenant}
-              onChange={(e) => setFiltreIntervenant(e.target.value)}
-              className="px-3 py-1.5 border-2 border-gray-200 rounded-lg text-sm bg-white focus:border-green-500 focus:outline-none max-w-[220px]"
-              title="Voir les tournées d'un intervenant précis"
-            >
-              <option value="">👁️ Tous les intervenants</option>
-              {chauffeursPresents.length > 0 && (
-                <optgroup label="🚐 Chauffeurs">
-                  {chauffeursPresents.map((c) => (
-                    <option key={`chauffeur:${c.id}`} value={`chauffeur:${c.id}`}>{c.nom}</option>
-                  ))}
-                </optgroup>
-              )}
-              {intervenantsPresents.chefs.length > 0 && (
-                <optgroup label="🚦 Chefs d'équipe">
-                  {intervenantsPresents.chefs.map((c) => (
-                    <option key={`chef:${c.id}`} value={`chef:${c.id}`}>{c.nom}</option>
-                  ))}
-                </optgroup>
-              )}
-              {intervenantsPresents.monteurs.length > 0 && (
-                <optgroup label="🔧 Monteurs">
-                  {intervenantsPresents.monteurs.map((m) => (
-                    <option key={`monteur:${m.id}`} value={`monteur:${m.id}`}>{m.nom}</option>
-                  ))}
-                </optgroup>
-              )}
-              {intervenantsPresents.preparateurs.length > 0 && (
-                <optgroup label="📦 Préparateurs">
-                  {intervenantsPresents.preparateurs.map((p) => (
-                    <option key={`preparateur:${p.id}`} value={`preparateur:${p.id}`}>{p.nom}</option>
-                  ))}
-                </optgroup>
-              )}
-              {intervenantsPresents.apporteurs.length > 0 && (
-                <optgroup label="🤝 Apporteurs">
-                  {intervenantsPresents.apporteurs.map((a) => (
-                    <option key={`apporteur:${(a.nom || "").trim().toLowerCase()}`} value={`apporteur:${(a.nom || "").trim().toLowerCase()}`}>{a.nom}</option>
-                  ))}
-                </optgroup>
-              )}
-            </select>
+            <MultiIntervenantSelect
+              value={filtresIntervenants}
+              onChange={setFiltresIntervenants}
+              groups={[
+                { label: "🚐 Chauffeurs", role: "chauffeur", options: chauffeursPresents.map((c) => ({ key: c.id, label: c.nom })) },
+                { label: "🚦 Chefs d'équipe", role: "chef", options: intervenantsPresents.chefs.map((c) => ({ key: c.id, label: c.nom })) },
+                { label: "🔧 Monteurs", role: "monteur", options: intervenantsPresents.monteurs.map((m) => ({ key: m.id, label: m.nom })) },
+                { label: "📦 Préparateurs", role: "preparateur", options: intervenantsPresents.preparateurs.map((p) => ({ key: p.id, label: p.nom })) },
+                { label: "🤝 Apporteurs", role: "apporteur", options: intervenantsPresents.apporteurs.map((a) => ({ key: (a.nom || "").trim().toLowerCase(), label: a.nom })) },
+              ]}
+            />
           )}
           <div className="inline-flex rounded-lg border bg-white overflow-hidden">
             {(["jour", "3jours", "semaine", "mois", "liste"] as View[]).map((v) => (
@@ -4022,6 +3994,9 @@ function RappelVeilleModal({
       ``,
       `Cordialement,`,
       `L'équipe Artisans Verts Energy`,
+      ``,
+      `———————————————`,
+      `* Rappel important : les vélos cargo livrés dans le cadre de cette opération CEE sont strictement personnels à votre société. Toute revente, cession ou mise en location à un tiers est formellement interdite et peut entraîner la révocation des aides perçues.`,
     ].join("\n");
     const apEmail = apporteurEmailDe(c?.apporteur || null);
     const ccParam = apEmail ? `&cc=${encodeURIComponent(apEmail)}` : "";
@@ -4155,6 +4130,93 @@ function RappelVeilleModal({
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+// Multi-select dropdown intervenants (chauffeur/chef/monteur/préparateur/apporteur).
+// Pattern : bouton qui affiche le résumé, panneau qui s'ouvre avec checkboxes
+// groupées par rôle. Tous les groupes filtrent par OR (tournée visible si au
+// moins un filtre matche).
+function MultiIntervenantSelect({
+  value,
+  onChange,
+  groups,
+}: {
+  value: string[];
+  onChange: (next: string[]) => void;
+  groups: { label: string; role: string; options: { key: string; label: string }[] }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (rootRef.current && !rootRef.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [open]);
+
+  const toggle = (id: string) => {
+    onChange(value.includes(id) ? value.filter((v) => v !== id) : [...value, id]);
+  };
+
+  const selectedLabels = value
+    .map((v) => {
+      for (const g of groups) {
+        const opt = g.options.find((o) => `${g.role}:${o.key}` === v);
+        if (opt) return opt.label;
+      }
+      return null;
+    })
+    .filter((x): x is string => !!x);
+
+  const summary = selectedLabels.length === 0
+    ? "👁️ Tous les intervenants"
+    : selectedLabels.length === 1
+      ? `👁️ ${selectedLabels[0]}`
+      : `👁️ ${selectedLabels.length} intervenants`;
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="px-3 py-1.5 border-2 border-gray-200 rounded-lg text-sm bg-white focus:border-green-500 focus:outline-none flex items-center gap-2 max-w-[260px]"
+        title="Filtrer par un ou plusieurs intervenants"
+      >
+        <span className="truncate">{summary}</span>
+        <span className="text-gray-400 text-xs">▾</span>
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 z-30 w-72 max-h-[60vh] overflow-auto bg-white border rounded-lg shadow-lg p-2 text-sm">
+          {value.length > 0 && (
+            <div className="flex justify-between items-center px-2 py-1 mb-1 border-b">
+              <span className="text-xs text-gray-500">{value.length} sélectionné{value.length > 1 ? "s" : ""}</span>
+              <button onClick={() => onChange([])} className="text-xs text-red-600 hover:underline">Tout effacer</button>
+            </div>
+          )}
+          {groups.filter((g) => g.options.length > 0).map((g) => (
+            <div key={g.role} className="mb-1.5 last:mb-0">
+              <div className="text-[11px] uppercase font-semibold text-gray-500 px-2 py-0.5">{g.label}</div>
+              {g.options.map((opt) => {
+                const id = `${g.role}:${opt.key}`;
+                const checked = value.includes(id);
+                return (
+                  <label
+                    key={id}
+                    className={`flex items-center gap-2 px-2 py-1 rounded cursor-pointer ${checked ? "bg-emerald-50" : "hover:bg-gray-50"}`}
+                  >
+                    <input type="checkbox" checked={checked} onChange={() => toggle(id)} />
+                    <span className="truncate">{opt.label}</span>
+                  </label>
+                );
+              })}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }

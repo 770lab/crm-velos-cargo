@@ -628,6 +628,9 @@ function RappelMailModal({
     ``,
     `Cordialement,`,
     `L'équipe Artisans Verts Energy`,
+    ``,
+    `———————————————`,
+    `* Rappel important : les vélos cargo livrés dans le cadre de cette opération CEE sont strictement personnels à votre société. Toute revente, cession ou mise en location à un tiers est formellement interdite et peut entraîner la révocation des aides perçues.`,
   ].join("\n");
 
   const [subject, setSubject] = useState(defaultSubject);
