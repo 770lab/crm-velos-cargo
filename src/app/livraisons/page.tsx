@@ -2313,78 +2313,113 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           </div>
         )}
 
-        {/* Export CSV preparation (29-04 13h58) : visible des que la prep est
-            terminee (prepare === total). Une ligne par velo : Client, FNUCI,
-            Date de livraison. Format Excel-friendly (BOM UTF-8 + ;). */}
+        {/* Export CSV preparation + envoi a Tiffany (29-04 14h07) : visible des
+            que la prep est terminee (prepare === total). DL auto du CSV +
+            ouverture Gmail compose pre-rempli destinataire AXDIS_EMAIL. Yoann
+            n'a qu'a attacher le CSV (qui vient de tomber dans Telechargements)
+            et cliquer Envoyer. Meme flow que le mail commande Axdis qu'il
+            utilise deja. */}
         {tournee.tourneeId && progression && progression.totals.total > 0 && progression.totals.prepare >= progression.totals.total && (
-          <div className="mb-3 flex items-center gap-3 px-3 py-2 rounded-lg border bg-emerald-50 border-emerald-300 text-emerald-900">
-            <span className="text-lg">📥</span>
-            <div className="flex-1 text-sm">
-              <div className="font-medium">Export CSV préparation</div>
-              <div className="text-xs opacity-80">
-                {progression.totals.prepare} vélos préparés · Client / FNUCI / Date de livraison
+          <div className="mb-3 px-3 py-2.5 rounded-lg border bg-emerald-50 border-emerald-300 text-emerald-900 space-y-2">
+            <div className="flex items-center gap-3">
+              <span className="text-lg">📤</span>
+              <div className="flex-1 text-sm">
+                <div className="font-medium">Envoyer le CSV préparation à Tiffany</div>
+                <div className="text-xs opacity-80">
+                  {progression.totals.prepare} vélos préparés · Client / FNUCI / Date de livraison
+                </div>
               </div>
+              <button
+                type="button"
+                onClick={async () => {
+                  if (!tournee.tourneeId) return;
+                  setBusy("exportCsvPrep");
+                  try {
+                    type BlData = {
+                      tourneeId: string;
+                      datePrevue: string | null;
+                      clients: Array<{
+                        clientId: string;
+                        entreprise: string;
+                        velos: Array<{ veloId: string; fnuci: string | null }>;
+                      }>;
+                      error?: string;
+                    };
+                    const data = (await gasGet("getBlForTournee", { tourneeId: tournee.tourneeId })) as BlData;
+                    if (!data || data.error) {
+                      alert("Erreur récupération données : " + (data?.error || "?"));
+                      return;
+                    }
+                    const dateLiv = data.datePrevue
+                      ? new Date(data.datePrevue).toLocaleDateString("fr-FR")
+                      : "";
+                    const csvEscape = (s: string) => {
+                      if (s.includes(";") || s.includes('"') || s.includes("\n")) {
+                        return `"${s.replace(/"/g, '""')}"`;
+                      }
+                      return s;
+                    };
+                    const lines = ["Client;FNUCI;Date de livraison"];
+                    for (const c of data.clients) {
+                      for (const v of c.velos) {
+                        lines.push(`${csvEscape(c.entreprise || "")};${csvEscape(v.fnuci || "")};${csvEscape(dateLiv)}`);
+                      }
+                    }
+                    // BOM UTF-8 pour qu'Excel ouvre correctement les accents
+                    const blob = new Blob(["﻿" + lines.join("\r\n")], {
+                      type: "text/csv;charset=utf-8",
+                    });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    const dateStr = new Date().toISOString().slice(0, 10);
+                    const csvFilename = `preparation-tournee-${tournee.numero ?? tournee.tourneeId.slice(0, 8)}-${dateStr}.csv`;
+                    a.download = csvFilename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+
+                    // Construit le mail Gmail compose avec destinataire Tiffany
+                    // pré-rempli. Tiffany@axdis.fr vient du même module que le
+                    // mail commande Axdis (cf. AXDIS_EMAIL).
+                    const ref = typeof tournee.numero === "number"
+                      ? `VELO CARGO - TOURNEE ${tournee.numero}`
+                      : `VELO CARGO - ${tournee.tourneeId}`;
+                    const subject = `${ref} — CSV préparation (${progression.totals.prepare} vélos)`;
+                    const body = [
+                      `Bonjour Tiffany,`,
+                      ``,
+                      `La préparation de la tournée ${ref} est terminée.`,
+                      `Tu trouveras ci-joint le CSV avec ${progression.totals.prepare} vélos :`,
+                      `Client / FNUCI / Date de livraison${dateLiv ? ` (${dateLiv})` : ""}.`,
+                      ``,
+                      `📎 Attache le fichier "${csvFilename}" (téléchargé à l'instant) avant d'envoyer.`,
+                      ``,
+                      `Merci,`,
+                      `Yoann`,
+                    ].join("\n");
+                    const composeUrl =
+                      `https://mail.google.com/mail/?authuser=${encodeURIComponent(FROM_EMAIL_RAPPEL)}` +
+                      `&view=cm&fs=1&to=${encodeURIComponent(AXDIS_EMAIL)}` +
+                      `&su=${encodeURIComponent(subject)}` +
+                      `&body=${encodeURIComponent(body)}`;
+                    window.open(composeUrl, "_blank");
+                  } catch (e) {
+                    alert("Export échoué : " + (e instanceof Error ? e.message : String(e)));
+                  } finally {
+                    setBusy(null);
+                  }
+                }}
+                disabled={busy === "exportCsvPrep"}
+                className="text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-700 font-medium whitespace-nowrap disabled:opacity-50"
+              >
+                {busy === "exportCsvPrep" ? "⏳…" : "📤 Envoyer à Tiffany"}
+              </button>
             </div>
-            <button
-              type="button"
-              onClick={async () => {
-                if (!tournee.tourneeId) return;
-                setBusy("exportCsvPrep");
-                try {
-                  type BlData = {
-                    tourneeId: string;
-                    datePrevue: string | null;
-                    clients: Array<{
-                      clientId: string;
-                      entreprise: string;
-                      velos: Array<{ veloId: string; fnuci: string | null }>;
-                    }>;
-                    error?: string;
-                  };
-                  const data = (await gasGet("getBlForTournee", { tourneeId: tournee.tourneeId })) as BlData;
-                  if (!data || data.error) {
-                    alert("Erreur récupération données : " + (data?.error || "?"));
-                    return;
-                  }
-                  const dateLiv = data.datePrevue
-                    ? new Date(data.datePrevue).toLocaleDateString("fr-FR")
-                    : "";
-                  const csvEscape = (s: string) => {
-                    if (s.includes(";") || s.includes('"') || s.includes("\n")) {
-                      return `"${s.replace(/"/g, '""')}"`;
-                    }
-                    return s;
-                  };
-                  const lines = ["Client;FNUCI;Date de livraison"];
-                  for (const c of data.clients) {
-                    for (const v of c.velos) {
-                      lines.push(`${csvEscape(c.entreprise || "")};${csvEscape(v.fnuci || "")};${csvEscape(dateLiv)}`);
-                    }
-                  }
-                  // BOM UTF-8 pour qu'Excel ouvre correctement les accents
-                  const blob = new Blob(["﻿" + lines.join("\r\n")], {
-                    type: "text/csv;charset=utf-8",
-                  });
-                  const url = URL.createObjectURL(blob);
-                  const a = document.createElement("a");
-                  a.href = url;
-                  const dateStr = new Date().toISOString().slice(0, 10);
-                  a.download = `preparation-tournee-${tournee.numero ?? tournee.tourneeId.slice(0, 8)}-${dateStr}.csv`;
-                  document.body.appendChild(a);
-                  a.click();
-                  document.body.removeChild(a);
-                  URL.revokeObjectURL(url);
-                } catch (e) {
-                  alert("Export échoué : " + (e instanceof Error ? e.message : String(e)));
-                } finally {
-                  setBusy(null);
-                }
-              }}
-              disabled={busy === "exportCsvPrep"}
-              className="text-xs px-3 py-1.5 rounded bg-emerald-600 text-white hover:bg-emerald-700 font-medium whitespace-nowrap disabled:opacity-50"
-            >
-              {busy === "exportCsvPrep" ? "⏳ Export…" : "📥 Télécharger CSV"}
-            </button>
+            <div className="text-[11px] text-emerald-800 italic">
+              💡 Le CSV se télécharge + Gmail s&apos;ouvre pré-rempli. Attache le fichier dans le mail (bouton 📎) et envoie.
+            </div>
           </div>
         )}
 
