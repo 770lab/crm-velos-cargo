@@ -4,6 +4,7 @@ import { AuthGate } from "./auth-gate";
 import { AuthGateFirebase } from "./auth-gate-firebase";
 import { Sidebar } from "./sidebar";
 import { VersionChecker } from "./version-checker";
+import { RoleGuard } from "./role-guard";
 import { DataProvider } from "@/lib/data-context";
 import { FirebaseDataProvider } from "@/lib/data-context-firebase";
 
@@ -16,6 +17,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   return (
     <Gate>
       <Provider>
+        <RoleGuard>
         <VersionChecker />
         <Sidebar />
         {/* min-w-0 + overflow-x-hidden : indispensable sur mobile, sinon un
@@ -25,6 +27,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         <main className="flex-1 min-w-0 overflow-x-hidden p-4 pt-16 lg:pt-8 lg:ml-64 lg:p-8">
           {children}
         </main>
+        </RoleGuard>
       </Provider>
     </Gate>
   );

@@ -344,6 +344,10 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
     const apporteurLower = currentUser?.role === "apporteur" && currentUser.nom
       ? currentUser.nom.trim().toLowerCase()
       : null;
+    // RBAC chauffeur : un chauffeur ne lit QUE les livraisons où il est
+    // affecté (chauffeurId == son uid). Sans ce filtre, Firestore rejette
+    // le snapshot via la rule serveur (cf. firestore.rules — bug 2026-04-29).
+    const chauffeurId = currentUser?.role === "chauffeur" ? currentUser.id : null;
 
     const clientsQuery = apporteurLower
       ? query(collection(db, "clients"), where("apporteurLower", "==", apporteurLower))
@@ -351,6 +355,8 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
     const unsubClients = onSnapshot(clientsQuery, handleClients, onErr("clients"));
     const livraisonsQuery = apporteurLower
       ? query(collection(db, "livraisons"), where("apporteurLower", "==", apporteurLower))
+      : chauffeurId
+      ? query(collection(db, "livraisons"), where("chauffeurId", "==", chauffeurId))
       : collection(db, "livraisons");
     const unsubLivraisons = onSnapshot(livraisonsQuery, (snap) => {
       const rows: LivraisonRow[] = [];
