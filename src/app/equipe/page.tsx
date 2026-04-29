@@ -56,11 +56,17 @@ export default function EquipePage() {
     }
     // Tri alphabétique (insensible à la casse / aux accents) dans chaque
     // groupe — sinon l'ordre Firestore est arbitraire et difficile à suivre.
+    // Cf. screenshot Yoann 2026-04-29 22:51 où l'ordre était toujours faux
+    // après deploy → cache navigateur. Sort défensif + clone pour éviter
+    // toute mutation oubliée.
     const cmp = new Intl.Collator("fr", { sensitivity: "base", numeric: true }).compare;
+    const sortedGroups: Record<EquipeRole, EquipeMember[]> = {
+      superadmin: [], admin: [], chauffeur: [], chef: [], monteur: [], preparateur: [], apporteur: [],
+    };
     for (const role of Object.keys(groups) as EquipeRole[]) {
-      groups[role].sort((a, b) => cmp(a.nom || "", b.nom || ""));
+      sortedGroups[role] = [...groups[role]].sort((a, b) => cmp(a.nom || "", b.nom || ""));
     }
-    return groups;
+    return sortedGroups;
   }, [equipe, isAdmin, currentUser?.id]);
 
   const loadInactifs = async () => {

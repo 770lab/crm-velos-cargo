@@ -93,6 +93,13 @@ function livraisonMatchesUser(
 export default function LivraisonsPage() {
   const { livraisons, carte, equipe, refresh } = useData();
   const currentUser = useCurrentUser();
+  // Map client.id → ClientPoint pour le brief journée (avoir adresse, tel,
+  // apporteur facilement accessibles depuis l'extérieur de la TourneeModal).
+  const clientInfo = useMemo(() => {
+    const m = new Map<string, typeof carte[number]>();
+    for (const c of carte) m.set(c.id, c);
+    return m;
+  }, [carte]);
   // Vue initiale :
   //  - localStorage gagne toujours (le user a explicitement choisi)
   //  - sinon "jour" pour les roles terrain (chauffeur / monteur / preparateur /
@@ -154,6 +161,7 @@ export default function LivraisonsPage() {
   })();
   const [showAddClient, setShowAddClient] = useState(false);
   const [showPlanner, setShowPlanner] = useState(false);
+  const [showBriefJour, setShowBriefJour] = useState(false);
   const [batchAxdis, setBatchAxdis] = useState<{ date: Date; tournees: Tournee[] } | null>(null);
 
   useEffect(() => {
@@ -564,6 +572,13 @@ export default function LivraisonsPage() {
                 🪄 Planifier le jour
               </button>
               <button
+                onClick={() => setShowBriefJour(true)}
+                className="px-3 py-1.5 bg-purple-100 text-purple-800 border border-purple-300 rounded-lg hover:bg-purple-200 text-sm font-medium whitespace-nowrap"
+                title="Génère un brief texte de toutes les tournées du jour visible (à copier dans WhatsApp/mail)"
+              >
+                📋 Brief du jour
+              </button>
+              <button
                 onClick={() => setShowAddClient(true)}
                 className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium whitespace-nowrap"
               >
@@ -693,6 +708,16 @@ export default function LivraisonsPage() {
           tournees={batchAxdis.tournees}
           onClose={() => setBatchAxdis(null)}
           onChanged={() => refresh("livraisons")}
+        />
+      )}
+      {showBriefJour && (
+        <BriefJourneeModal
+          refDate={refDate}
+          tournees={chauffeurFilteredTournees}
+          equipe={equipe}
+          clientInfo={clientInfo}
+          tourneeDepartures={tourneeDepartures}
+          onClose={() => setShowBriefJour(false)}
         />
       )}
     </div>
@@ -4271,6 +4296,185 @@ function RappelVeilleModal({
 // Pattern : bouton qui affiche le résumé, panneau qui s'ouvre avec checkboxes
 // groupées par rôle. Tous les groupes filtrent par OR (tournée visible si au
 // moins un filtre matche).
+// Modale « Brief du jour » : génère un texte narratif POUR TOUTES les
+// tournées de la date affichée. Trie par heure de départ chaînée et met en
+// évidence les enchaînements chauffeur (T1 puis T2 du même chauffeur).
+function BriefJourneeModal({
+  refDate,
+  tournees,
+  equipe,
+  clientInfo,
+  tourneeDepartures,
+  onClose,
+}: {
+  refDate: Date;
+  tournees: Tournee[];
+  equipe: EquipeMember[];
+  clientInfo: Map<string, ClientPoint>;
+  tourneeDepartures: DepartureMap;
+  onClose: () => void;
+}) {
+  const findName = (id: string | null | undefined) =>
+    id ? equipe.find((m) => m.id === id)?.nom || "?" : null;
+  const fmtHM = (mins: number) => {
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return `${h}h${String(m).padStart(2, "0")}`;
+  };
+
+  const text = useMemo(() => {
+    const dayISOref = isoDate(refDate);
+    const dateStr = refDate.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
+
+    // Filtre tournées du jour, statut non annulé
+    const ofDay = tournees.filter((t) => {
+      if (!t.datePrevue) return false;
+      if (t.statutGlobal === "annulee") return false;
+      return isoDate(t.datePrevue) === dayISOref;
+    });
+    if (ofDay.length === 0) {
+      return `Aucune tournée planifiée pour ${dateStr}.`;
+    }
+
+    // Tri par heure de départ chaînée
+    const sorted = [...ofDay].sort((a, b) => {
+      const da = tourneeDepartures.get(tourneeKeyForDeparture(a))?.min ?? DEPART_MIN_DEFAULT;
+      const db = tourneeDepartures.get(tourneeKeyForDeparture(b))?.min ?? DEPART_MIN_DEFAULT;
+      return da - db;
+    });
+
+    const lines: string[] = [];
+    lines.push(`📅 *PLANNING DU ${dateStr.toUpperCase()}*`);
+    const totalVelos = sorted.reduce((s, t) => s + t.totalVelos, 0);
+    const allChauffeurs = new Set<string>();
+    for (const t of sorted) {
+      const c = t.livraisons[0]?.chauffeurId;
+      if (c) allChauffeurs.add(c);
+    }
+    lines.push(`${sorted.length} tournée${sorted.length > 1 ? "s" : ""} · ${totalVelos} vélos · ${allChauffeurs.size} chauffeur${allChauffeurs.size > 1 ? "s" : ""}`);
+    lines.push("");
+    lines.push("═".repeat(40));
+
+    let tNum = 0;
+    for (const t of sorted) {
+      tNum++;
+      const liv0 = t.livraisons[0];
+      const dep = tourneeDepartures.get(tourneeKeyForDeparture(t));
+      const departMin = dep?.min ?? DEPART_MIN_DEFAULT;
+      const departMax = dep?.max ?? DEPART_MAX_DEFAULT;
+      const monteurNames = (liv0?.monteurIds || []).map(findName).filter(Boolean);
+      const monteursCount = monteurNames.length || 1;
+      const arrivals = computeArrivalTimes(t, monteursCount, departMin, departMax);
+      const deployPlan = computeDeployPlan(t.livraisons, computeSegments(t.livraisons), monteursCount);
+
+      const chauffeur = findName(liv0?.chauffeurId);
+      const chefIds = (liv0?.chefEquipeIds && liv0.chefEquipeIds.length > 0)
+        ? liv0.chefEquipeIds
+        : (liv0?.chefEquipeId ? [liv0.chefEquipeId] : []);
+      const chefs = chefIds.map(findName).filter(Boolean);
+      const prepNames = (liv0?.preparateurIds || []).map(findName).filter(Boolean);
+      const heureDepart = liv0?.heureDepartTournee || fmtHM(departMin);
+      const dejaCharge = !!liv0?.dejaChargee;
+
+      lines.push("");
+      lines.push(`🚛 *TOURNÉE ${t.numero ?? tNum}* — ${t.totalVelos} vélos · ${t.livraisons.length} arrêt${t.livraisons.length > 1 ? "s" : ""}`);
+      lines.push(`📍 Départ ${dejaCharge ? "DIRECT chez le client (déjà chargé la veille)" : "AXDIS PRO Le Blanc-Mesnil"} à *${heureDepart}*`);
+      if (chauffeur) lines.push(`🚐 Chauffeur : *${chauffeur}*`);
+      if (chefs.length > 0) lines.push(`🚦 Chef d'équipe : *${chefs.join(", ")}*`);
+      if (monteurNames.length > 0) lines.push(`🔧 Monteurs (${monteurNames.length}) : ${monteurNames.join(", ")}`);
+      if (prepNames.length > 0) lines.push(`📦 Préparation matin : ${prepNames.join(", ")}`);
+      lines.push("");
+      for (let i = 0; i < t.livraisons.length; i++) {
+        const l = t.livraisons[i];
+        const c = l.clientId ? clientInfo.get(l.clientId) : null;
+        const arr = arrivals[i];
+        const adresse = [l.client.adresse, l.client.codePostal, l.client.ville].filter(Boolean).join(", ");
+        const tel = l.client.telephone || "";
+        const apporteur = c?.apporteur || "";
+        const monteursIci = deployPlan.steps[i]?.monteursAffectes ?? monteursCount;
+        const tempsMontage = deployPlan.steps[i]?.tempsSurPlace ?? 0;
+        lines.push(`  *${i + 1}.* ${l.client.entreprise}`);
+        lines.push(`     📍 ${adresse || "—"}`);
+        if (tel) lines.push(`     📞 ${tel}`);
+        if (apporteur) lines.push(`     🤝 ${apporteur}`);
+        if (arr) lines.push(`     ⏰ ${fmtHM(arr.minMin)} – ${fmtHM(arr.maxMin)}`);
+        lines.push(`     🚲 ${l.nbVelos || l._count.velos} vélos · ${monteursIci}m sur place${tempsMontage ? ` · ~${Math.round(tempsMontage)}min` : ""}`);
+        const valid = l.validationClient;
+        if (!valid) lines.push(`     ⚠ CLIENT NON VALIDÉ`);
+        else if (valid.status === "validee_mail") lines.push(`     📧 Validé par mail (${valid.par || "?"})`);
+        else lines.push(`     📞 Validé tél (${valid.par || "?"})`);
+      }
+    }
+
+    lines.push("");
+    lines.push("═".repeat(40));
+    lines.push("Bonne tournée à tous 🚴‍♂️");
+    return lines.join("\n");
+  }, [refDate, tournees, equipe, clientInfo, tourneeDepartures]);
+  void findName;
+
+  const [copied, setCopied] = useState(false);
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {}
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <div>
+            <h2 className="text-lg font-semibold flex items-center gap-2">📋 Brief du jour</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Toutes les tournées de la date visible, triées par heure de départ. Format
+              compatible WhatsApp (*gras*).
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+        <textarea
+          value={text}
+          readOnly
+          className="w-full h-[60vh] px-3 py-2 border rounded-lg font-mono text-xs whitespace-pre overflow-auto"
+        />
+        <div className="mt-3 flex justify-end gap-2">
+          <button
+            onClick={copy}
+            className={`px-4 py-2 rounded-lg text-sm font-medium ${
+              copied ? "bg-green-600 text-white" : "bg-purple-600 text-white hover:bg-purple-700"
+            }`}
+          >
+            {copied ? "✓ Copié dans le presse-papier" : "📋 Copier le brief complet"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Helper segments (utilisé par BriefJourneeModal pour computeDeployPlan).
+// Réplique la logique de TourneeCard ; sortie identique.
+function computeSegments(livraisons: LivraisonRow[]): { distKm: number; trajetMin: number }[] {
+  const result: { distKm: number; trajetMin: number }[] = [];
+  let prev = ENTREPOT;
+  for (const l of livraisons) {
+    const lat = l.client.lat ?? null;
+    const lng = l.client.lng ?? null;
+    if (lat == null || lng == null) {
+      result.push({ distKm: 0, trajetMin: 0 });
+      continue;
+    }
+    const distKm = haversineKm(prev.lat, prev.lng, lat, lng);
+    const trajetMin = Math.round((distKm / 30) * 60);
+    result.push({ distKm: Math.round(distKm * 10) / 10, trajetMin });
+    prev = { lat, lng, label: "" };
+  }
+  return result;
+}
+
 // Modale « Brief équipe » : génère un texte narratif à copier-coller dans
 // WhatsApp / mail pour briefer les équipes la veille au soir.
 function BriefEquipeModal({
