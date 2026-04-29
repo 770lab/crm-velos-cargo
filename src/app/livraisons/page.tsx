@@ -4356,6 +4356,33 @@ function BriefJourneeModal({
       return da - db;
     });
 
+    // Label "matin / après-midi / soir" par chauffeur, sur la base de l'heure
+    // de départ. Évite "TOURNÉE 2 / TOURNÉE 37" qui ne parlent pas aux équipes
+    // (Yoann 29-04 23h38).
+    const tKey = (t: Tournee) => t.tourneeId || t.livraisons[0]?.id || "";
+    const slotByTourneeId = new Map<string, string>();
+    {
+      const byChauf = new Map<string, Tournee[]>();
+      for (const t of sorted) {
+        const cid = t.livraisons[0]?.chauffeurId || "_unassigned";
+        if (!byChauf.has(cid)) byChauf.set(cid, []);
+        byChauf.get(cid)!.push(t);
+      }
+      for (const [, list] of byChauf) {
+        if (list.length === 1) {
+          slotByTourneeId.set(tKey(list[0]), "");
+        } else if (list.length === 2) {
+          slotByTourneeId.set(tKey(list[0]), "MATIN");
+          slotByTourneeId.set(tKey(list[1]), "APRÈS-MIDI");
+        } else {
+          for (let i = 0; i < list.length; i++) {
+            const lbl = i === 0 ? "MATIN" : i === list.length - 1 ? "SOIR" : `APRÈS-MIDI ${i}`;
+            slotByTourneeId.set(tKey(list[i]), lbl);
+          }
+        }
+      }
+    }
+
     const lines: string[] = [];
     lines.push(`📅 *PLANNING DU ${dateStr.toUpperCase()}*`);
     const totalVelos = sorted.reduce((s, t) => s + t.totalVelos, 0);
@@ -4390,7 +4417,11 @@ function BriefJourneeModal({
       const dejaCharge = !!liv0?.dejaChargee;
 
       lines.push("");
-      lines.push(`🚛 *TOURNÉE ${t.numero ?? tNum}* — ${t.totalVelos} vélos · ${t.livraisons.length} arrêt${t.livraisons.length > 1 ? "s" : ""}`);
+      const slot = slotByTourneeId.get(tKey(t)) || "";
+      const labelTitre = chauffeur
+        ? (slot ? `TOURNÉE ${slot} ${chauffeur.toUpperCase()}` : `TOURNÉE ${chauffeur.toUpperCase()}`)
+        : `TOURNÉE ${t.numero ?? tNum}`;
+      lines.push(`🚛 *${labelTitre}* — ${t.totalVelos} vélos · ${t.livraisons.length} arrêt${t.livraisons.length > 1 ? "s" : ""}`);
       lines.push(`📍 Départ ${dejaCharge ? "DIRECT chez le client (déjà chargé la veille)" : "AXDIS PRO Le Blanc-Mesnil"} à *${heureDepart}*`);
       if (chauffeur) lines.push(`🚐 Chauffeur : *${chauffeur}*`);
       if (chefs.length > 0) lines.push(`🚦 Chef d'équipe : *${chefs.join(", ")}*`);
