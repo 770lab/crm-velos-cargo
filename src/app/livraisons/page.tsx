@@ -4314,6 +4314,19 @@ function BriefJourneeModal({
   tourneeDepartures: DepartureMap;
   onClose: () => void;
 }) {
+  // Permet de générer le brief pour n'importe quel jour (par défaut on
+  // pré-sélectionne demain — le brief du soir prépare la journée suivante).
+  const tomorrow = useMemo(() => {
+    const d = new Date(refDate);
+    d.setDate(d.getDate() + 1);
+    return d;
+  }, [refDate]);
+  const [selectedDate, setSelectedDate] = useState<string>(isoDate(tomorrow));
+  const briefDate = useMemo(() => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) return tomorrow;
+    return new Date(`${selectedDate}T12:00:00`);
+  }, [selectedDate, tomorrow]);
+
   const findName = (id: string | null | undefined) =>
     id ? equipe.find((m) => m.id === id)?.nom || "?" : null;
   const fmtHM = (mins: number) => {
@@ -4323,8 +4336,8 @@ function BriefJourneeModal({
   };
 
   const text = useMemo(() => {
-    const dayISOref = isoDate(refDate);
-    const dateStr = refDate.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
+    const dayISOref = isoDate(briefDate);
+    const dateStr = briefDate.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
 
     // Filtre tournées du jour, statut non annulé
     const ofDay = tournees.filter((t) => {
@@ -4425,13 +4438,36 @@ function BriefJourneeModal({
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
-        <div className="flex justify-between items-start mb-3">
-          <div>
+        <div className="flex justify-between items-start mb-3 gap-3">
+          <div className="flex-1 min-w-0">
             <h2 className="text-lg font-semibold flex items-center gap-2">📋 Brief du jour</h2>
             <p className="text-xs text-gray-500 mt-0.5">
-              Toutes les tournées de la date visible, triées par heure de départ. Format
+              Toutes les tournées du jour choisi, triées par heure de départ. Format
               compatible WhatsApp (*gras*).
             </p>
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <label className="text-xs font-medium text-gray-700">Jour :</label>
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="px-2 py-1 border rounded text-sm"
+              />
+              <button
+                onClick={() => setSelectedDate(isoDate(refDate))}
+                className="text-[11px] px-2 py-1 text-gray-600 border border-gray-200 rounded hover:bg-gray-50"
+                title="Date du jour visible dans le planning"
+              >
+                Aujourd&apos;hui
+              </button>
+              <button
+                onClick={() => setSelectedDate(isoDate(tomorrow))}
+                className="text-[11px] px-2 py-1 text-gray-600 border border-gray-200 rounded hover:bg-gray-50"
+                title="Brief du soir = lendemain par défaut"
+              >
+                Demain
+              </button>
+            </div>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
         </div>
