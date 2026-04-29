@@ -5,6 +5,8 @@ import { usePathname } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { gasGet } from "@/lib/gas";
 import { clearCurrentUser, useCurrentUser } from "@/lib/current-user";
+import { auth } from "@/lib/firebase";
+import { signOut } from "firebase/auth";
 import type { EquipeRole } from "@/lib/data-context";
 
 type NavItem = { href: string; label: string; icon: string; badge?: true };
@@ -104,8 +106,21 @@ export function Sidebar() {
     return base;
   }, [user]);
 
-  const logout = () => {
+  const logout = async () => {
+    // Bug 2026-04-29 : clearCurrentUser() seul ne suffit pas — Firebase Auth
+    // reste connecté et useFirebaseUser restaure aussitôt le currentUser
+    // depuis le doc équipe. Il faut signOut(auth) pour purger la session
+    // Firebase, puis clear le localStorage legacy.
+    try {
+      await signOut(auth);
+    } catch (e) {
+      console.error("[logout] signOut failed", e);
+    }
     clearCurrentUser();
+    // Force un reload pour purger tout state in-memory (DataProvider, etc.)
+    if (typeof window !== "undefined") {
+      window.location.href = "/";
+    }
   };
 
   return (
