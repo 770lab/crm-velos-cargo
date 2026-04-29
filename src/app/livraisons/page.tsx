@@ -2290,6 +2290,29 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           );
         })()}
 
+        {/* Bons de livraison clients (29-04 13h30) : un BL par client de la
+            tournée, tous générés en une page A4 chacun via /bl?tourneeId=...
+            avec page-break-after entre chaque client → impression groupée. */}
+        {tournee.tourneeId && progression?.clients && progression.clients.length > 0 && (
+          <div className="mb-3 flex items-center gap-3 px-3 py-2 rounded-lg border bg-blue-50 border-blue-300 text-blue-900">
+            <span className="text-lg">📄</span>
+            <div className="flex-1 text-sm">
+              <div className="font-medium">Bons de livraison clients</div>
+              <div className="text-xs opacity-80">
+                {progression.clients.length} BL · 1 page A4 par client (numérotation BL-{new Date().getFullYear()}-XXXXX séquentielle)
+              </div>
+            </div>
+            <a
+              href={`${BASE_PATH}/bl?tourneeId=${encodeURIComponent(tournee.tourneeId)}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-xs px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 font-medium whitespace-nowrap"
+            >
+              🖨️ Imprimer tous
+            </a>
+          </div>
+        )}
+
         {/* Suivi opérationnel global tournée */}
         {tournee.tourneeId && progression && progression.totals.total > 0 && (() => {
           const t = progression.totals;
