@@ -48,6 +48,12 @@ export default function EquipePage() {
       if (m.actif === false) continue;
       if (groups[m.role]) groups[m.role].push(m);
     }
+    // Tri alphabétique (insensible à la casse / aux accents) dans chaque
+    // groupe — sinon l'ordre Firestore est arbitraire et difficile à suivre.
+    const cmp = new Intl.Collator("fr", { sensitivity: "base", numeric: true }).compare;
+    for (const role of Object.keys(groups) as EquipeRole[]) {
+      groups[role].sort((a, b) => cmp(a.nom || "", b.nom || ""));
+    }
     return groups;
   }, [equipe]);
 
