@@ -2,8 +2,41 @@
 
 import { useState } from "react";
 import { FirebaseError } from "firebase/app";
+import { terminate, clearIndexedDbPersistence } from "firebase/firestore";
 import { signInWithPin, signInWithGoogle, signOut } from "@/lib/auth-firebase";
 import { useFirebaseUser } from "@/lib/use-firebase-user";
+import { db } from "@/lib/firebase";
+
+// Hard reset complet de la session Firebase (30-04 11h12, Yoann bloque sur
+// "Acces refuse" alors que son doc equipe existe en base). Cause : IndexedDB
+// Firestore persistance corrompue / desynchronisee. Le simple signOut+reload
+// ne suffit pas. Ce reset force :
+//   1. signOut Firebase Auth (cookies)
+//   2. terminate l'instance Firestore (close listeners + persistance)
+//   3. clearIndexedDbPersistence (efface base IndexedDB Firestore locale)
+//   4. localStorage clear (par securite, sessions PWA)
+//   5. reload (repart d'un etat propre)
+async function hardResetSession(): Promise<void> {
+  try {
+    await signOut();
+  } catch {}
+  try {
+    await terminate(db);
+  } catch {}
+  try {
+    await clearIndexedDbPersistence(db);
+  } catch {
+    // peut throw si autre tab a la persistance ouverte
+  }
+  try {
+    if (typeof window !== "undefined") {
+      window.localStorage.clear();
+    }
+  } catch {}
+  if (typeof window !== "undefined") {
+    window.location.reload();
+  }
+}
 
 // Login Google par défaut caché (30-04 09h55, demande Yoann post-Naomi).
 // Sur Android Chrome / Samsung Internet, "Continuer avec Google" prend l'email
@@ -105,10 +138,9 @@ export function AuthGateFirebase({ children }: { children: React.ReactNode }) {
             Connecté en tant que <code>{user.email}</code>
           </p>
           <p className="text-amber-300 text-xs bg-amber-900/30 border border-amber-700/50 rounded-lg p-2 text-left">
-            Si tu viens de purger ton cache, attends 5 sec et clique
-            <strong> 🔄 Réessayer</strong>. Si ça insiste, c&apos;est que ton
-            identifiant ne match pas un compte équipe : clique
-            <strong> Se déconnecter</strong> et retape ton vrai email + PIN.
+            1. Clique <strong>🔄 Réessayer</strong>.<br />
+            2. Si ça insiste, clique <strong>♻ Reset complet</strong> (efface la
+            base locale corrompue) et retape le PIN.
           </p>
           <button
             onClick={() => window.location.reload()}
@@ -117,16 +149,19 @@ export function AuthGateFirebase({ children }: { children: React.ReactNode }) {
             🔄 Réessayer
           </button>
           <button
+            onClick={() => { void hardResetSession(); }}
+            className="w-full py-2.5 bg-orange-600 hover:bg-orange-700 text-white font-semibold rounded-lg"
+          >
+            ♻ Reset complet (efface la base locale)
+          </button>
+          <button
             onClick={async () => {
               await signOut();
-              // Force un reload après signOut pour repartir d'un état propre :
-              // sans ça, l'écran "Accès refusé" reste affiché parce que
-              // useFirebaseUser ne re-render pas toujours assez vite (30-04 09h50).
               window.location.reload();
             }}
-            className="w-full py-2.5 bg-gray-700 hover:bg-gray-600 text-white font-semibold rounded-lg"
+            className="w-full py-2.5 bg-gray-700 hover:bg-gray-600 text-white font-semibold rounded-lg text-sm"
           >
-            Se déconnecter et retaper le PIN
+            Juste se déconnecter
           </button>
         </div>
       </div>
