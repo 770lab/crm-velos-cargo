@@ -1504,3 +1504,273 @@ export const onVeloWriteSyncClientStats = onDocumentWritten(
     }
   },
 );
+
+// ---------- Envoi BL à Franck (axdis logistique) ----------
+//
+// Demande Yoann (30-04 10h) : à la fin de la prep d'un client, un bouton
+// manuel envoie le BL à Franck@axdis.fr. Pas auto, sur clic explicite.
+// Le PDF est généré server-side avec pdfkit (pas de Chrome headless), envoyé
+// en PJ via SMTP Gmail (même infra que sendPreparationCsv → réutilise le
+// secret GMAIL_APP_PASSWORD et l'expéditeur velos-cargo@artisansverts.energy).
+
+import PDFDocument from "pdfkit";
+
+const FRANCK_EMAIL = "Franck@axdis.fr";
+
+function pdfBlGenerate(opts: {
+  numeroBL: string;
+  dateLiv: string;
+  tourneeRef: string;
+  clientName: string;
+  clientAdresse: string;
+  clientCpVille: string;
+  clientSiren: string | null;
+  clientTel: string | null;
+  fnucis: string[];
+}): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument({ size: "A4", margin: 40 });
+      const chunks: Buffer[] = [];
+      doc.on("data", (c) => chunks.push(Buffer.from(c)));
+      doc.on("end", () => resolve(Buffer.concat(chunks)));
+      doc.on("error", reject);
+
+      // Titre
+      doc.fontSize(18).font("Helvetica-Bold").text("BON DE LIVRAISON", { align: "center" });
+      doc.moveDown(0.4);
+      doc
+        .fontSize(11)
+        .font("Helvetica")
+        .text(`N° ${opts.numeroBL}`, { align: "center" })
+        .moveDown(0.2)
+        .text(`Date prévue : ${opts.dateLiv}`, { align: "center" })
+        .text(`Tournée : ${opts.tourneeRef}`, { align: "center" });
+      doc.moveDown(1);
+
+      // Box émetteur
+      doc.fontSize(10).font("Helvetica-Bold").text("Émetteur");
+      doc
+        .fontSize(9)
+        .font("Helvetica")
+        .text("LES ARTISANS VERTS SAS")
+        .text("6 passage Eugène Barbier, 92400 Courbevoie")
+        .text("contact@artisansverts.energy · 01 87 66 27 08")
+        .text("SIRET : 878 062 793 00038");
+      doc.moveDown(0.8);
+
+      // Box destinataire
+      doc.fontSize(10).font("Helvetica-Bold").text("Destinataire");
+      doc
+        .fontSize(10)
+        .font("Helvetica-Bold")
+        .text(opts.clientName);
+      doc
+        .fontSize(9)
+        .font("Helvetica")
+        .text(opts.clientAdresse)
+        .text(opts.clientCpVille);
+      if (opts.clientSiren) doc.text(`SIREN : ${opts.clientSiren}`);
+      if (opts.clientTel) doc.text(`Tél : ${opts.clientTel}`);
+      doc.moveDown(1);
+
+      // Tableau FNUCI
+      doc.fontSize(11).font("Helvetica-Bold").text(`Vélos cargo livrés (${opts.fnucis.length})`);
+      doc.moveDown(0.3);
+      doc.fontSize(9).font("Courier");
+      const colWidth = (doc.page.width - 80) / 2;
+      let y = doc.y;
+      opts.fnucis.forEach((fn, i) => {
+        const col = i % 2;
+        const x = 40 + col * colWidth;
+        if (col === 0 && i > 0) y = doc.y;
+        doc.text(`${String(i + 1).padStart(2, " ")}. ${fn}`, x, y, { width: colWidth });
+      });
+      doc.moveDown(1.5);
+
+      // Pied
+      doc
+        .fontSize(8)
+        .font("Helvetica")
+        .fillColor("#666")
+        .text(
+          "Document interne LES ARTISANS VERTS — émis dans le cadre du programme CEE Vélos Cargo. " +
+            "Les FNUCI listés sont marqués livrés à la signature du présent BL. Ne pas altérer.",
+          { align: "left" },
+        );
+
+      doc.end();
+    } catch (e) {
+      reject(e instanceof Error ? e : new Error(String(e)));
+    }
+  });
+}
+
+export const sendBlToFranck = onCall<{ tourneeId: string; clientId: string }>(
+  { secrets: [GMAIL_APP_PASSWORD], timeoutSeconds: 90, memory: "512MiB" },
+  async (request) => {
+    if (!request.auth) {
+      throw new HttpsError("unauthenticated", "Authentification requise");
+    }
+    const { tourneeId, clientId } = request.data || {};
+    if (!tourneeId || !clientId) {
+      throw new HttpsError("invalid-argument", "tourneeId + clientId requis");
+    }
+    const password = GMAIL_APP_PASSWORD.value();
+    if (!password) {
+      throw new HttpsError("failed-precondition", "GMAIL_APP_PASSWORD non configurée");
+    }
+
+    // 1. Charge la livraison du couple (tournée, client)
+    const livSnap = await db
+      .collection("livraisons")
+      .where("tourneeId", "==", tourneeId)
+      .where("clientId", "==", clientId)
+      .get();
+    if (livSnap.empty) {
+      throw new HttpsError("not-found", "Aucune livraison trouvée pour ce client/tournée");
+    }
+    const livDoc = livSnap.docs[0];
+    const livData = livDoc.data() as {
+      datePrevue?: { toDate?: () => Date } | string;
+      numero?: number;
+      numeroBL?: string;
+      tourneeNumero?: number;
+      clientSnapshot?: { entreprise?: string; adresse?: string; codePostal?: string; ville?: string; siren?: string; telephone?: string };
+    };
+
+    // 2. Numéro BL : si pas encore attribué, on en génère un séquentiel BL-YYYY-NNNNN
+    //    via getBlForTournee côté GAS legacy. Plus simple : on lit le doc, et si
+    //    numeroBL absent, on en pose un basé sur compteur Firestore.
+    let numeroBL = livData.numeroBL;
+    if (!numeroBL) {
+      const year = new Date().getFullYear();
+      const counterRef = db.collection("counters").doc(`bl-${year}`);
+      const next = await db.runTransaction(async (tx) => {
+        const snap = await tx.get(counterRef);
+        const n = snap.exists ? (snap.data()?.n || 0) + 1 : 1;
+        tx.set(counterRef, { n }, { merge: true });
+        return n;
+      });
+      numeroBL = `BL-${year}-${String(next).padStart(5, "0")}`;
+      await livDoc.ref.update({ numeroBL });
+    }
+
+    // 3. Charge les infos client (priorité au snapshot dans la livraison, fallback sur clients/)
+    const cs = livData.clientSnapshot || {};
+    let clientName = cs.entreprise || "";
+    let clientAdresse = cs.adresse || "";
+    let clientCp = cs.codePostal || "";
+    let clientVille = cs.ville || "";
+    let clientSiren = cs.siren || null;
+    let clientTel = cs.telephone || null;
+    if (!clientName) {
+      const cDoc = await db.collection("clients").doc(clientId).get();
+      if (cDoc.exists) {
+        const cd = cDoc.data() as Record<string, unknown>;
+        clientName = (cd.entreprise as string) || "";
+        clientAdresse = (cd.adresse as string) || "";
+        clientCp = (cd.codePostal as string) || "";
+        clientVille = (cd.ville as string) || "";
+        clientSiren = (cd.siren as string) || null;
+        clientTel = (cd.telephone as string) || null;
+      }
+    }
+
+    // 4. Liste des FNUCI préparés pour ce client
+    const vSnap = await db.collection("velos").where("clientId", "==", clientId).get();
+    const fnucis: string[] = [];
+    for (const v of vSnap.docs) {
+      const vd = v.data() as { fnuci?: string; annule?: boolean; datePreparation?: unknown };
+      if (vd.annule) continue;
+      if (!vd.datePreparation) continue; // on inclut uniquement ce qui est préparé
+      if (vd.fnuci) fnucis.push(vd.fnuci);
+    }
+    fnucis.sort();
+
+    // 5. Date / tournée ref
+    let dateLivStr = "";
+    const dp = livData.datePrevue;
+    if (dp) {
+      const dt = typeof dp === "string" ? new Date(dp) : dp.toDate?.() || null;
+      if (dt) dateLivStr = dt.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
+    }
+    const tourneeNum = livData.tourneeNumero ?? livData.numero;
+    const tourneeRef = typeof tourneeNum === "number" ? `TOURNEE ${tourneeNum}` : tourneeId;
+
+    // 6. Génère le PDF
+    const pdfBuffer = await pdfBlGenerate({
+      numeroBL,
+      dateLiv: dateLivStr,
+      tourneeRef,
+      clientName,
+      clientAdresse,
+      clientCpVille: `${clientCp} ${clientVille}`.trim(),
+      clientSiren,
+      clientTel,
+      fnucis,
+    });
+
+    // 7. Envoi mail
+    const subject = `BL ${numeroBL} — ${clientName} (${fnucis.length} vélo${fnucis.length > 1 ? "s" : ""})`;
+    const body = [
+      `Bonjour Franck,`,
+      ``,
+      `Voici le bon de livraison pour ${clientName} :`,
+      ``,
+      `  N°    : ${numeroBL}`,
+      `  Date  : ${dateLivStr}`,
+      `  Vélos : ${fnucis.length}`,
+      `  Réf.  : ${tourneeRef}`,
+      ``,
+      `Le PDF est en pièce jointe.`,
+      ``,
+      `Merci,`,
+      `Yoann`,
+    ].join("\n");
+
+    const transporter = nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
+      auth: { user: SENDER_EMAIL, pass: password },
+    });
+
+    try {
+      const info = await transporter.sendMail({
+        from: `"VELO CARGO" <${SENDER_EMAIL}>`,
+        to: FRANCK_EMAIL,
+        cc: SENDER_EMAIL,
+        subject,
+        text: body,
+        attachments: [
+          {
+            filename: `${numeroBL}-${(clientName || "client").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.pdf`,
+            content: pdfBuffer,
+            contentType: "application/pdf",
+          },
+        ],
+      });
+      logger.info("sendBlToFranck envoyé", {
+        tourneeId,
+        clientId,
+        numeroBL,
+        velosCount: fnucis.length,
+        messageId: info.messageId,
+        to: FRANCK_EMAIL,
+      });
+      return {
+        ok: true,
+        messageId: info.messageId,
+        sentTo: FRANCK_EMAIL,
+        numeroBL,
+        velosCount: fnucis.length,
+        clientName,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error("sendBlToFranck SMTP failed", { tourneeId, clientId, err: msg });
+      throw new HttpsError("internal", `Envoi SMTP échoué : ${msg}`);
+    }
+  },
+);

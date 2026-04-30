@@ -907,6 +907,16 @@ function Inner({ mode }: { mode: ScanMode }) {
                   >
                     📄 Imprimer le bon de livraison (A4)
                   </a>
+                  {/* Envoi du BL à Franck (axdis logistique) — manuel, sur clic
+                      explicite (30-04 10h, demande Yoann). N'est dispo qu'en
+                      mode focus client (un BL par client, pas un global). */}
+                  {focusClientId && (
+                    <SendBlToFranckButton
+                      tourneeId={tourneeId}
+                      clientId={focusClientId}
+                      clientName={focusClient?.entreprise || "ce client"}
+                    />
+                  )}
                 </div>
               );
             })()}
@@ -1124,5 +1134,69 @@ function DeliveredButton({
         </div>
       )}
     </div>
+  );
+}
+
+// Bouton manuel "Envoyer le BL à Franck@axdis.fr" (30-04 10h, demande Yoann).
+// Apparaît dans la zone fin de prep (mode focus client), à côté des boutons
+// Imprimer étiquettes / Imprimer BL. Génère le PDF côté serveur via la Cloud
+// Function sendBlToFranck (pdfkit) puis envoie via SMTP Gmail. Pas auto :
+// l'opérateur clique quand il veut.
+function SendBlToFranckButton({
+  tourneeId,
+  clientId,
+  clientName,
+}: {
+  tourneeId: string;
+  clientId: string;
+  clientName: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<{ numeroBL: string; velosCount: number } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+
+  const send = async () => {
+    setBusy(true);
+    setErr(null);
+    try {
+      const { httpsCallable, getFunctions } = await import("firebase/functions");
+      const { firebaseApp } = await import("@/lib/firebase");
+      const fn = httpsCallable<
+        { tourneeId: string; clientId: string },
+        { ok: true; messageId: string; sentTo: string; numeroBL: string; velosCount: number; clientName: string }
+      >(getFunctions(firebaseApp, "europe-west1"), "sendBlToFranck");
+      const r = await fn({ tourneeId, clientId });
+      setDone({ numeroBL: r.data.numeroBL, velosCount: r.data.velosCount });
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <div className="text-center bg-white border border-emerald-400 text-emerald-800 rounded-lg py-2.5 text-xs">
+        ✅ Mail envoyé à Franck@axdis.fr · {done.numeroBL} · {done.velosCount} vélo{done.velosCount > 1 ? "s" : ""}
+      </div>
+    );
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={send}
+        disabled={busy}
+        className="block w-full text-center bg-white border border-emerald-400 text-emerald-800 rounded-lg py-3 text-sm font-semibold hover:bg-emerald-100 disabled:opacity-60"
+      >
+        {busy ? "⏳ Envoi du BL à Franck…" : `📤 Envoyer le BL de ${clientName} à Franck`}
+      </button>
+      {err && (
+        <div className="text-xs bg-red-50 border border-red-200 text-red-800 rounded p-2">
+          {err}
+        </div>
+      )}
+    </>
   );
 }
