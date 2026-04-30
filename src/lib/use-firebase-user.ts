@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { onAuthStateChanged, type User } from "firebase/auth";
-import { doc, onSnapshot } from "firebase/firestore";
+import { doc, onSnapshot, getDocFromServer } from "firebase/firestore";
 import { auth, db } from "./firebase";
 import { setCurrentUser, clearCurrentUser } from "./current-user";
 
@@ -71,56 +71,85 @@ export function useFirebaseUser(): FirebaseUserState {
 
       setState((s) => ({ ...s, loading: true, user }));
 
+      // Fix définitif "Accès refusé" alors que doc existe (30-04 11h12).
+      // Cause récurrente : IndexedDB Firestore persistance corrompue/désync
+      // localement → onSnapshot fire avec snap.exists()=false alors que le
+      // doc EXISTE côté serveur. Avant : on basculait direct en denyReason.
+      // Maintenant : avant denyReason, on refait un getDocFromServer (bypass
+      // cache local) → si serveur dit exists=true, on accepte (= vérité).
+      const memberRef = doc(db, "equipe", user.uid);
+
+      const acceptMember = (data: EquipeMemberDoc) => {
+        if (!data.actif) {
+          clearCurrentUser();
+          setState({
+            loading: false,
+            user,
+            member: null,
+            denyReason: "Compte désactivé.",
+          });
+          return;
+        }
+        setCurrentUser({
+          id: user.uid,
+          nom: data.nom,
+          role: data.role,
+          estChefMonteur: data.estChefMonteur === true,
+        });
+        setState({
+          loading: false,
+          user,
+          member: { ...data, uid: user.uid },
+          denyReason: null,
+        });
+      };
+
+      const verifyServerThenDeny = async () => {
+        // Bypass total du cache local : interroge directement le serveur.
+        // Si IndexedDB local dit "doc absent" mais que le serveur dit
+        // "doc présent", on fait confiance au serveur (vérité).
+        try {
+          const fresh = await getDocFromServer(memberRef);
+          if (fresh.exists()) {
+            acceptMember(fresh.data() as EquipeMemberDoc);
+            return;
+          }
+        } catch (err) {
+          // Si le getDocFromServer plante (offline, perms…), on n'a aucune
+          // info fiable → on déclare denyReason mais avec un message clair.
+          setState({
+            loading: false,
+            user,
+            member: null,
+            denyReason: `Vérification serveur impossible : ${err instanceof Error ? err.message : String(err)}`,
+          });
+          return;
+        }
+        // Le serveur confirme que le doc n'existe pas → vrai cas d'accès refusé.
+        clearCurrentUser();
+        setState({
+          loading: false,
+          user,
+          member: null,
+          denyReason: "Compte non rattaché à un membre d'équipe.",
+        });
+      };
+
       unsubMember = onSnapshot(
-        doc(db, "equipe", user.uid),
-        // includeMetadataChanges : on reçoit des updates intermédiaires avec
-        // snap.metadata.fromCache pour distinguer cache vs serveur. Sans ça,
-        // Firestore peut fire un seul snap "best effort" qui peut être vide
-        // après une purge cache → "Accès refusé" prématuré (Naomi 30-04 09h45).
+        memberRef,
         { includeMetadataChanges: true },
         (snap) => {
-          // Si le snap vient du cache offline (persistance) ET que le doc
-          // n'existe pas localement, c'est probablement parce que le cache
-          // a été purgé. On attend le snap serveur (qui suivra) avant de
-          // décider. Ça évite le faux "Accès refusé" post-purge.
+          // Snap depuis le cache offline ET vide → on ignore, on attend le serveur.
           if (!snap.exists() && snap.metadata.fromCache) {
             return;
           }
           if (!snap.exists()) {
-            clearCurrentUser();
-            setState({
-              loading: false,
-              user,
-              member: null,
-              denyReason: "Compte non rattaché à un membre d'équipe.",
-            });
+            // Verif serveur avant de bascule en denyReason (peut être un
+            // faux négatif du onSnapshot quand IndexedDB local est corrompu).
+            void verifyServerThenDeny();
             return;
           }
-          const data = snap.data() as EquipeMemberDoc;
-          if (!data.actif) {
-            clearCurrentUser();
-            setState({
-              loading: false,
-              user,
-              member: null,
-              denyReason: "Compte désactivé.",
-            });
-            return;
-          }
-          // Compat legacy : pages qui utilisent encore useCurrentUser() continuent
-          // de fonctionner. À retirer quand toutes les pages utilisent useFirebaseUser.
-          setCurrentUser({
-            id: user.uid,
-            nom: data.nom,
-            role: data.role,
-            estChefMonteur: data.estChefMonteur === true,
-          });
-          setState({
-            loading: false,
-            user,
-            member: { ...data, uid: user.uid },
-            denyReason: null,
-          });
+          acceptMember(snap.data() as EquipeMemberDoc);
         },
         (err) => {
           setState({
