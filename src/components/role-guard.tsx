@@ -10,15 +10,19 @@ import type { EquipeRole } from "@/lib/data-context";
 // doivent pas pouvoir taper /clients ou /finances dans la barre d'URL et
 // arriver sur la page (même si Firestore refuserait les reads, ça affiche
 // l'erreur banner — UX dégradée).
+// /etiquettes et /bl : tous les rôles terrain en ont besoin (préparateur
+// imprime les étiquettes carton à la fin de la prep, chauffeur réimprime
+// un BL en route si carton perdu, etc.). Bug 30-04 09h05 : preparateur
+// (Naomi) bloqué sur /etiquettes → redirige vers /livraisons par RoleGuard.
 const ALLOWED: Record<EquipeRole, string[]> = {
   superadmin: ["/"],
   admin: ["/"],
-  preparateur: ["/livraisons", "/preparation", "/tournee-execute"],
-  chef: ["/livraisons", "/clients", "/equipe", "/preparation", "/chargement", "/livraison", "/montage", "/tournee-execute"],
-  chauffeur: ["/livraisons", "/chargement", "/livraison", "/tournee-execute"],
+  preparateur: ["/livraisons", "/preparation", "/tournee-execute", "/etiquettes", "/bl"],
+  chef: ["/livraisons", "/clients", "/equipe", "/preparation", "/chargement", "/livraison", "/montage", "/tournee-execute", "/etiquettes", "/bl"],
+  chauffeur: ["/livraisons", "/chargement", "/livraison", "/tournee-execute", "/etiquettes", "/bl"],
   // /finances est autorisé pour les monteurs : page elle-même filtre par
   // estChefMonteur (les monteurs simples voient le 403 amber).
-  monteur: ["/livraisons", "/montage", "/tournee-execute", "/finances"],
+  monteur: ["/livraisons", "/montage", "/tournee-execute", "/finances", "/etiquettes", "/bl"],
   apporteur: ["/", "/clients", "/livraisons"],
 };
 
