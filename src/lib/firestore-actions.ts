@@ -27,6 +27,7 @@ import {
   orderBy,
   limit,
   getDocs,
+  getDocsFromServer,
   runTransaction,
   Timestamp,
   type FieldValue,
@@ -1227,7 +1228,9 @@ export async function runFirestoreAction(
       const LOCK_ORDER_DISABLED = true;
 
       // 1. Trouve le vélo via FNUCI
-      const vSnap = await getDocs(
+      // getDocsFromServer (bypass cache, 30-04 11h45) : evite les faux
+      // 'déjà scanné' apres un Tout-annuler quand le cache local est en retard.
+      const vSnap = await getDocsFromServer(
         query(collection(db, "velos"), where("fnuci", "==", fnuci)),
       );
       if (vSnap.empty) {
@@ -1736,7 +1739,10 @@ export async function runFirestoreAction(
       }
 
       // 1. Résoudre cartonToken → vélo
-      const vSnap = await getDocs(
+      // getDocsFromServer (bypass cache local) : sinon le cache IndexedDB peut
+      // servir un vieux dateChargement non synchronisé après un Tout-annuler →
+      // faux 'déjà scanné' alors que le serveur dit pas (Yoann 30-04 11h45).
+      const vSnap = await getDocsFromServer(
         query(collection(db, "velos"), where("cartonToken", "==", cartonToken)),
       );
       const matches = vSnap.docs.filter((d) => !(d.data() as { annule?: boolean }).annule);
