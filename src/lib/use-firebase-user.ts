@@ -73,7 +73,19 @@ export function useFirebaseUser(): FirebaseUserState {
 
       unsubMember = onSnapshot(
         doc(db, "equipe", user.uid),
+        // includeMetadataChanges : on reçoit des updates intermédiaires avec
+        // snap.metadata.fromCache pour distinguer cache vs serveur. Sans ça,
+        // Firestore peut fire un seul snap "best effort" qui peut être vide
+        // après une purge cache → "Accès refusé" prématuré (Naomi 30-04 09h45).
+        { includeMetadataChanges: true },
         (snap) => {
+          // Si le snap vient du cache offline (persistance) ET que le doc
+          // n'existe pas localement, c'est probablement parce que le cache
+          // a été purgé. On attend le snap serveur (qui suivra) avant de
+          // décider. Ça évite le faux "Accès refusé" post-purge.
+          if (!snap.exists() && snap.metadata.fromCache) {
+            return;
+          }
           if (!snap.exists()) {
             clearCurrentUser();
             setState({

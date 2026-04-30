@@ -95,6 +95,16 @@ export function AuthGateFirebase({ children }: { children: React.ReactNode }) {
           <p className="text-gray-500 text-xs">
             Connecté en tant que <code>{user.email}</code>
           </p>
+          <p className="text-amber-300 text-xs bg-amber-900/30 border border-amber-700/50 rounded-lg p-2">
+            Tu viens de purger ton cache ? Ce message peut apparaître quelques
+            secondes le temps que la base se synchronise. Clique &quot;Réessayer&quot;.
+          </p>
+          <button
+            onClick={() => window.location.reload()}
+            className="w-full py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white font-semibold rounded-lg"
+          >
+            🔄 Réessayer
+          </button>
           <button
             onClick={() => signOut()}
             className="w-full py-2.5 bg-gray-700 hover:bg-gray-600 text-white font-semibold rounded-lg"
