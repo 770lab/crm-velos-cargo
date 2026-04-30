@@ -224,6 +224,11 @@ export default function PhotoGeminiCapture({
   const [cameraError, setCameraError] = useState<string | null>(null);
   const [shooting, setShooting] = useState(false);
   const [mirrorErrors, setMirrorErrors] = useState<Array<{ fnuci: string; error: string }>>([]);
+  // Saisie manuelle FNUCI (30-04 12h28 : Gemini hallucine sur des chars
+  // ambigus 0/O, S/5, Z/2 → l'opérateur tape les 10 chars du BicyCode lisibles).
+  const [manualFnuci, setManualFnuci] = useState("");
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualMsg, setManualMsg] = useState<{ ok: boolean; text: string } | null>(null);
 
   // Si lockedClientId fourni, on force forceClientId à cette valeur. L'effet
   // garantit que ça reste sync même si la URL change pendant la session.
@@ -459,6 +464,51 @@ export default function PhotoGeminiCapture({
     if (onAfter) onAfter();
   }, [tourneeId, userId, etape, forceClientId, onAfter]);
 
+  // Validation manuelle d'un FNUCI tapé (30-04 12h28). Bypass Gemini quand
+  // les caractères ambigus (0/O, S/5, Z/2) le mettent en échec. Appelle
+  // directement la même action serveur que la photo réussie aurait appelée :
+  // - preparation : assignFnuciToClient (si forceClientId) puis markVeloPrepare
+  // - chargement : markVeloCharge
+  // - livraisonScan : markVeloLivreScan
+  const submitManual = useCallback(async () => {
+    setManualMsg(null);
+    const fn = manualFnuci.trim().toUpperCase();
+    if (!/^BC[A-Z0-9]{8}$/.test(fn)) {
+      setManualMsg({ ok: false, text: "Format invalide. Attendu BC + 8 caractères (lettres/chiffres MAJ)." });
+      return;
+    }
+    setManualBusy(true);
+    try {
+      let resp: { ok?: boolean; error?: string; code?: string; clientName?: string | null } = {};
+      if (etape === "preparation") {
+        if (forceClientId) {
+          const a = await gasPost("assignFnuciToClient", { fnuci: fn, clientId: forceClientId }) as
+            { ok?: boolean; error?: string; alreadySameClient?: boolean };
+          if (a.error && !a.alreadySameClient) {
+            setManualMsg({ ok: false, text: a.error });
+            return;
+          }
+        }
+        resp = await gasPost("markVeloPrepare", { fnuci: fn, tourneeId, userId: userId || "", bypassOrderLock: bypassOrderLock || undefined }) as typeof resp;
+      } else if (etape === "chargement") {
+        resp = await gasPost("markVeloCharge", { fnuci: fn, tourneeId, userId: userId || "", bypassOrderLock: bypassOrderLock || undefined }) as typeof resp;
+      } else {
+        resp = await gasPost("markVeloLivreScan", { fnuci: fn, tourneeId, userId: userId || "", bypassOrderLock: bypassOrderLock || undefined }) as typeof resp;
+      }
+      if (resp.error) {
+        setManualMsg({ ok: false, text: resp.error });
+        return;
+      }
+      setManualMsg({ ok: true, text: `✓ ${fn}${resp.clientName ? ` · ${resp.clientName}` : ""}` });
+      setManualFnuci("");
+      if (onAfter) onAfter();
+    } catch (e) {
+      setManualMsg({ ok: false, text: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setManualBusy(false);
+    }
+  }, [manualFnuci, etape, forceClientId, tourneeId, userId, bypassOrderLock, onAfter]);
+
   const pendingCount = items.filter((i) => i.status === "pending").length;
   const processingCount = items.filter((i) => i.status === "processing").length;
   const doneCount = items.filter((i) => i.status === "done").length;
@@ -489,6 +539,43 @@ export default function PhotoGeminiCapture({
           </button>
         </div>
       )}
+
+      {/* Saisie manuelle FNUCI (30-04 12h28) : fallback quand Gemini hallucine
+          des chars ambigus 0/O, S/5, Z/2. L'opérateur tape les 10 caractères
+          du BicyCode lisible et valide directement, sans repasser par Gemini. */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-2 space-y-1.5">
+        <div className="text-[11px] text-blue-900">
+          ✏️ Si Gemini hallucine, tape le FNUCI à la main :
+        </div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            value={manualFnuci}
+            onChange={(e) => setManualFnuci(e.target.value.toUpperCase())}
+            onKeyDown={(e) => { if (e.key === "Enter") void submitManual(); }}
+            placeholder="BCXXXXXXXX"
+            maxLength={10}
+            autoCapitalize="characters"
+            autoCorrect="off"
+            spellCheck={false}
+            disabled={manualBusy}
+            className="flex-1 px-2 py-1.5 border border-blue-300 rounded bg-white text-sm font-mono uppercase tracking-wider focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+          />
+          <button
+            type="button"
+            onClick={() => void submitManual()}
+            disabled={manualBusy || manualFnuci.length !== 10}
+            className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm font-medium disabled:opacity-40"
+          >
+            {manualBusy ? "⏳" : "Valider"}
+          </button>
+        </div>
+        {manualMsg && (
+          <div className={`text-[11px] ${manualMsg.ok ? "text-emerald-700" : "text-red-700"}`}>
+            {manualMsg.text}
+          </div>
+        )}
+      </div>
       {lockedClient ? (
         <div className="bg-emerald-50 border border-emerald-300 rounded-lg p-2.5 flex items-center justify-between gap-2">
           <div>
