@@ -1784,6 +1784,10 @@ function TourneeModal({
     return MONTEURS_PAR_EQUIPE;
   });
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Modal saisie manuelle bon d'enlèvement (30-04 10h15) : quand le pipeline
+  // gas-inbox/Gemini échoue (mail non extrait, doc mal classé), Yoann saisit
+  // le bon directement depuis l'UI au lieu d'aller bidouiller le Sheet GAS.
+  const [manualBonOpen, setManualBonOpen] = useState(false);
   // Modal report (29-04 14h56) : liste des livraisons en cours de report.
   // null = modal fermée. Sert pour le report 1 livraison ET le report bulk.
   const [reportTargets, setReportTargets] = useState<Array<{ id: string; entreprise: string }> | null>(null);
@@ -2612,7 +2616,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           });
           if (!be) {
             return (
-              <div className="mb-3 inline-flex items-center gap-2 text-sm px-3 py-2 rounded-lg border bg-gray-50 border-gray-200 text-gray-500">
+              <div className="mb-3 flex items-center gap-2 flex-wrap text-sm px-3 py-2 rounded-lg border bg-gray-50 border-gray-200 text-gray-500">
                 <span>📋</span>
                 <span>Bon d&apos;enlèvement non reçu</span>
                 <button
@@ -2637,10 +2641,18 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                     }
                   }}
                   disabled={busy === "syncBons"}
-                  className="ml-1 text-xs px-2 py-0.5 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-50"
+                  className="text-xs px-2 py-0.5 rounded border border-gray-300 hover:bg-gray-100 disabled:opacity-50"
                   title="Force une sync immédiate des bons reçus depuis GAS (sans attendre le cron 15 min)"
                 >
                   {busy === "syncBons" ? "⏳" : "🔄 Sync maintenant"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setManualBonOpen(true)}
+                  className="text-xs px-2 py-0.5 rounded border border-blue-300 bg-blue-50 text-blue-700 hover:bg-blue-100"
+                  title="Saisir le bon manuellement (quand le pipeline auto échoue)"
+                >
+                  ✏️ Saisir manuellement
                 </button>
               </div>
             );
@@ -3361,6 +3373,18 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           onClose={() => setShowBrief(false)}
         />
       )}
+      {manualBonOpen && (
+        <ManualBonModal
+          tourneeId={tournee.tourneeId || ""}
+          tourneeNumero={tournee.numero ?? null}
+          totalVelos={tournee.totalVelos}
+          onClose={() => setManualBonOpen(false)}
+          onSaved={() => {
+            setManualBonOpen(false);
+            onChanged();
+          }}
+        />
+      )}
       {reportTargets && (
         <div
           className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4"
@@ -3431,6 +3455,152 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Modal de saisie manuelle d'un bon d'enlèvement (30-04 10h15). Yoann renseigne
+// numéro de bon + quantité + URL Drive optionnelle quand le pipeline auto
+// (gas-inbox → Gemini → Sheet GAS → syncFromGas → Firestore) a échoué pour un
+// mail. Écrit directement dans bonsEnlevement avec manual: true.
+function ManualBonModal({
+  tourneeId,
+  tourneeNumero,
+  totalVelos,
+  onClose,
+  onSaved,
+}: {
+  tourneeId: string;
+  tourneeNumero: number | null;
+  totalVelos: number;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
+  const [numeroDoc, setNumeroDoc] = useState("");
+  const [quantite, setQuantite] = useState<string>(String(totalVelos));
+  const [driveUrl, setDriveUrl] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErr(null);
+    if (!numeroDoc.trim()) {
+      setErr("Numéro du bon obligatoire");
+      return;
+    }
+    const q = parseInt(quantite, 10);
+    if (!q || q <= 0) {
+      setErr("Quantité invalide");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = (await gasPost("addBonEnlevementManual", {
+        tourneeId,
+        tourneeNumero,
+        numeroDoc: numeroDoc.trim(),
+        quantite: q,
+        driveUrl: driveUrl.trim() || undefined,
+      })) as { ok?: boolean; error?: string };
+      if (r.error) {
+        setErr(r.error);
+        return;
+      }
+      onSaved();
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4"
+      onClick={() => { if (!busy) onClose(); }}
+    >
+      <form
+        className="bg-white rounded-xl p-5 w-full max-w-md space-y-4"
+        onClick={(e) => e.stopPropagation()}
+        onSubmit={submit}
+      >
+        <div>
+          <h3 className="text-lg font-bold text-gray-900">📋 Saisir manuellement le bon d&apos;enlèvement</h3>
+          <p className="text-xs text-gray-600 mt-1">
+            À utiliser quand le mail Tiffany est arrivé mais que le pipeline auto
+            n&apos;a pas réussi à l&apos;extraire (Gemini ou classification ratée).
+            Tournée {tourneeNumero != null ? `n°${tourneeNumero}` : tourneeId}, {totalVelos} vélos prévus.
+          </p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Numéro du bon AXDIS *
+          </label>
+          <input
+            type="text"
+            value={numeroDoc}
+            onChange={(e) => setNumeroDoc(e.target.value)}
+            placeholder="ex : 354785"
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+            autoFocus
+          />
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            Quantité de vélos *
+          </label>
+          <input
+            type="number"
+            value={quantite}
+            onChange={(e) => setQuantite(e.target.value)}
+            min={1}
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+          />
+          {parseInt(quantite, 10) !== totalVelos && parseInt(quantite, 10) > 0 && (
+            <p className="text-[11px] text-amber-700 mt-1">
+              ⚠ Différent du nombre de vélos dans la tournée ({totalVelos}). Vérifie.
+            </p>
+          )}
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-700 mb-1">
+            URL Drive du PDF (optionnel)
+          </label>
+          <input
+            type="url"
+            value={driveUrl}
+            onChange={(e) => setDriveUrl(e.target.value)}
+            placeholder="https://drive.google.com/..."
+            className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
+          />
+          <p className="text-[11px] text-gray-500 mt-1">
+            Si tu colles l&apos;URL, le bouton &quot;Voir le PDF&quot; sera dispo. Sinon laisse vide.
+          </p>
+        </div>
+        {err && (
+          <div className="bg-red-50 border border-red-200 text-red-800 text-sm rounded p-2">
+            {err}
+          </div>
+        )}
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 rounded-lg disabled:opacity-50"
+          >
+            Annuler
+          </button>
+          <button
+            type="submit"
+            disabled={busy}
+            className="px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-medium"
+          >
+            {busy ? "⏳ Enregistrement…" : "Enregistrer"}
+          </button>
+        </div>
+      </form>
     </div>
   );
 }

@@ -170,6 +170,7 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "uploadVeloPhoto",
   // sync admin
   "syncBonsNow",
+  "addBonEnlevementManual",
   // batch admin
   "bulkAutoValidate",
   "importClients",
@@ -3147,6 +3148,41 @@ export async function runFirestoreAction(
           error: e instanceof Error ? e.message : String(e),
         };
       }
+    }
+
+    case "addBonEnlevementManual": {
+      // Saisie manuelle d'un bon d'enlèvement (30-04 10h15) : quand le pipeline
+      // gas-inbox → Gemini → Sheet GAS échoue pour un mail (Gemini hallucine /
+      // mail mal classé / etc.), Yoann saisit le bon directement depuis l'UI.
+      // Bypass complet du pipeline auto, écrit directement dans bonsEnlevement.
+      const tourneeId = getRequired(body, "tourneeId");
+      const tourneeNumero = body.tourneeNumero != null ? Number(body.tourneeNumero) : null;
+      const numeroDoc = getString(body, "numeroDoc");
+      const quantite = body.quantite != null ? Number(body.quantite) : null;
+      const driveUrl = getString(body, "driveUrl") || null;
+      const fournisseur = getString(body, "fournisseur") || "AXDIS PRO";
+      if (!numeroDoc) return { ok: false, error: "numeroDoc requis" };
+      if (quantite == null || Number.isNaN(quantite) || quantite <= 0) {
+        return { ok: false, error: "quantite invalide" };
+      }
+      const id = `manual-${tourneeId}-${Date.now()}`;
+      const tourneeRef = tourneeNumero != null
+        ? `VELO CARGO - TOURNEE ${tourneeNumero}`
+        : `VELO CARGO - ${tourneeId}`;
+      await setDoc(doc(db, "bonsEnlevement", id), {
+        tourneeId,
+        tourneeNumero,
+        tourneeRef,
+        fournisseur,
+        numeroDoc,
+        quantite,
+        driveUrl,
+        receivedAt: new Date().toISOString(),
+        manual: true,
+        createdAt: ts(),
+        syncedAt: ts(),
+      });
+      return { ok: true, id };
     }
 
     case "proposeTournee": {
