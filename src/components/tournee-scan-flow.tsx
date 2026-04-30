@@ -845,12 +845,43 @@ function Inner({ mode }: { mode: ScanMode }) {
               const nbWaiting = items.length - nbDone;
               return (
                 <div className="bg-white rounded-xl shadow p-3 mb-3">
-                  <div className="text-xs text-gray-500 mb-2">
-                    {nbDone} {cfg.title.toLowerCase()}é{nbDone > 1 ? "s" : ""}
-                    {nbWaiting > 0 && (
-                      <> · {nbWaiting} FNUCI affecté{nbWaiting > 1 ? "s" : ""} en attente</>
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <div className="text-xs text-gray-500 flex-1">
+                      {nbDone} {cfg.title.toLowerCase()}é{nbDone > 1 ? "s" : ""}
+                      {nbWaiting > 0 && (
+                        <> · {nbWaiting} FNUCI affecté{nbWaiting > 1 ? "s" : ""} en attente</>
+                      )}
+                      {" "}— bouton Annuler pour défaire l&apos;étape, Désaffilier pour libérer le vélo (vide aussi le FNUCI).
+                    </div>
+                    {/* Bouton "Tout annuler" en mode focus client : utile pour
+                        repartir d'un état propre quand des doublons fantômes
+                        ont été créés à cause d'une lenteur précédente
+                        (Yoann 30-04 11h38). Confirmation obligatoire. */}
+                    {focusClient && nbDone > 0 && mode !== "preparation" && (
+                      <button
+                        onClick={async () => {
+                          if (!confirm(`Annuler les ${nbDone} ${cfg.title.toLowerCase()}é${nbDone > 1 ? "s" : ""} de ${focusClient.entreprise} ? À utiliser si tu as des doublons fantômes.`)) return;
+                          setBusy(true);
+                          try {
+                            const doneItems = items.filter((it) => it.etapeDone);
+                            await Promise.all(
+                              doneItems.map((it) =>
+                                gasPost("unmarkVeloEtape", { veloId: it.v.veloId, etape: cfg.unmarkEtape }),
+                              ),
+                            );
+                            await loadProgression();
+                          } catch (e) {
+                            alert("Échec : " + (e instanceof Error ? e.message : String(e)));
+                          } finally {
+                            setBusy(false);
+                          }
+                        }}
+                        disabled={busy}
+                        className="text-[11px] px-2 py-1 rounded bg-red-100 text-red-800 hover:bg-red-200 disabled:opacity-50 whitespace-nowrap"
+                      >
+                        ⟲ Tout annuler
+                      </button>
                     )}
-                    {" "}— bouton Annuler pour défaire l&apos;étape, Désaffilier pour libérer le vélo (vide aussi le FNUCI).
                   </div>
                   <div className="space-y-1.5 max-h-72 overflow-y-auto">
                     {items.map(({ v, clientName, etapeDone }) => (
