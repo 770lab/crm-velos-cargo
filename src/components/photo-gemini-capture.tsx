@@ -165,6 +165,12 @@ type BatchItem = {
   status: "pending" | "processing" | "done" | "error";
   resp?: ExtractResp;
   errorMsg?: string;
+  // Erreur de mirroring serveur (30-04 12h55, demande Yoann "bloque-moi
+  // visuellement quand je scanne le mauvais numéro"). Si Gemini extrait
+  // un FNUCI valide format mais que markVeloPrepare/Charge/LivreScan
+  // échoue côté serveur (FNUCI_INCONNU, hors tournée, etc.), on marque
+  // la vignette en rouge avec le message au lieu du "1/1 marqué" vert.
+  mirrorError?: string;
 };
 
 export type GeminiClientOption = {

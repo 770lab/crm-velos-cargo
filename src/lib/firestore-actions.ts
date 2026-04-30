@@ -2236,6 +2236,10 @@ export async function runFirestoreAction(
       const clientId = getRequired(body, "clientId");
       const monteurId = getRequired(body, "monteurId");
       const cartonToken = getString(body, "cartonToken");
+      // Path FNUCI direct (30-04 12h55) : on scanne le BicyCode FNUCI
+      // colle sur le carton (sticker depose a la prep). Gemini extrait,
+      // on claim ce velo precis. Plus de QR carton intermediaire.
+      const fnuciTarget = getString(body, "fnuci");
       const CLAIM_EXPIRY_MS = 30 * 60 * 1000;
       const nowMs = Date.now();
 
@@ -2257,7 +2261,25 @@ export async function runFirestoreAction(
       const all = cSnap.docs.filter((d) => !(d.data() as { annule?: boolean }).annule);
 
       let target: typeof all[0] | null = null;
-      if (cartonToken) {
+      if (fnuciTarget) {
+        // Path FNUCI direct : on cherche le vélo par FNUCI
+        const fn = fnuciTarget.toUpperCase();
+        target = all.find((d) => (d.data() as { fnuci?: string }).fnuci === fn) || null;
+        if (!target) {
+          return { error: `FNUCI ${fn} pas dans ce client`, code: "FNUCI_INCONNU", fnuci: fn };
+        }
+        const td = target.data() as Record<string, unknown>;
+        if (td.dateMontage) {
+          return { error: "Vélo déjà monté", code: "DEJA_MONTE", fnuci: td.fnuci };
+        }
+        if (isClaimActive(td)) {
+          return {
+            error: "Vélo en cours de montage par un autre monteur",
+            code: "DEJA_CLAIM",
+            claimedBy: td.montageClaimBy,
+          };
+        }
+      } else if (cartonToken) {
         // Path token : résout le slot précis
         target = all.find((d) => (d.data() as { cartonToken?: string }).cartonToken === cartonToken) || null;
         if (!target) {

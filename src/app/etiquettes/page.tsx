@@ -273,10 +273,12 @@ function EtiquettesPage() {
         {pages.map((pageItems, pi) => (
           <div key={pi} className="sheet mx-auto print:mx-0 my-3 print:my-0 shadow print:shadow-none">
             {pageItems.map(({ client, velo, index, total, clientLoadOrder, totalClients }) => {
-              // QR retiré (30-04 11h50 demande Yoann) : refonte complète, on
-              // scanne directement le BicyCode physique du vélo (Gemini Vision)
-              // au chargement / livraison / montage. L'étiquette ne sert plus
-              // qu'à identifier visuellement le client + l'ordre de chargement.
+              // QR définitivement retiré (30-04 12h55, confirmation Yoann après
+              // hésitation : "on oublie le QR, prép/chargement/livraison/montage,
+              // en scannant le FNUCI collé sur le carton"). Sur le carton physique,
+              // l'opérateur de prep colle un sticker BicyCode FNUCI = source de
+              // vérité scannée par Gemini à toutes les étapes. L'étiquette papier
+              // ne sert plus qu'à l'info visuelle (nom client, ordre, n° carton).
               // En mode focus 1 client, l'ordre de chargement n'a pas de sens
               // (le seul client est forcément "1/1"). On le masque.
               const showLoadOrder = !focusClientId && totalClients > 1;
@@ -330,9 +332,7 @@ function EtiquettesPage() {
                   >
                     {client.entreprise}
                   </div>
-                  {/* Bandeau adresse pleine largeur + grand chiffre carton.
-                      Plus de QR : le scan se fait directement sur le BicyCode
-                      du vélo via Gemini Vision (cohérence avec la prép). */}
+                  {/* Numéro de carton en gros (1/17, 2/17...) + adresse */}
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, minHeight: 0, marginTop: "6mm", textAlign: "center" }}>
                     <div style={{ fontSize: "60px", fontWeight: 900, lineHeight: 1, color: "#1a4d2e" }}>
                       {index}<span style={{ fontSize: "30px", fontWeight: 600, color: "#666" }}>/{total}</span>

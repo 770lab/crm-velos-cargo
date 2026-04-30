@@ -357,7 +357,10 @@ function ClientMontageView({
   // Gemini hallucine un caractere (ex BC3FFPVDZH lu au lieu de BCSFFPVDZH)
   // l'opérateur tape directement le code visible sur le sticker BicyCode.
   // Mêmes garde-fous qu'en path Gemini : format strict, doit ∈ client, pas
-  // déjà monté. Transfert claim si différent du vélo claim au step 1.
+  // déjà monté. Comportement selon le step :
+  // - step "scanCarton" : claim le vélo (photo BicyCode du sticker carton),
+  //   passe à step "scanFnuci"
+  // - step "scanFnuci" : transfert claim si différent + passe à "photoMonte"
   const validateManualFnuci = async () => {
     setErrMsg(null);
     const fn = manualFnuci.trim().toUpperCase();
@@ -374,7 +377,39 @@ function ClientMontageView({
       setErrMsg(`${fn} est déjà marqué monté.`);
       return;
     }
-    if (currentFnuci && fn !== currentFnuci && monteurId) {
+    if (!monteurId) {
+      setErrMsg("Pas de monteurId, reconnecte-toi.");
+      return;
+    }
+
+    // Step 1 : claim initial via FNUCI direct
+    if (step === "scanCarton") {
+      setPhase("claiming");
+      try {
+        const r = (await gasPost("claimVeloForMontage", {
+          clientId,
+          monteurId,
+          fnuci: fn,
+        })) as ClaimResp;
+        if (!("ok" in r) || !r.ok) {
+          setErrMsg(("error" in r ? r.error : "Claim refusé") || "Claim refusé");
+          return;
+        }
+        setCurrentFnuci(r.fnuci || fn);
+        setCurrentVeloId(r.veloId);
+        setManualFnuci("");
+        setStep("scanFnuci");
+        await reload();
+      } catch (e) {
+        setErrMsg(e instanceof Error ? e.message : String(e));
+      } finally {
+        setPhase("idle");
+      }
+      return;
+    }
+
+    // Step 2 : transfert claim si nécessaire + passage à photoMonte
+    if (currentFnuci && fn !== currentFnuci) {
       setPhase("transferring");
       try {
         const t = (await gasPost("transferMontageClaim", {
@@ -398,6 +433,67 @@ function ClientMontageView({
     setCurrentFnuci(fn);
     setManualFnuci("");
     setStep("photoMonte");
+  };
+
+  // Step 1 photo : photo du sticker FNUCI collé sur le carton (avant ouverture)
+  // → Gemini extrait → claim ce vélo → step 2.
+  const onCartonFnuciPhotoChosen = async (file: File) => {
+    setErrMsg(null);
+    setPhase("compressing");
+    try {
+      const compressed = await compressImage(file, "fnuci");
+      setPhase("identifying");
+      const ident = (await gasUpload("extractFnuciFromImage", {
+        imageBase64: compressed.base64,
+        mimeType: compressed.mimeType,
+        etape: "identify",
+      })) as IdentifyResp;
+      if ("error" in ident) {
+        setErrMsg(`Gemini : ${ident.error}`);
+        return;
+      }
+      const candidates = ident.extracted;
+      if (candidates.length === 0) {
+        setErrMsg("Aucun FNUCI lisible. Reprends une photo plus nette du sticker FNUCI sur le carton.");
+        return;
+      }
+      const matched = candidates.find((f) => veloByFnuci.has(f));
+      if (!matched) {
+        setErrMsg(
+          `FNUCI extraits (${candidates.join(", ")}) — aucun n'appartient à ${data.entreprise}. ` +
+            `Vérifie ou tape manuellement.`,
+        );
+        return;
+      }
+      const v = veloByFnuci.get(matched)!;
+      if (v.dateMontage) {
+        setErrMsg(`${matched} est déjà monté. Choisis un autre carton.`);
+        return;
+      }
+      if (!monteurId) {
+        setErrMsg("Pas de monteurId, reconnecte-toi.");
+        return;
+      }
+      setPhase("claiming");
+      const r = (await gasPost("claimVeloForMontage", {
+        clientId,
+        monteurId,
+        fnuci: matched,
+      })) as ClaimResp;
+      if (!("ok" in r) || !r.ok) {
+        setErrMsg(("error" in r ? r.error : "Claim refusé") || "Claim refusé");
+        return;
+      }
+      setCurrentFnuci(r.fnuci || matched);
+      setCurrentVeloId(r.veloId);
+      setStep("scanFnuci");
+      await reload();
+    } catch (e) {
+      setErrMsg(e instanceof Error ? e.message : String(e));
+    } finally {
+      setPhase("idle");
+      if (fileRef.current) fileRef.current.value = "";
+    }
   };
 
   // Step 2 : photo BicyCode → Gemini extrait FNUCI → vérifie ∈ vélos client + pas monté.
@@ -636,18 +732,58 @@ function ClientMontageView({
           {step === "scanCarton" && (
             <>
               <div className="text-xs text-gray-500">
-                📦 Scanne le QR de l&apos;étiquette du carton — vérifie qu&apos;il vient bien de {data.entreprise}.
+                📦 Photographie le sticker FNUCI collé sur le carton — Gemini lit le code et claim ce vélo pour toi.
               </div>
-              <button
-                onClick={() => {
-                  setQrFeedback([]);
-                  setQrScannerOpen(true);
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                disabled={busy}
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  if (f) onCartonFnuciPhotoChosen(f);
                 }}
+                className="hidden"
+              />
+              <button
+                onClick={() => fileRef.current?.click()}
                 disabled={busy}
                 className="w-full bg-emerald-600 text-white rounded-lg py-3 font-medium disabled:opacity-50"
               >
-                📦 Scanner le QR carton
+                {phase === "compressing" && "📦 Compression…"}
+                {phase === "identifying" && "🤖 Lecture FNUCI…"}
+                {phase === "claiming" && "🔒 Claim en cours…"}
+                {phase === "idle" && "📦 Photo FNUCI sur le carton"}
               </button>
+              {/* Saisie manuelle FNUCI carton (fallback Gemini hallucine) */}
+              <div className="border-t border-gray-200 pt-3 mt-2">
+                <div className="text-[11px] text-gray-500 mb-1.5">
+                  Ou tape le FNUCI du carton à la main :
+                </div>
+                <div className="flex gap-2">
+                  <input
+                    type="text"
+                    value={manualFnuci}
+                    onChange={(e) => setManualFnuci(e.target.value.toUpperCase())}
+                    placeholder="BCXXXXXXXX"
+                    maxLength={10}
+                    autoCapitalize="characters"
+                    autoCorrect="off"
+                    spellCheck={false}
+                    disabled={busy}
+                    className="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm font-mono tracking-wider uppercase"
+                  />
+                  <button
+                    type="button"
+                    onClick={validateManualFnuci}
+                    disabled={busy || manualFnuci.length !== 10}
+                    className="px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium disabled:opacity-40"
+                  >
+                    Valider
+                  </button>
+                </div>
+              </div>
             </>
           )}
 
