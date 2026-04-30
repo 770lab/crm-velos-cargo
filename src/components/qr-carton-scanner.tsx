@@ -90,28 +90,45 @@ export default function QrCartonScanner({
     if (!canvasRef.current && typeof document !== "undefined") {
       canvasRef.current = document.createElement("canvas");
     }
-    // Compteur de frames sans détection pour activer le mode "boost"
-    // (résolution + inversion) seulement quand le mode rapide n'a rien trouvé.
-    // Yoann 30-04 11h21 : avec attemptBoth + 1280 d'office, scan trop lent
-    // sur iPhone. Compromis : 640 + dontInvert au début (rapide, OK 90% des
-    // cas), basculement boost après ~30 frames sans détection (~0.5s).
+    // ROI (Region Of Interest, 30-04 11h25) : on scanne uniquement le carré
+    // central correspondant au cadre de visée affiché à l'utilisateur, au lieu
+    // de toute l'image. jsQR sur 480×480 = ~3× plus rapide que sur 640×480
+    // full-frame, donc 60fps tient confortablement → détection quasi instantanée.
+    //
+    // Si rien trouvé pendant 20 frames (~0.3s), boost = on élargit au full-frame
+    // pour catcher les QR placés en dehors du cadre (utile en cas de mauvais
+    // cadrage).
     let framesWithoutHit = 0;
     const tick = () => {
       if (cancelled) return;
       const v = videoRef.current;
       const canvas = canvasRef.current;
       if (v && canvas && v.readyState >= 2 && v.videoWidth > 0) {
-        const boost = framesWithoutHit > 30;
-        const longest = Math.max(v.videoWidth, v.videoHeight);
-        const targetMax = boost ? 960 : 640;
+        const boost = framesWithoutHit > 20;
+        let srcX = 0;
+        let srcY = 0;
+        let srcW = v.videoWidth;
+        let srcH = v.videoHeight;
+        if (!boost) {
+          // Crop centré 65% du côté le plus court (≈ taille du cadre de visée).
+          const minDim = Math.min(v.videoWidth, v.videoHeight);
+          const cropSize = Math.round(minDim * 0.65);
+          srcX = Math.round((v.videoWidth - cropSize) / 2);
+          srcY = Math.round((v.videoHeight - cropSize) / 2);
+          srcW = cropSize;
+          srcH = cropSize;
+        }
+        const longest = Math.max(srcW, srcH);
+        // 480px en mode rapide (suffisant pour QR ≥ 100×100 modules), 800 en boost.
+        const targetMax = boost ? 800 : 480;
         const scale = longest > targetMax ? targetMax / longest : 1;
-        const w = Math.round(v.videoWidth * scale);
-        const h = Math.round(v.videoHeight * scale);
+        const w = Math.round(srcW * scale);
+        const h = Math.round(srcH * scale);
         canvas.width = w;
         canvas.height = h;
         const ctx = canvas.getContext("2d", { willReadFrequently: true });
         if (ctx) {
-          ctx.drawImage(v, 0, 0, w, h);
+          ctx.drawImage(v, srcX, srcY, srcW, srcH, 0, 0, w, h);
           try {
             const imgData = ctx.getImageData(0, 0, w, h);
             const code = jsQR(imgData.data, imgData.width, imgData.height, {

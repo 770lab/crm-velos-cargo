@@ -396,6 +396,9 @@ function Inner({ mode }: { mode: ScanMode }) {
           fnuci: scanned,
           tourneeId,
           userId,
+          // expectedClientId : permet au serveur de skip le LIFO check
+          // coûteux quand le verrou client est déjà actif côté front.
+          expectedClientId: lockedClientId || undefined,
           bypassOrderLock: bypassOrderLock || undefined,
         })) as typeof r;
       } else {

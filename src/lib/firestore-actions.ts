@@ -1313,19 +1313,12 @@ export async function runFirestoreAction(
       }
 
       // 4bis. Verrouillage LIFO inter-clients (ordre des clients de la tournée).
-      // Complète ETAPE_PRECEDENTE_MANQUANTE (ordre vertical par vélo) avec un
-      // ordre horizontal : on n'ouvre pas le client N+1 tant que le N n'est
-      // pas terminé. Mode prép/charg = ordre INVERSE (LIFO camion : dernier
-      // livré entre en premier). Mode livraison = ordre tournée.
-      //
-      // Comportement DÉFENSIF : on ne bloque QUE si l'ordre est fiable pour
-      // TOUS les clients de la tournée (champ `ordre` direct OU "arrêt X/N"
-      // dans notes legacy). Sinon on laisse passer (zéro régression sur les
-      // anciennes tournées sans champ ordre détectable).
-      //
-      // Mode bypass admin (cf. ci-dessus) : skip aussi cette vérif.
+      // SKIP si expectedClientId match veloClientId (verrou client front actif) :
+      // perf optim 30-04 11h25, sinon 10-20s par scan sur base 4262 vélos.
+      const expectedClientIdLocal = getString(body, "expectedClientId");
+      const skipLifoLocal = !!(expectedClientIdLocal && expectedClientIdLocal === veloClientId);
       try {
-        if (bypassOrderLock) throw new Error("__bypass_admin__");
+        if (bypassOrderLock || skipLifoLocal) throw new Error("__bypass_admin__");
         const allLivSnap = await getDocs(
           query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
         );
@@ -1840,8 +1833,13 @@ export async function runFirestoreAction(
       }
 
       // 6. Verrou LIFO inter-clients (même logique que markVeloCharge/LivreScan)
+      // SKIP si le verrou client est déjà actif côté front et match le vélo
+      // scanné : la garantie d'ordre est déjà tenue, pas besoin de refaire le
+      // check global qui télécharge tous les vélos de la tournée (lent sur
+      // grosse base : 4262 vélos chez Yoann -> 10-20s par scan, 30-04 11h25).
+      const skipLifoCheck = !!(expectedClientId && expectedClientId === veloClientId);
       try {
-        if (bypassOrderLock) throw new Error("__bypass_admin__");
+        if (bypassOrderLock || skipLifoCheck) throw new Error("__bypass_admin__");
         const allLivSnap = await getDocs(
           query(collection(db, "livraisons"), where("tourneeId", "==", tourneeId)),
         );
