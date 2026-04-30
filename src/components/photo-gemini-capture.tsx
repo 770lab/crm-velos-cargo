@@ -954,8 +954,13 @@ function BatchItemCard({
         ) : needsValidation ? (
           <>
             <div className="text-[10px] text-blue-700 font-semibold uppercase tracking-wide">
-              Vérifie ce code et valide
+              Vérifie chaque caractère
             </div>
+            {/* Affichage caractère par caractère avec surlignage des chars
+                ambigus (S/0/Z/8/1/6/G) en jaune. Aide l'œil de l'opérateur
+                à se concentrer sur les chars où Gemini se trompe le plus.
+                30-04 17h demande Yoann : 100% non-négociable à la prep. */}
+            <FnuciCharGuide value={item.pendingFnuci || ""} />
             <input
               type="text"
               value={item.pendingFnuci || ""}
@@ -964,14 +969,14 @@ function BatchItemCard({
               autoCapitalize="characters"
               autoCorrect="off"
               spellCheck={false}
-              className="w-full px-1.5 py-1 border border-blue-400 rounded bg-white text-xs font-mono uppercase tracking-wider focus:border-blue-600 focus:ring-1 focus:ring-blue-500"
+              className="w-full px-1.5 py-1.5 border-2 border-blue-400 rounded bg-white text-sm font-mono uppercase tracking-widest focus:border-blue-600 focus:ring-2 focus:ring-blue-500"
               placeholder="BCXXXXXXXX"
             />
             <button
               type="button"
               onClick={onValidate}
               disabled={!item.pendingFnuci || item.pendingFnuci.length !== 10}
-              className="w-full px-2 py-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white rounded text-[11px] font-bold"
+              className="w-full px-2 py-1.5 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white rounded text-[11px] font-bold"
             >
               ✓ Valider
             </button>
@@ -995,6 +1000,30 @@ function BatchItemCard({
           </button>
         )}
       </div>
+    </div>
+  );
+}
+
+// Affiche les 10 caractères du FNUCI un par un, avec un fond jaune sur les
+// caractères ambigus en OCR (S/0/Z/8/1/6/G/B/D/O/I/L/2/5). Le préparateur
+// voit immédiatement où regarder pour vérifier que Gemini a bien lu.
+function FnuciCharGuide({ value }: { value: string }) {
+  if (!value) return null;
+  const AMBIGU = new Set(["S", "0", "Z", "8", "1", "6", "G", "B", "D", "O", "I", "L", "2", "5"]);
+  return (
+    <div className="flex justify-center gap-0.5 my-1 select-none">
+      {value.split("").map((c, i) => (
+        <span
+          key={i}
+          className={`inline-flex items-center justify-center w-5 h-6 rounded font-mono text-[13px] font-bold border ${
+            AMBIGU.has(c)
+              ? "bg-amber-200 text-amber-900 border-amber-400"
+              : "bg-gray-100 text-gray-800 border-gray-300"
+          }`}
+        >
+          {c || "·"}
+        </span>
+      ))}
     </div>
   );
 }
