@@ -310,7 +310,10 @@ function ClientMontageView({
   // suffit (testé). Pour la photo de preuve montage, 600/0.55 — pas besoin
   // de fine résolution, juste attester qu'il y a un vélo monté.
   const compressImage = async (file: File, kind: "fnuci" | "monte"): Promise<{ base64: string; mimeType: string }> => {
-    const targetW = kind === "monte" ? 600 : 720;
+    // 1024px pour FNUCI (au lieu de 720) : Gemini a besoin de plus de pixels
+    // sur les chars pour distinguer S/6, 0/D, etc. (30-04 13h35 demande Yoann
+    // d'améliorer la détection caméra). +2x cout réseau mais qualité bien meilleure.
+    const targetW = kind === "monte" ? 600 : 1024;
     const quality = kind === "monte" ? 0.55 : 0.6;
     const dataUrl = await new Promise<string>((resolve, reject) => {
       const r = new FileReader();

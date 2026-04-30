@@ -863,27 +863,27 @@ export const extractDocMetadata = onCall<ExtractPayload>(
 // la logique métier déjà dans firestore-actions.
 
 const FNUCI_PROMPT =
-  "Tu reçois une photo d'un ou plusieurs stickers BicyCode collés sur des vélos. " +
-  "Chaque sticker contient un code d'identification FNUCI au format STRICT 'BC' suivi " +
-  "de 8 caractères alphanumériques majuscules (exemples : BCZ9CANA4D, BCA24SN97A, BC38FKZZ7H). " +
-  "Le code apparaît soit en clair imprimé sur le sticker, soit encodé dans un QR code " +
-  "(qui contient une URL de la forme https://moncompte.bicycode.eu/<CODE>).\n\n" +
-  "ENJEU CRITIQUE : un FNUCI faux = paiement CEE perdu pour le client. " +
-  "Lecture EXACTE obligatoire, ZÉRO devinette.\n\n" +
-  "RÈGLES ANTI-CONFUSION (caractères ambigus en OCR — relis 2 fois) :\n" +
+  "Tu reçois une photo d'un ou plusieurs stickers BicyCode collés sur des vélos ou cartons. " +
+  "Chaque sticker contient un code FNUCI : 'BC' suivi de 8 caractères alphanumériques majuscules " +
+  "(exemples : BCZ9CANA4D, BCA24SN97A, BC38FKZZ7H). Le code peut être en clair sous le code-barres, " +
+  "ou encodé dans un QR (URL https://moncompte.bicycode.eu/<CODE>).\n\n" +
+  "RÈGLES ANTI-CONFUSION (caractères ambigus en OCR — fais ton mieux) :\n" +
   "- 0 (zéro) vs O (lettre o) : le 0 a une diagonale ou est plus étroit, le O est rond.\n" +
-  "- 1 (un) vs I (lettre i) vs L (lettre l) : le 1 a un petit empattement en haut, le I est droit.\n" +
+  "- 1 (un) vs I (lettre i) vs L (lettre l) : le 1 a un empattement en haut, le I est droit.\n" +
   "- 8 (huit) vs B (lettre b) : le 8 est symétrique haut/bas, le B a deux bosses asymétriques.\n" +
   "- 5 (cinq) vs S (lettre s) : le 5 a des angles droits, le S est arrondi.\n" +
   "- 2 (deux) vs Z (lettre z) : le 2 a une courbe, le Z a 3 segments droits.\n" +
-  "- 6 (six) vs G (lettre g) : le 6 est fermé en bas, le G est ouvert.\n\n" +
-  "TÂCHE : extrais TOUS les codes FNUCI lisibles dans l'image. Réponds uniquement par un JSON " +
-  'valide au format exact : {"fnucis":["BC...","BC..."]}. ' +
-  'Ne renvoie aucun texte hors du JSON. Si tu ne vois aucun code lisible, réponds {"fnucis":[]}. ' +
-  "Ne devine JAMAIS : si un code est partiellement masqué, flou, qu'un caractère est ambigu, " +
-  "OU si tu n'es pas 100% certain de chacun des 8 caractères, NE METS PAS le code dans fnucis. " +
-  "Mieux vaut renvoyer une liste vide qu'un code faux. " +
-  "Ne complète jamais un caractère manquant par déduction du contexte.";
+  "- 6 (six) vs G (lettre g) : le 6 est fermé en bas, le G est ouvert.\n" +
+  "- D (lettre D) vs 0 (zéro) : D a un côté plat à gauche, 0 est arrondi.\n\n" +
+  "TÂCHE : extrais TOUS les codes FNUCI visibles dans l'image. Privilégie l'extraction quand " +
+  "le code est globalement lisible, même si 1-2 caractères sont ambigus — fais ton meilleur " +
+  "pari. Le système client a un fuzzy-match qui corrigera automatiquement une hallucination " +
+  "sur 1 caractère si nécessaire.\n\n" +
+  "Réponds UNIQUEMENT par un JSON au format exact : {\"fnucis\":[\"BC...\",\"BC...\"]}. " +
+  "Aucun texte hors du JSON. Si tu ne vois VRAIMENT aucun code (image floue/vide/photo " +
+  "inadaptée), réponds {\"fnucis\":[]}. Sinon, donne ton meilleur pari. " +
+  "Ne complète jamais un caractère totalement masqué par déduction du contexte (ex 'BC2_4XYZ' " +
+  "où le 3e char est invisible) — saute ce code.";
 
 const FNUCI_REGEX = /^BC[A-Z0-9]{8}$/;
 

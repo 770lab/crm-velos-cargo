@@ -325,7 +325,7 @@ export default function PhotoGeminiCapture({
     if (!video || video.videoWidth === 0) return;
     setShooting(true);
     try {
-      const compressed = compressVideoFrame(video, 800, 0.7);
+      const compressed = compressVideoFrame(video, 1280, 0.75);
       const item: BatchItem = {
         id: makeId(),
         fileName: `shot-${Date.now()}.jpg`,
