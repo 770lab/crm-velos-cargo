@@ -80,23 +80,40 @@ export default function CartePage() {
 
   const cpFilter = codePostal.trim();
   const searchQuery = search.trim().toLowerCase();
-  // Vélos réellement planifiés par client = somme des nbVelos des livraisons
-  // statut=planifiee. Source de vérité plus fiable que stats.planifies persisté
-  // (qui peut dériver). Cf. fix /livraisons 2026-04-28.
-  const planifiesParClient = useMemo(() => {
-    const m = new Map<string, number>();
+  // Vélos réellement planifiés / livrés par client = somme des nbVelos des
+  // livraisons par statut. Source de vérité plus fiable que stats.planifies /
+  // stats.velosLivres persistés (qui peuvent dériver et donner des points
+  // "fantômes" sur la carte → 30-04 10h20 demande Yoann : les clients déjà
+  // 100% planifiés ou livrés ne doivent plus apparaître sur la carte).
+  const flagsParClient = useMemo(() => {
+    const m = new Map<string, { planifie: number; livre: number }>();
     for (const l of livraisons) {
-      if (l.statut !== "planifiee") continue;
+      if (l.statut === "annulee") continue;
       const cid = l.clientId;
       if (!cid) continue;
-      m.set(cid, (m.get(cid) || 0) + (l.nbVelos || 0));
+      const cur = m.get(cid) || { planifie: 0, livre: 0 };
+      if (l.statut === "livree") {
+        cur.livre += l.nbVelos || 0;
+      } else {
+        // planifiee, en_cours, autres états non-annulés
+        cur.planifie += l.nbVelos || 0;
+      }
+      m.set(cid, cur);
     }
     return m;
   }, [livraisons]);
   const clients = allClients
-    .map((c) => ({ ...c, velosPlanifies: planifiesParClient.get(c.id) || 0 }))
+    .map((c) => {
+      const f = flagsParClient.get(c.id) || { planifie: 0, livre: 0 };
+      // On prend le MAX entre le compteur persisté (c.velosLivres) et le compteur
+      // live (somme livraisons livrées) : si l'un des deux est plus grand, c'est
+      // qu'il reflète mieux la réalité — on évite les régressions sur clients
+      // sans livraisons en base mais avec velosLivres > 0 (ancien import).
+      const velosLivresEffectif = Math.max(c.velosLivres || 0, f.livre);
+      return { ...c, velosPlanifies: f.planifie, velosLivresEffectif };
+    })
     .filter((c) => {
-    const reste = c.nbVelos - c.velosLivres - (c.velosPlanifies || 0);
+    const reste = c.nbVelos - c.velosLivresEffectif - (c.velosPlanifies || 0);
     if (reste <= 0) return false;
     if (selectedDeps.length > 0 && !(c.departement != null && selectedDeps.includes(String(c.departement)))) {
       return false;
