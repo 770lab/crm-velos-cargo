@@ -72,6 +72,45 @@ type TransferResp =
 
 type Step = "scanCarton" | "scanFnuci" | "photoMonte";
 
+// Fuzzy match FNUCI sur chars confusables Gemini OCR (30-04 13h18) :
+// quand le sticker imprimé OU Gemini lit "BCCEZHBBE6" mais en base c'est
+// "BCCEZHBBES" (S confondu avec 6), on essaie les substitutions usuelles
+// et on accepte si UN SEUL match en base (sinon ambigu -> on n'invente pas).
+const CONFUSABLE_SUBS: Array<[string, string[]]> = [
+  ["6", ["S", "G", "8"]],
+  ["5", ["S"]],
+  ["S", ["5", "6", "8"]],
+  ["0", ["O", "D"]],
+  ["O", ["0"]],
+  ["Z", ["2"]],
+  ["2", ["Z"]],
+  ["8", ["B", "6"]],
+  ["B", ["8"]],
+  ["1", ["I", "L"]],
+  ["I", ["1"]],
+  ["L", ["1"]],
+  ["G", ["6"]],
+  ["D", ["0"]],
+];
+
+function fuzzyMatchFnuci(extracted: string, knownFnucis: Set<string>): { matched: string | null; ambiguous: boolean } {
+  if (knownFnucis.has(extracted)) return { matched: extracted, ambiguous: false };
+  const candidates = new Set<string>();
+  for (let i = 0; i < extracted.length; i++) {
+    const c = extracted[i];
+    for (const [from, tos] of CONFUSABLE_SUBS) {
+      if (c !== from) continue;
+      for (const to of tos) {
+        const cand = extracted.slice(0, i) + to + extracted.slice(i + 1);
+        if (knownFnucis.has(cand)) candidates.add(cand);
+      }
+    }
+  }
+  if (candidates.size === 1) return { matched: [...candidates][0], ambiguous: false };
+  if (candidates.size > 1) return { matched: null, ambiguous: true };
+  return { matched: null, ambiguous: false };
+}
+
 export default function MontagePageWrapper() {
   return (
     <Suspense fallback={<div className="p-6 text-sm text-gray-500">Chargement…</div>}>
@@ -457,7 +496,22 @@ function ClientMontageView({
         setErrMsg("Aucun FNUCI lisible. Reprends une photo plus nette du sticker FNUCI sur le carton.");
         return;
       }
-      const matched = candidates.find((f) => veloByFnuci.has(f));
+      // 1. Match exact en priorité
+      const knownSet = new Set(veloByFnuci.keys());
+      let matched = candidates.find((f) => knownSet.has(f)) || null;
+      let fuzzyHint: string | null = null;
+      // 2. Fallback fuzzy : si Gemini a halluciné UN char (S↔6, 0↔O...) et
+      // qu'un seul vélo en base correspond après substitution, on l'accepte.
+      if (!matched) {
+        for (const c of candidates) {
+          const fz = fuzzyMatchFnuci(c, knownSet);
+          if (fz.matched) {
+            matched = fz.matched;
+            fuzzyHint = `Auto-corrigé : Gemini a lu ${c} → en base ${fz.matched}`;
+            break;
+          }
+        }
+      }
       if (!matched) {
         setErrMsg(
           `FNUCI extraits (${candidates.join(", ")}) — aucun n'appartient à ${data.entreprise}. ` +
@@ -473,6 +527,10 @@ function ClientMontageView({
       if (!monteurId) {
         setErrMsg("Pas de monteurId, reconnecte-toi.");
         return;
+      }
+      if (fuzzyHint) {
+        // Affiche le hint en transitoire (sera remplacé par succès au reload).
+        setErrMsg(`ℹ ${fuzzyHint}`);
       }
       setPhase("claiming");
       const r = (await gasPost("claimVeloForMontage", {
@@ -519,7 +577,19 @@ function ClientMontageView({
         setErrMsg("Aucun FNUCI lisible. Reprends une photo plus nette du sticker BicyCode.");
         return;
       }
-      const matched = candidates.find((f) => veloByFnuci.has(f));
+      // Match exact + fallback fuzzy chars confusables (S↔6, 0↔O...)
+      const knownSet = new Set(veloByFnuci.keys());
+      let matched = candidates.find((f) => knownSet.has(f)) || null;
+      if (!matched) {
+        for (const c of candidates) {
+          const fz = fuzzyMatchFnuci(c, knownSet);
+          if (fz.matched) {
+            matched = fz.matched;
+            setErrMsg(`ℹ Auto-corrigé : Gemini a lu ${c} → en base ${fz.matched}`);
+            break;
+          }
+        }
+      }
       if (!matched) {
         setErrMsg(
           `FNUCI extraits (${candidates.join(", ")}) — aucun n'appartient à ce client. ` +
