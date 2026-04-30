@@ -171,6 +171,10 @@ type BatchItem = {
   // échoue côté serveur (FNUCI_INCONNU, hors tournée, etc.), on marque
   // la vignette en rouge avec le message au lieu du "1/1 marqué" vert.
   mirrorError?: string;
+  // Validation humaine prep (30-04 13h45) : FNUCI éditable proposé par Gemini,
+  // attente du clic "Valider" de l'opérateur avant le mirror Firestore.
+  pendingFnuci?: string;
+  validatedFnuci?: string;
 };
 
 export type GeminiClientOption = {
@@ -375,8 +379,16 @@ export default function PhotoGeminiCapture({
           forceClientId: forceClientId || undefined,
         });
         collectedResps.push(resp);
+        // Pré-rempli pendingFnuci avec le 1er FNUCI extrait Gemini, pour
+        // que l'opérateur puisse l'éditer avant validation (mode prep).
+        const firstExtracted =
+          "ok" in resp && resp.extracted && resp.extracted.length > 0
+            ? resp.extracted[0]
+            : "";
         setItems((prev) =>
-          prev.map((it) => (it.id === id ? { ...it, status: "done", resp } : it)),
+          prev.map((it) =>
+            it.id === id ? { ...it, status: "done", resp, pendingFnuci: firstExtracted } : it,
+          ),
         );
       } catch (e) {
         setItems((prev) =>
@@ -397,19 +409,27 @@ export default function PhotoGeminiCapture({
     });
     await Promise.all(workers);
 
-    // Mirror Firestore SÉQUENTIEL : assignFnuciToClient pose un FNUCI sur
-    // le 1er slot vide du client → race condition si parallèle, d'où l'appel
-    // séquentiel. Si Firestore tombe (4G coupée terrain), on remonte les
-    // FNUCI échoués pour que l'opérateur puisse re-scanner.
-    const { failed } = await mirrorGeminiResultsToFirestore(
-      collectedResps, etape, forceClientId, tourneeId, userId, bypassOrderLock,
-    );
-    if (failed.length) {
-      const summary = failed.map((f) => `${f.fnuci}: ${f.error}`).join("\n");
-      setMirrorErrors(failed);
-      console.error(`[scan] ${failed.length} écriture(s) Firestore échouée(s)\n${summary}`);
-    } else {
-      setMirrorErrors([]);
+    // VALIDATION HUMAINE en mode preparation (30-04 13h45 demande Yoann) :
+    // une hallucination Gemini à la prep contamine TOUT le système (étiquettes
+    // imprimées, scan chargement/livraison/montage qui matchent plus jamais).
+    // → on N'écrit RIEN auto en mode prep. L'opérateur visualise chaque
+    // vignette photo + le FNUCI proposé par Gemini, peut le corriger dans
+    // un input éditable, et valide individuellement (= mirror Firestore).
+    //
+    // Aux autres étapes (chargement/livraison) le FNUCI prep en base sert
+    // de référence : si Gemini hallucine, le serveur dit FNUCI_INCONNU et
+    // n'écrit rien -> pas de pollution possible. Donc auto-mirror OK ailleurs.
+    if (etape !== "preparation") {
+      const { failed } = await mirrorGeminiResultsToFirestore(
+        collectedResps, etape, forceClientId, tourneeId, userId, bypassOrderLock,
+      );
+      if (failed.length) {
+        const summary = failed.map((f) => `${f.fnuci}: ${f.error}`).join("\n");
+        setMirrorErrors(failed);
+        console.error(`[scan] ${failed.length} écriture(s) Firestore échouée(s)\n${summary}`);
+      } else {
+        setMirrorErrors([]);
+      }
     }
 
     setIdentifying(false);
@@ -432,6 +452,68 @@ export default function PhotoGeminiCapture({
   // On garde la photo, on relance juste l'extraction + marquage côté serveur.
   // On reçoit l'item complet en argument (pas juste l'id) pour éviter une
   // capture-via-setItems qui peut être bloquée en concurrent mode React.
+  // Validation humaine d'un item prep (30-04 13h45). Mirror Firestore avec le
+  // FNUCI confirmé par l'opérateur (= pendingFnuci édité). Met à jour
+  // validatedFnuci pour que la vignette passe en vert "✓ Validé".
+  const validatePrepItem = useCallback(
+    async (itemId: string, finalFnuci: string) => {
+      const fn = finalFnuci.trim().toUpperCase();
+      if (!/^BC[A-Z0-9]{8}$/.test(fn)) {
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === itemId
+              ? { ...it, mirrorError: "Format invalide (BC + 8 chars MAJ)" }
+              : it,
+          ),
+        );
+        return;
+      }
+      try {
+        let serverErr: string | null = null;
+        if (forceClientId) {
+          const a = (await gasPost("assignFnuciToClient", { fnuci: fn, clientId: forceClientId })) as {
+            ok?: boolean;
+            error?: string;
+            alreadySameClient?: boolean;
+          };
+          if (a.error && !a.alreadySameClient) {
+            serverErr = a.error;
+          }
+        }
+        if (!serverErr) {
+          const m = (await gasPost("markVeloPrepare", {
+            fnuci: fn,
+            tourneeId,
+            userId: userId || "",
+            bypassOrderLock: bypassOrderLock || undefined,
+          })) as { ok?: boolean; error?: string };
+          if (m.error) serverErr = m.error;
+        }
+        if (serverErr) {
+          setItems((prev) =>
+            prev.map((it) => (it.id === itemId ? { ...it, mirrorError: serverErr || "" } : it)),
+          );
+          return;
+        }
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === itemId
+              ? { ...it, validatedFnuci: fn, mirrorError: undefined }
+              : it,
+          ),
+        );
+        if (onAfter) onAfter();
+      } catch (e) {
+        setItems((prev) =>
+          prev.map((it) =>
+            it.id === itemId ? { ...it, mirrorError: e instanceof Error ? e.message : String(e) } : it,
+          ),
+        );
+      }
+    },
+    [forceClientId, tourneeId, userId, bypassOrderLock, onAfter],
+  );
+
   const retryItem = useCallback(async (item: BatchItem) => {
     if (!tourneeId || !item.base64) return;
     setItems((prev) =>
@@ -691,6 +773,13 @@ export default function PhotoGeminiCapture({
                 onRemove={() => removeItem(it.id)}
                 onRetry={() => retryItem(it)}
                 canRemove={!identifying && it.status !== "processing"}
+                etape={etape}
+                onUpdateFnuci={(fnuci) =>
+                  setItems((prev) =>
+                    prev.map((p) => (p.id === it.id ? { ...p, pendingFnuci: fnuci.toUpperCase() } : p)),
+                  )
+                }
+                onValidate={() => validatePrepItem(it.id, it.pendingFnuci || "")}
               />
             ))}
           </div>
@@ -807,24 +896,38 @@ function BatchItemCard({
   onRemove,
   onRetry,
   canRemove,
+  etape,
+  onUpdateFnuci,
+  onValidate,
 }: {
   item: BatchItem;
   onRemove: () => void;
   onRetry: () => void;
   canRemove: boolean;
+  etape: GeminiEtape;
+  onUpdateFnuci: (fnuci: string) => void;
+  onValidate: () => void;
 }) {
   const failed = needsRetry(item);
-  const borderClass =
-    item.status === "done" && !failed
-      ? "border-green-300 bg-green-50"
-      : item.status === "error" || failed
-        ? "border-red-300 bg-red-50"
-        : item.status === "processing"
-          ? "border-amber-300 bg-amber-50"
-          : "border-gray-300 bg-white";
+  const isPrep = etape === "preparation";
+  const isValidated = !!item.validatedFnuci;
+  const needsValidation = isPrep && item.status === "done" && !isValidated;
+  const borderClass = isValidated
+    ? "border-emerald-400 bg-emerald-50"
+    : item.mirrorError
+      ? "border-red-400 bg-red-50"
+      : needsValidation
+        ? "border-blue-300 bg-blue-50"
+        : item.status === "done" && !failed
+          ? "border-green-300 bg-green-50"
+          : item.status === "error" || failed
+            ? "border-red-300 bg-red-50"
+            : item.status === "processing"
+              ? "border-amber-300 bg-amber-50"
+              : "border-gray-300 bg-white";
 
   return (
-    <div className={`relative border rounded-lg overflow-hidden text-[11px] ${borderClass}`}>
+    <div className={`relative border-2 rounded-lg overflow-hidden text-[11px] ${borderClass}`}>
       {item.thumbDataUrl ? (
         // eslint-disable-next-line @next/next/no-img-element
         <img src={item.thumbDataUrl} alt={item.fileName} className="w-full h-24 object-cover" />
@@ -833,7 +936,7 @@ function BatchItemCard({
           (pas de vignette)
         </div>
       )}
-      {canRemove && (
+      {canRemove && !isValidated && (
         <button
           type="button"
           onClick={onRemove}
@@ -843,10 +946,46 @@ function BatchItemCard({
           ×
         </button>
       )}
-      <div className="px-2 py-1.5 space-y-0.5">
-        <StatusBadge item={item} />
-        <ResultDetail item={item} />
-        {failed && item.status !== "processing" && (
+      <div className="px-2 py-1.5 space-y-1">
+        {isValidated ? (
+          <div className="text-emerald-800 font-medium text-[11px]">
+            ✓ Validé : <span className="font-mono">{item.validatedFnuci}</span>
+          </div>
+        ) : needsValidation ? (
+          <>
+            <div className="text-[10px] text-blue-700 font-semibold uppercase tracking-wide">
+              Vérifie ce code et valide
+            </div>
+            <input
+              type="text"
+              value={item.pendingFnuci || ""}
+              onChange={(e) => onUpdateFnuci(e.target.value.toUpperCase())}
+              maxLength={10}
+              autoCapitalize="characters"
+              autoCorrect="off"
+              spellCheck={false}
+              className="w-full px-1.5 py-1 border border-blue-400 rounded bg-white text-xs font-mono uppercase tracking-wider focus:border-blue-600 focus:ring-1 focus:ring-blue-500"
+              placeholder="BCXXXXXXXX"
+            />
+            <button
+              type="button"
+              onClick={onValidate}
+              disabled={!item.pendingFnuci || item.pendingFnuci.length !== 10}
+              className="w-full px-2 py-1 bg-emerald-600 hover:bg-emerald-700 disabled:opacity-40 text-white rounded text-[11px] font-bold"
+            >
+              ✓ Valider
+            </button>
+            {item.mirrorError && (
+              <div className="text-[10px] text-red-700 break-words">⚠ {item.mirrorError}</div>
+            )}
+          </>
+        ) : (
+          <>
+            <StatusBadge item={item} />
+            <ResultDetail item={item} />
+          </>
+        )}
+        {failed && item.status !== "processing" && !needsValidation && !isValidated && (
           <button
             type="button"
             onClick={onRetry}
