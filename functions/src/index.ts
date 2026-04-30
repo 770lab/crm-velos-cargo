@@ -1226,6 +1226,9 @@ import * as nodemailer from "nodemailer";
 
 const SENDER_EMAIL = "velos-cargo@artisansverts.energy";
 const TIFFANY_EMAIL = "Tiffany@axdis.fr";
+// Maria (équipe interne LUZE) doit aussi recevoir une copie du CSV de
+// préparation envoyé à Tiffany (30-04 09h57, demande Yoann).
+const MARIA_EMAIL = "maria@artisansverts.energy";
 
 function csvEscape(s: string): string {
   if (s.includes(";") || s.includes('"') || s.includes("\n")) {
@@ -1357,7 +1360,8 @@ export const sendPreparationCsv = onCall<{ tourneeId: string }>(
       const info = await transporter.sendMail({
         from: `"VELO CARGO" <${SENDER_EMAIL}>`,
         to: TIFFANY_EMAIL,
-        cc: SENDER_EMAIL, // copie à soi pour traçabilité
+        // Copies (30-04 09h57) : SENDER pour traçabilité + Maria (équipe interne).
+        cc: [SENDER_EMAIL, MARIA_EMAIL],
         subject,
         text: body,
         attachments: [
@@ -1373,6 +1377,7 @@ export const sendPreparationCsv = onCall<{ tourneeId: string }>(
         velosCount,
         messageId: info.messageId,
         to: TIFFANY_EMAIL,
+        cc: [SENDER_EMAIL, MARIA_EMAIL],
       });
       // Trace l'envoi sur les livraisons de la tournée pour que l'UI passe le
       // bouton en vert (Yoann 2026-04-29).

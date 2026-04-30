@@ -2780,7 +2780,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                       `✅ Mail envoyé à ${d.sentTo}\n` +
                         `Tournée : ${d.ref}\n` +
                         `${d.velosCount} vélos · pièce jointe ${d.filename}\n` +
-                        `(une copie t'a été envoyée en CC)`,
+                        `(copies en CC : toi + Maria)`,
                     );
                   } catch (e) {
                     const msg = e instanceof Error ? e.message : String(e);
