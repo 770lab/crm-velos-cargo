@@ -95,9 +95,11 @@ export function AuthGateFirebase({ children }: { children: React.ReactNode }) {
           <p className="text-gray-500 text-xs">
             Connecté en tant que <code>{user.email}</code>
           </p>
-          <p className="text-amber-300 text-xs bg-amber-900/30 border border-amber-700/50 rounded-lg p-2">
-            Tu viens de purger ton cache ? Ce message peut apparaître quelques
-            secondes le temps que la base se synchronise. Clique &quot;Réessayer&quot;.
+          <p className="text-amber-300 text-xs bg-amber-900/30 border border-amber-700/50 rounded-lg p-2 text-left">
+            Si tu viens de purger ton cache, attends 5 sec et clique
+            <strong> 🔄 Réessayer</strong>. Si ça insiste, c&apos;est que ton
+            identifiant ne match pas un compte équipe : clique
+            <strong> Se déconnecter</strong> et retape ton vrai email + PIN.
           </p>
           <button
             onClick={() => window.location.reload()}
@@ -106,10 +108,16 @@ export function AuthGateFirebase({ children }: { children: React.ReactNode }) {
             🔄 Réessayer
           </button>
           <button
-            onClick={() => signOut()}
+            onClick={async () => {
+              await signOut();
+              // Force un reload après signOut pour repartir d'un état propre :
+              // sans ça, l'écran "Accès refusé" reste affiché parce que
+              // useFirebaseUser ne re-render pas toujours assez vite (30-04 09h50).
+              window.location.reload();
+            }}
             className="w-full py-2.5 bg-gray-700 hover:bg-gray-600 text-white font-semibold rounded-lg"
           >
-            Se déconnecter
+            Se déconnecter et retaper le PIN
           </button>
         </div>
       </div>
