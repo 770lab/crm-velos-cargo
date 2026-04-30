@@ -704,80 +704,13 @@ function Inner({ mode }: { mode: ScanMode }) {
                 il est encore utilisé par le panneau "FNUCI inconnu — à quel
                 client ?" plus haut. */}
 
-            {/* Scan QR carton : remplace le scan BicyCode pour chargement / livraison.
-                Pas dispo en préparation (la prép assigne le FNUCI, le QR carton n'existe pas
-                encore à ce moment-là). */}
-            {(mode === "chargement" || mode === "livraison") && (() => {
-              const effectiveLockedId = focusClientId || autoLockedClientId;
-              const lockedClient = effectiveLockedId && "clients" in prog
-                ? prog.clients.find((c) => c.clientId === effectiveLockedId)
-                : null;
-              const lockedDone = lockedClient ? lockedClient.totals[cfg.totalsKey] : 0;
-              const lockedTotal = lockedClient ? lockedClient.totals.total : 0;
-              const lockedRemaining = lockedTotal - lockedDone;
-              return (
-                <div className="bg-white rounded-xl shadow p-4 mb-3 space-y-3">
-                  {lockedClient ? (
-                    <div className="bg-emerald-50 border-2 border-emerald-400 rounded-lg p-3">
-                      <div className="flex items-center justify-between gap-2">
-                        <div className="min-w-0">
-                          <div className="text-[10px] uppercase tracking-wide text-emerald-700 font-bold">
-                            🔒 Client en cours
-                          </div>
-                          <div className="font-bold text-emerald-900 text-base truncate">
-                            {lockedClient.entreprise}
-                          </div>
-                          <div className="text-xs text-emerald-800">
-                            {lockedDone}/{lockedTotal} {cfg.title.toLowerCase()}é{lockedDone > 1 ? "s" : ""}
-                            {lockedRemaining > 0 && ` · reste ${lockedRemaining}`}
-                            {lockedRemaining === 0 && " · ✅ complet"}
-                          </div>
-                        </div>
-                        {!focusClientId && (
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setAutoLockedClientId(null);
-                              setQrScanFeedback([]);
-                            }}
-                            className="text-[11px] text-emerald-700 underline whitespace-nowrap"
-                            title="Libère le verrou pour scanner un autre client"
-                          >
-                            Changer
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-xs text-amber-900">
-                      📦 Scanne un 1er QR carton — le client sera identifié et verrouillé automatiquement.
-                    </div>
-                  )}
-                  <button
-                    type="button"
-                    disabled={allDone}
-                    onClick={() => {
-                      setQrScanFeedback([]);
-                      setQrScannerOpen(true);
-                    }}
-                    className="w-full px-3 py-3 bg-emerald-600 text-white rounded-lg font-semibold hover:bg-emerald-700 disabled:opacity-60 text-sm"
-                  >
-                    📦 Scanner QR carton ({cfg.title.toLowerCase()})
-                  </button>
-                  <p className="text-[11px] text-gray-500 text-center">
-                    Mitraille les étiquettes d&apos;un client d&apos;affilée. Chaque scan marque le prochain vélo du client en cours.
-                  </p>
-                </div>
-              );
-            })()}
-
-            {/* PhotoGeminiCapture (Caméra continue + dropdown client) n'a de
-                sens qu'en préparation où on assigne le FNUCI à un client.
-                En chargement/livraison, le scan QR carton suffit (le client
-                est déduit du QR, le serveur trouve le 1er vélo non-fait).
-                Le retirer évite que l'opérateur s'en serve pour scanner un
-                QR carton — Gemini hallucine un FNUCI au lieu de lire le QR. */}
-            {mode === "preparation" && (
+            {/* Caméra continue Gemini pour TOUTES les étapes (30-04 11h50,
+                refonte demande Yoann). Avant : QrCartonScanner (jsQR sur QR)
+                pour chargement/livraison + PhotoGeminiCapture en prép.
+                Maintenant : PhotoGeminiCapture partout, scan direct du
+                BicyCode physique du vélo, Gemini lit le FNUCI. Cohérence
+                totale, plus de bugs cartonToken / mapping faux. */}
+            {(
               <div className="bg-white rounded-xl shadow p-4 mb-3">
                 <PhotoGeminiCapture
                   tourneeId={tourneeId}

@@ -273,15 +273,10 @@ function EtiquettesPage() {
         {pages.map((pageItems, pi) => (
           <div key={pi} className="sheet mx-auto print:mx-0 my-3 print:my-0 shadow print:shadow-none">
             {pageItems.map(({ client, velo, index, total, clientLoadOrder, totalClients }) => {
-              // QR UNIQUE par étiquette (29-04 12h30 anti-double-scan) : on
-              // encode le cartonToken du vélo (= slot précis du client). Plus
-              // de risque que l'opérateur scanne 28× la même étiquette pour
-              // valider 28 vélos fictifs : chaque token ne peut être marqué
-              // qu'une fois par étape. Si cartonToken absent (rare, ex erreur
-              // ensureCartonTokensForClient), fallback sur clientId mais le
-              // serveur retournera TOKEN_INCONNU → l'opérateur réimprime.
-              const qrPayload = velo.cartonToken || client.clientId;
-              const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=320x320&data=${encodeURIComponent(qrPayload)}`;
+              // QR retiré (30-04 11h50 demande Yoann) : refonte complète, on
+              // scanne directement le BicyCode physique du vélo (Gemini Vision)
+              // au chargement / livraison / montage. L'étiquette ne sert plus
+              // qu'à identifier visuellement le client + l'ordre de chargement.
               // En mode focus 1 client, l'ordre de chargement n'a pas de sens
               // (le seul client est forcément "1/1"). On le masque.
               const showLoadOrder = !focusClientId && totalClients > 1;
@@ -335,14 +330,18 @@ function EtiquettesPage() {
                   >
                     {client.entreprise}
                   </div>
-                  {/* QR pleine largeur centré + adresse + ref dessous —
-                      layout vertical pour exploiter les 150mm de hauteur
-                      du rouleau thermique. */}
-                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, minHeight: 0, marginTop: "4mm" }}>
-                    {/* eslint-disable-next-line @next/next/no-img-element */}
-                    <img src={qrUrl} alt={qrPayload} style={{ width: "60mm", height: "60mm" }} />
+                  {/* Bandeau adresse pleine largeur + grand chiffre carton.
+                      Plus de QR : le scan se fait directement sur le BicyCode
+                      du vélo via Gemini Vision (cohérence avec la prép). */}
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", flex: 1, minHeight: 0, marginTop: "6mm", textAlign: "center" }}>
+                    <div style={{ fontSize: "60px", fontWeight: 900, lineHeight: 1, color: "#1a4d2e" }}>
+                      {index}<span style={{ fontSize: "30px", fontWeight: 600, color: "#666" }}>/{total}</span>
+                    </div>
+                    <div style={{ fontSize: "12px", color: "#666", marginTop: "2mm", letterSpacing: "0.5px" }}>
+                      CARTON
+                    </div>
                   </div>
-                  <div style={{ fontSize: "13px", color: "#222", lineHeight: 1.3, textAlign: "center", marginTop: "3mm" }}>
+                  <div style={{ fontSize: "16px", color: "#222", lineHeight: 1.3, textAlign: "center", marginTop: "4mm", fontWeight: 600 }}>
                     {client.adresse}<br />
                     {client.codePostal} {client.ville}
                   </div>
