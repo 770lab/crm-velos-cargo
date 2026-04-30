@@ -364,8 +364,12 @@ function Inner({ mode }: { mode: ScanMode }) {
     if (mode === "preparation") return; // jamais en prép
     const etape = mode === "chargement" ? "chargement" : "livraisonScan";
 
-    // Détection format scanné : nouvelle étiquette = "CT-XXXXXXXX", legacy = clientId.
+    // Détection format scanné (30-04 11h17 fallback Yoann) :
+    // - "CT-XXXXXXXX" → cartonToken (nouvelle étiquette anti-double-scan)
+    // - "BC + 8 chars" → FNUCI BicyCode direct (saisie manuelle quand QR illisible)
+    // - autre → clientId legacy (anciennes étiquettes ou saisie manuelle)
     const isCartonToken = /^CT-[A-Z0-9]{6,}$/.test(scanned);
+    const isFnuci = /^BC[A-Z0-9]{8}$/.test(scanned);
     // Client verrouillé (URL focus > verrou auto)
     const lockedClientId = focusClientId || autoLockedClientId;
 
@@ -382,6 +386,16 @@ function Inner({ mode }: { mode: ScanMode }) {
           etape,
           userId,
           expectedClientId: lockedClientId || undefined,
+          bypassOrderLock: bypassOrderLock || undefined,
+        })) as typeof r;
+      } else if (isFnuci) {
+        // Voie FNUCI direct (saisie manuelle quand QR illisible).
+        // Identique à un scan BicyCode classique : markVeloCharge / markVeloLivreScan.
+        const endpoint = etape === "chargement" ? "markVeloCharge" : "markVeloLivreScan";
+        r = (await gasPost(endpoint, {
+          fnuci: scanned,
+          tourneeId,
+          userId,
           bypassOrderLock: bypassOrderLock || undefined,
         })) as typeof r;
       } else {
@@ -424,10 +438,13 @@ function Inner({ mode }: { mode: ScanMode }) {
         if (!focusClientId && !autoLockedClientId && clientId) {
           setAutoLockedClientId(clientId);
         }
+        // Le path FNUCI direct (markVeloCharge / markVeloLivreScan) ne renvoie
+        // pas remaining → on l'omet du label dans ce cas.
+        const labelReste = typeof r.remaining === "number" ? ` · reste ${r.remaining}` : "";
         setQrScanFeedback((prev) => [
           ...prev,
           {
-            label: `${r.clientName || "Client"} · ${fn} · reste ${r.remaining}`,
+            label: `${r.clientName || "Client"} · ${fn}${labelReste}`,
             ok: true,
             at: Date.now(),
           },

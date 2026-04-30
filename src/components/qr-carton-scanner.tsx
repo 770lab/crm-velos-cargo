@@ -90,19 +90,20 @@ export default function QrCartonScanner({
     if (!canvasRef.current && typeof document !== "undefined") {
       canvasRef.current = document.createElement("canvas");
     }
+    // Compteur de frames sans détection pour activer le mode "boost"
+    // (résolution + inversion) seulement quand le mode rapide n'a rien trouvé.
+    // Yoann 30-04 11h21 : avec attemptBoth + 1280 d'office, scan trop lent
+    // sur iPhone. Compromis : 640 + dontInvert au début (rapide, OK 90% des
+    // cas), basculement boost après ~30 frames sans détection (~0.5s).
+    let framesWithoutHit = 0;
     const tick = () => {
       if (cancelled) return;
       const v = videoRef.current;
       const canvas = canvasRef.current;
       if (v && canvas && v.readyState >= 2 && v.videoWidth > 0) {
-        // Downsample 1280px (au lieu de 640px) : sur Yoann 30-04 11h les QR
-        // n'étaient pas détectés malgré une bonne qualité. jsQR a besoin de
-        // ~3 pixels par "module" (chaque carré du QR) pour fiabiliser. Un QR
-        // dense de 33×33 modules visible sur 30% de la frame = ~120px/33 = 3.6px
-        // par module à 640px → limite. À 1280px on a 7.2px/module, marge
-        // confortable. Coût CPU iPhone ~négligeable (60fps tient toujours).
+        const boost = framesWithoutHit > 30;
         const longest = Math.max(v.videoWidth, v.videoHeight);
-        const targetMax = 1280;
+        const targetMax = boost ? 960 : 640;
         const scale = longest > targetMax ? targetMax / longest : 1;
         const w = Math.round(v.videoWidth * scale);
         const h = Math.round(v.videoHeight * scale);
@@ -114,15 +115,13 @@ export default function QrCartonScanner({
           try {
             const imgData = ctx.getImageData(0, 0, w, h);
             const code = jsQR(imgData.data, imgData.width, imgData.height, {
-              // attemptBoth (au lieu de dontInvert) : tente la lecture avec
-              // les couleurs normales ET inversées. Catche les QR imprimés
-              // sur fond légèrement teinté ou avec contraste imparfait.
-              // Coût : ~2× le temps par frame mais 60fps tient toujours.
-              inversionAttempts: "attemptBoth",
+              // dontInvert rapide par défaut, attemptBoth en mode boost.
+              inversionAttempts: boost ? "attemptBoth" : "dontInvert",
             });
             if (code && code.data) {
               const value = code.data.trim();
               if (value) {
+                framesWithoutHit = 0;
                 const now = Date.now();
                 const last = lastScanRef.current;
                 if (!(last && last.clientId === value && now - last.at < SCAN_COOLDOWN_MS)) {
@@ -134,10 +133,15 @@ export default function QrCartonScanner({
                   setTimeout(() => setFlash(false), 150);
                   onScan(value);
                 }
+              } else {
+                framesWithoutHit++;
               }
+            } else {
+              framesWithoutHit++;
             }
           } catch {
             // jsQR / getImageData peut throw sur tainted canvas ou frame invalide
+            framesWithoutHit++;
           }
         }
       }
@@ -225,6 +229,37 @@ export default function QrCartonScanner({
           </>
         )}
       </div>
+
+      {/* Saisie manuelle TOUJOURS visible (30-04 11h17 demande Yoann) :
+          quand jsQR ne capte pas (QR plissé, reflet, mal cadré...), Yoann
+          tape directement le code visible. Accepte cartonToken (CT-XXX),
+          FNUCI BicyCode (BC + 8) ou clientId legacy. Le frontend dispatch
+          vers la bonne action selon le format. */}
+      {!error && (
+        <div className="bg-black/90 border-t border-white/10 px-3 py-2 flex gap-2">
+          <input
+            type="text"
+            value={manualValue}
+            onChange={(e) => setManualValue(e.target.value.toUpperCase())}
+            placeholder="Tape le code (FNUCI BC..., CT-..., clientId)"
+            autoCapitalize="characters"
+            autoCorrect="off"
+            spellCheck={false}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") handleManualSubmit();
+            }}
+            className="flex-1 px-3 py-2 rounded bg-white/10 border border-white/30 text-white text-sm placeholder-white/40 font-mono"
+          />
+          <button
+            type="button"
+            onClick={handleManualSubmit}
+            disabled={!manualValue.trim()}
+            className="px-3 py-2 bg-emerald-600 disabled:opacity-40 rounded text-sm font-medium text-white"
+          >
+            Valider
+          </button>
+        </div>
+      )}
 
       {recentScans.length > 0 && (
         <div className="bg-black/90 px-3 py-2 max-h-40 overflow-y-auto">
