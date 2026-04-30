@@ -95,10 +95,14 @@ export default function QrCartonScanner({
       const v = videoRef.current;
       const canvas = canvasRef.current;
       if (v && canvas && v.readyState >= 2 && v.videoWidth > 0) {
-        // Downsample : un QR de ~200px à l'écran reste lisible à 640px.
-        // Skipper le downsample sur des frames < 800px ne change rien.
+        // Downsample 1280px (au lieu de 640px) : sur Yoann 30-04 11h les QR
+        // n'étaient pas détectés malgré une bonne qualité. jsQR a besoin de
+        // ~3 pixels par "module" (chaque carré du QR) pour fiabiliser. Un QR
+        // dense de 33×33 modules visible sur 30% de la frame = ~120px/33 = 3.6px
+        // par module à 640px → limite. À 1280px on a 7.2px/module, marge
+        // confortable. Coût CPU iPhone ~négligeable (60fps tient toujours).
         const longest = Math.max(v.videoWidth, v.videoHeight);
-        const targetMax = 640;
+        const targetMax = 1280;
         const scale = longest > targetMax ? targetMax / longest : 1;
         const w = Math.round(v.videoWidth * scale);
         const h = Math.round(v.videoHeight * scale);
@@ -110,7 +114,11 @@ export default function QrCartonScanner({
           try {
             const imgData = ctx.getImageData(0, 0, w, h);
             const code = jsQR(imgData.data, imgData.width, imgData.height, {
-              inversionAttempts: "dontInvert",
+              // attemptBoth (au lieu de dontInvert) : tente la lecture avec
+              // les couleurs normales ET inversées. Catche les QR imprimés
+              // sur fond légèrement teinté ou avec contraste imparfait.
+              // Coût : ~2× le temps par frame mais 60fps tient toujours.
+              inversionAttempts: "attemptBoth",
             });
             if (code && code.data) {
               const value = code.data.trim();
