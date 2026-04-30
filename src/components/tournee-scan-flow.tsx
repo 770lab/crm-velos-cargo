@@ -890,16 +890,19 @@ function Inner({ mode }: { mode: ScanMode }) {
                       Imprime maintenant les étiquettes à coller sur le carton et le bon de livraison.
                     </div>
                   </div>
+                  {/* Pas de target="_blank" : Samsung Internet et certains
+                      Chrome Android bloquent silencieusement le popup → le
+                      bouton ne fait rien ou ouvre l'onglet en arrière-plan
+                      (Naomi le perd de vue). En navigation in-place, le
+                      bouton retour navigateur ramène à la page de prep. */}
                   <a
                     href={`${BASE_PATH}/etiquettes?tourneeId=${encodeURIComponent(tourneeId)}${cid}`}
-                    target="_blank" rel="noopener noreferrer"
                     className="block text-center bg-emerald-600 text-white rounded-lg py-3 text-sm font-semibold hover:bg-emerald-700"
                   >
                     🏷️ Imprimer les {nbVelos} étiquette{nbVelos > 1 ? "s" : ""} (10×15)
                   </a>
                   <a
                     href={`${BASE_PATH}/bl?tourneeId=${encodeURIComponent(tourneeId)}${cid}`}
-                    target="_blank" rel="noopener noreferrer"
                     className="block text-center bg-white border border-emerald-400 text-emerald-800 rounded-lg py-3 text-sm font-semibold hover:bg-emerald-100"
                   >
                     📄 Imprimer le bon de livraison (A4)

@@ -2689,8 +2689,6 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             </div>
             <a
               href={`${BASE_PATH}/bl?tourneeId=${encodeURIComponent(tournee.tourneeId)}`}
-              target="_blank"
-              rel="noopener noreferrer"
               className="text-xs px-3 py-1.5 rounded bg-blue-600 text-white hover:bg-blue-700 font-medium whitespace-nowrap"
             >
               🖨️ Imprimer tous
