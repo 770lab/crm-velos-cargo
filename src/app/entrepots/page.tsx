@@ -177,12 +177,15 @@ export default function EntrepotsPage() {
           </p>
         </div>
         {isAdmin && (
-          <button
-            onClick={() => setEditing("new")}
-            className="px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
-          >
-            + Nouvel entrepôt
-          </button>
+          <div className="flex gap-2">
+            <RescanBonsButton />
+            <button
+              onClick={() => setEditing("new")}
+              className="px-3 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium hover:bg-blue-700"
+            >
+              + Nouvel entrepôt
+            </button>
+          </div>
         )}
       </div>
 
@@ -349,6 +352,41 @@ export default function EntrepotsPage() {
         />
       )}
     </div>
+  );
+}
+
+// Bouton admin pour rétro-scanner les bons existants et auto-matcher
+// avec les commandesCamion (parsing "VELO CARGO - COMMANDE N").
+// Yoann 2026-05-01 Phase 3.
+function RescanBonsButton() {
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    if (busy) return;
+    if (!confirm("Re-scanner tous les bons d'enlèvement existants pour les lier aux commandes camion correspondantes ?\n\nCa relit chaque bon, parse la référence 'VELO CARGO - COMMANDE N' et incrémente le stockCartons sur l'entrepôt destinataire.")) return;
+    setBusy(true);
+    try {
+      const { getFunctions, httpsCallable } = await import("firebase/functions");
+      const { firebaseApp } = await import("@/lib/firebase");
+      const fn = httpsCallable(getFunctions(firebaseApp, "europe-west1"), "rescanBonsForCommandes");
+      const r = (await fn({})) as { data?: { ok?: boolean; scanned?: number; matched?: number } };
+      const sc = r.data?.scanned ?? 0;
+      const ma = r.data?.matched ?? 0;
+      alert(`✓ Re-scan terminé\n${sc} bons scannés · ${ma} matches déclenchés\n\nLes stocks vont s'incrémenter dans les secondes qui suivent (trigger Cloud Function).`);
+    } catch (e) {
+      alert("Erreur : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <button
+      onClick={run}
+      disabled={busy}
+      className="px-3 py-2 bg-white border border-gray-300 text-gray-700 rounded-lg text-sm font-medium hover:bg-gray-50 disabled:opacity-50"
+      title="Rétro-matcher les bons d'enlèvement aux commandes camion (à lancer une seule fois après déploiement Phase 3)"
+    >
+      {busy ? "Scan…" : "🔄 Re-scan bons"}
+    </button>
   );
 }
 
