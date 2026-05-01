@@ -548,9 +548,14 @@ export default function LivraisonsPage() {
   } else if (isChauffeur) {
     pageSubtitle = `${windowedLivraisons} livraison${windowedLivraisons > 1 ? "s" : ""} · ${windowedTournees.length} tournée${windowedTournees.length > 1 ? "s" : ""}${windowSuffix ? " " + windowSuffix : ""}`;
   } else {
+    // Demande Yoann 2026-05-01 : ajouter le nb de vélos au sous-titre pour
+    // avoir le volume en un coup d'œil (la métrique business critique = vélos
+    // livrés, pas livraisons).
+    const totalLivraisonsAll = userLivraisons.length;
+    const totalVelosAll = userLivraisons.reduce((s, l) => s + (l._count?.velos ?? l.nbVelos ?? 0), 0);
     pageSubtitle = view === "liste"
-      ? `${chauffeurFilteredTournees.length} tournée${chauffeurFilteredTournees.length > 1 ? "s" : ""} · ${userLivraisons.length} livraison${userLivraisons.length > 1 ? "s" : ""}`
-      : `${windowedTournees.length} tournée${windowedTournees.length > 1 ? "s" : ""} · ${windowedLivraisons} livraison${windowedLivraisons > 1 ? "s" : ""}${windowSuffix ? " " + windowSuffix : ""}`;
+      ? `${chauffeurFilteredTournees.length} tournée${chauffeurFilteredTournees.length > 1 ? "s" : ""} · ${totalLivraisonsAll} livraison${totalLivraisonsAll > 1 ? "s" : ""} · ${totalVelosAll} vélo${totalVelosAll > 1 ? "s" : ""}`
+      : `${windowedTournees.length} tournée${windowedTournees.length > 1 ? "s" : ""} · ${windowedLivraisons} livraison${windowedLivraisons > 1 ? "s" : ""} · ${windowedVelos} vélo${windowedVelos > 1 ? "s" : ""}${windowSuffix ? " " + windowSuffix : ""}`;
   }
 
   return (
@@ -848,6 +853,14 @@ function DayView({
               {refDate.toLocaleDateString("fr-FR", { month: "long" })}
             </span>
           </div>
+          {list.length > 0 && (() => {
+            const nbVelos = list.reduce((sum, t) => sum + (t.totalVelos || 0), 0);
+            return nbVelos > 0 ? (
+              <div className="text-sm font-semibold mt-0.5">
+                🚲 {nbVelos} vélo{nbVelos > 1 ? "s" : ""}
+              </div>
+            ) : null;
+          })()}
         </div>
         {list.length > 0 && (() => {
           const allSent = list.every((t) => !!t.bonCommandeEnvoyeAt);
@@ -924,17 +937,28 @@ function MultiDayView({
                 <span className="text-xs font-normal text-gray-500 ml-1">{d.toLocaleDateString("fr-FR", { month: "short" })}</span>
               </div>
               {list.length > 0 && (() => {
+                // Total vélos du jour = somme des vélos de toutes les tournées
+                // de la colonne. Demande Yoann 2026-05-01 : volume jour visible
+                // direct (le client demande "j'ai combien de vélos demain").
+                const nbVelos = list.reduce((sum, t) => sum + (t.totalVelos || 0), 0);
                 const allSent = list.every((t) => !!t.bonCommandeEnvoyeAt);
                 return (
-                  <button
-                    onClick={() => onBatchAxdis(new Date(d), list)}
-                    className={`mt-1 w-full px-1.5 py-0.5 text-[10px] text-white rounded ${
-                      allSent ? "bg-emerald-600 hover:bg-emerald-700" : "bg-amber-600 hover:bg-amber-700"
-                    }`}
-                    title={allSent ? `Déjà envoyées · clique pour renvoyer` : `Envoyer les ${list.length} commandes AXDIS de ce jour`}
-                  >
-                    {allSent ? "✅" : "📧"} {list.length} AXDIS
-                  </button>
+                  <>
+                    {nbVelos > 0 && (
+                      <div className="mt-1 text-[11px] font-semibold text-gray-700">
+                        🚲 {nbVelos} vélo{nbVelos > 1 ? "s" : ""}
+                      </div>
+                    )}
+                    <button
+                      onClick={() => onBatchAxdis(new Date(d), list)}
+                      className={`mt-1 w-full px-1.5 py-0.5 text-[10px] text-white rounded ${
+                        allSent ? "bg-emerald-600 hover:bg-emerald-700" : "bg-amber-600 hover:bg-amber-700"
+                      }`}
+                      title={allSent ? `Déjà envoyées · clique pour renvoyer` : `Envoyer les ${list.length} commandes AXDIS de ce jour`}
+                    >
+                      {allSent ? "✅" : "📧"} {list.length} AXDIS
+                    </button>
+                  </>
                 );
               })()}
             </div>
@@ -997,17 +1021,28 @@ function WeekView({
                 <span className="text-xs font-normal text-gray-500 ml-1">{d.toLocaleDateString("fr-FR", { month: "short" })}</span>
               </div>
               {list.length > 0 && (() => {
+                // Total vélos du jour = somme des vélos de toutes les tournées
+                // de la colonne. Demande Yoann 2026-05-01 : volume jour visible
+                // direct (le client demande "j'ai combien de vélos demain").
+                const nbVelos = list.reduce((sum, t) => sum + (t.totalVelos || 0), 0);
                 const allSent = list.every((t) => !!t.bonCommandeEnvoyeAt);
                 return (
-                  <button
-                    onClick={() => onBatchAxdis(new Date(d), list)}
-                    className={`mt-1 w-full px-1.5 py-0.5 text-[10px] text-white rounded ${
-                      allSent ? "bg-emerald-600 hover:bg-emerald-700" : "bg-amber-600 hover:bg-amber-700"
-                    }`}
-                    title={allSent ? `Déjà envoyées · clique pour renvoyer` : `Envoyer les ${list.length} commandes AXDIS de ce jour`}
-                  >
-                    {allSent ? "✅" : "📧"} {list.length} AXDIS
-                  </button>
+                  <>
+                    {nbVelos > 0 && (
+                      <div className="mt-1 text-[11px] font-semibold text-gray-700">
+                        🚲 {nbVelos} vélo{nbVelos > 1 ? "s" : ""}
+                      </div>
+                    )}
+                    <button
+                      onClick={() => onBatchAxdis(new Date(d), list)}
+                      className={`mt-1 w-full px-1.5 py-0.5 text-[10px] text-white rounded ${
+                        allSent ? "bg-emerald-600 hover:bg-emerald-700" : "bg-amber-600 hover:bg-amber-700"
+                      }`}
+                      title={allSent ? `Déjà envoyées · clique pour renvoyer` : `Envoyer les ${list.length} commandes AXDIS de ce jour`}
+                    >
+                      {allSent ? "✅" : "📧"} {list.length} AXDIS
+                    </button>
+                  </>
                 );
               })()}
             </div>
