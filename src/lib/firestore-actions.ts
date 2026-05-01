@@ -3861,15 +3861,26 @@ export async function runFirestoreAction(
         | "client_redistribue";
       if (!entrepotId) return { error: "entrepotId requis" };
 
-      // Capacité camion (mêmes valeurs que suggestTournee)
+      // Capacité camion : différente selon mode montage (Yoann 2026-05-01).
+      // - Mode "client" (cartons + montage chez client) : capacité cartons,
+      //   plus dense (vélos désassemblés en cartons)
+      // - Mode "atelier" / "client_redistribue" (vélos déjà montés) :
+      //   capacité réduite car les vélos prennent plus de place
       const capaciteOverride = Number(body.capacite);
-      const capacites: Record<string, number> = {
+      const CAPACITES_CARTONS: Record<string, number> = {
         gros: 132,
         moyen: 54,
         camionnette: 20,
         petit: 20,
       };
-      const capaciteCamion = capaciteOverride > 0 ? capaciteOverride : (capacites[mode] ?? 54);
+      const CAPACITES_MONTES: Record<string, number> = {
+        gros: 40, // Yoann 2026-05-01 : grand camion 40 vélos montés max
+        moyen: 30,
+        camionnette: 20,
+        petit: 20, // petit camion 20 vélos montés max
+      };
+      const capacitesTable = modeMontage === "client" ? CAPACITES_CARTONS : CAPACITES_MONTES;
+      const capaciteCamion = capaciteOverride > 0 ? capaciteOverride : (capacitesTable[mode] ?? 30);
 
       // Lit l'entrepôt
       const eSnap = await getDoc(doc(db, "entrepots", entrepotId));

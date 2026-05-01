@@ -60,9 +60,8 @@ export default function CartePage() {
   const [selected, setSelected] = useState<string | null>(null);
   const [mode, setMode] = useState<"gros" | "moyen" | "camionnette" | "retrait">("moyen");
   // Vue (Yoann 2026-05-01) : "clients" = vue actuelle (clients à livrer),
-  // "entrepots" = nouvelle vue avec les dépôts + leur stock pour planifier
-  // les tournées en fonction du stock disponible.
-  const [vue, setVue] = useState<"clients" | "entrepots">("clients");
+  // "entrepots" = vue dépôts + stocks, "hybride" = les deux superposés.
+  const [vue, setVue] = useState<"clients" | "entrepots" | "hybride">("clients");
   // Entrepôts (Yoann 2026-05-01) : chargés une fois depuis Firestore et
   // passés à la fois au MapView (markers) et à l'EntrepotsPanel.
   type EntrepotMapPoint = {
@@ -276,14 +275,14 @@ export default function CartePage() {
           <DashCard label="Tournées" value={dashStats.nbTournees} color="purple" />
           <DashCard label="Clients à livrer" value={dashStats.clientsRestants} color="red" />
           <div className="flex items-center gap-2 ml-auto">
-            {/* Toggle vue (Yoann 2026-05-01) : clients à livrer / entrepôts + stocks */}
+            {/* Toggle vue (Yoann 2026-05-01) : clients / entrepôts / hybride */}
             <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
               <button
                 onClick={() => setVue("clients")}
                 className={`px-3 py-1.5 text-xs font-medium ${
                   vue === "clients" ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
                 }`}
-                title="Vue clients à livrer"
+                title="Vue clients à livrer uniquement"
               >
                 🏢 Clients
               </button>
@@ -292,9 +291,18 @@ export default function CartePage() {
                 className={`px-3 py-1.5 text-xs font-medium border-l border-gray-300 ${
                   vue === "entrepots" ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
                 }`}
-                title="Vue entrepôts + stocks disponibles"
+                title="Vue entrepôts + stocks uniquement"
               >
                 🏬 Entrepôts
+              </button>
+              <button
+                onClick={() => setVue("hybride")}
+                className={`px-3 py-1.5 text-xs font-medium border-l border-gray-300 ${
+                  vue === "hybride" ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
+                }`}
+                title="Vue hybride : clients + entrepôts en même temps"
+              >
+                🔀 Les deux
               </button>
             </div>
             <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
@@ -330,7 +338,7 @@ export default function CartePage() {
               stockCartons: e.stockCartons,
               stockVelosMontes: e.stockVelosMontes,
             }))}
-          hideClients={vue === "entrepots"}
+          hideClients={vue === "entrepots"} /* clients visibles en mode "clients" et "hybride" */
           selectedEntrepotId={selectedEntrepotId}
           onSelectEntrepot={(id) => {
             setSelectedEntrepotId(id);
@@ -340,8 +348,8 @@ export default function CartePage() {
       </div>
 
       <div className="w-full lg:w-96 bg-white border-t lg:border-t-0 lg:border-l overflow-y-auto max-h-[50vh] lg:max-h-none">
-        {vue === "entrepots" && <EntrepotsPanel />}
-        {vue === "clients" && (
+        {(vue === "entrepots" || vue === "hybride") && <EntrepotsPanel />}
+        {(vue === "clients" || vue === "hybride") && (
         <>
         <div className="p-4 border-b flex items-start justify-between gap-2">
           <div>
