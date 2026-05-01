@@ -332,6 +332,14 @@ export default function EntrepotsPage() {
                   editable={isAdmin}
                 />
                 {isAdmin && (
+                  <SuggererTourneePanel
+                    entrepotId={e.id}
+                    entrepotNom={e.nom}
+                    stockCartons={e.stockCartons}
+                    stockVelosMontes={e.stockVelosMontes}
+                  />
+                )}
+                {isAdmin && (
                   <CommandeCamionPanel
                     entrepotId={e.id}
                     entrepotNom={e.nom}
@@ -1936,6 +1944,258 @@ function SessionAtelierModal({
             className="px-3 py-1.5 text-sm bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50 font-semibold"
           >
             {busy ? "..." : "🔧 Planifier la session"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Panel "🤖 Suggérer tournée" sur chaque card entrepôt (Yoann 2026-05-01).
+// Au clic, ouvre un modal qui appelle suggestTourneeFromEntrepot et
+// affiche les clients optimaux à livrer depuis cet entrepôt.
+function SuggererTourneePanel({
+  entrepotId,
+  entrepotNom,
+  stockCartons,
+  stockVelosMontes,
+}: {
+  entrepotId: string;
+  entrepotNom: string;
+  stockCartons: number;
+  stockVelosMontes: number;
+}) {
+  const [showModal, setShowModal] = useState(false);
+  const totalDispo = stockCartons + stockVelosMontes;
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2 bg-indigo-50 border border-indigo-200 rounded p-1.5">
+        <div className="text-[11px] text-indigo-900 truncate">
+          🤖 <strong>Suggérer une tournée</strong>
+          <span className="opacity-70 ml-1">· {totalDispo} vélos dispo</span>
+        </div>
+        <button
+          onClick={() => setShowModal(true)}
+          disabled={totalDispo <= 0}
+          className="px-2 py-0.5 text-[11px] bg-indigo-600 text-white rounded hover:bg-indigo-700 font-semibold disabled:opacity-50 shrink-0"
+          title={totalDispo <= 0 ? "Aucun stock dispo dans cet entrepôt" : "L'IA propose les clients optimaux à livrer depuis cet entrepôt"}
+        >
+          🤖 Suggérer
+        </button>
+      </div>
+      {showModal && (
+        <SuggererTourneeModal
+          entrepotId={entrepotId}
+          entrepotNom={entrepotNom}
+          stockCartons={stockCartons}
+          stockVelosMontes={stockVelosMontes}
+          onClose={() => setShowModal(false)}
+        />
+      )}
+    </>
+  );
+}
+
+type SuggestionStop = {
+  id: string;
+  entreprise: string;
+  ville: string;
+  lat: number;
+  lng: number;
+  nbVelos: number;
+  distance: number;
+  velosRestantsApres: number;
+};
+type SuggestionResult = {
+  ok: boolean;
+  error?: string;
+  entrepot?: { nom: string; ville: string; adresse: string; stockDispo: number };
+  mode?: string;
+  modeMontage?: string;
+  capaciteCamion?: number;
+  capaciteEffective?: number;
+  totalVelos?: number;
+  nbStops?: number;
+  stops?: SuggestionStop[];
+  candidatsHorsTournee?: Array<{ id: string; entreprise: string; ville: string; distance: number; velosRestants: number }>;
+};
+
+function SuggererTourneeModal({
+  entrepotId,
+  entrepotNom,
+  stockCartons,
+  stockVelosMontes,
+  onClose,
+}: {
+  entrepotId: string;
+  entrepotNom: string;
+  stockCartons: number;
+  stockVelosMontes: number;
+  onClose: () => void;
+}) {
+  const [mode, setMode] = useState<"gros" | "moyen" | "petit" | "camionnette">("moyen");
+  const [modeMontage, setModeMontage] = useState<"client" | "atelier" | "client_redistribue">(
+    stockVelosMontes > 0 ? "atelier" : "client",
+  );
+  const [maxDistance, setMaxDistance] = useState(50);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<SuggestionResult | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const { gasPost } = await import("@/lib/gas");
+      const r = (await gasPost("suggestTourneeFromEntrepot", {
+        entrepotId,
+        mode,
+        modeMontage,
+        maxDistance,
+      })) as SuggestionResult;
+      setResult(r);
+    } catch (e) {
+      setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const stockSelectMontage = modeMontage === "client" ? stockCartons : stockVelosMontes;
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <h2 className="text-lg font-semibold">🤖 Suggérer une tournée depuis {entrepotNom}</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+
+        {/* Paramètres */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-3 bg-indigo-50 border border-indigo-200 rounded p-3">
+          <div>
+            <label className="text-xs text-gray-600">Type de camion</label>
+            <select
+              value={mode}
+              onChange={(e) => setMode(e.target.value as typeof mode)}
+              className="w-full px-2 py-1.5 border rounded text-sm bg-white"
+            >
+              <option value="gros">Grand (132 cartons / 40 montés)</option>
+              <option value="moyen">Moyen (54 cartons / 30 montés)</option>
+              <option value="petit">Petit (20)</option>
+              <option value="camionnette">Camionnette (20)</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Mode montage</label>
+            <select
+              value={modeMontage}
+              onChange={(e) => setModeMontage(e.target.value as typeof modeMontage)}
+              className="w-full px-2 py-1.5 border rounded text-sm bg-white"
+            >
+              <option value="client">📦 Cartons + montage chez client</option>
+              <option value="atelier">🔧 Vélos déjà montés</option>
+              <option value="client_redistribue">🟣 Éphémère (client redistribue)</option>
+            </select>
+            <div className="text-[10px] text-gray-500 mt-0.5">
+              Stock dispo : <strong>{stockSelectMontage}</strong> {modeMontage === "client" ? "cartons" : "montés"}
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Distance max (km)</label>
+            <input
+              type="number"
+              value={maxDistance}
+              onChange={(e) => setMaxDistance(Number(e.target.value))}
+              min={5}
+              max={200}
+              step={5}
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            />
+          </div>
+        </div>
+
+        <button
+          onClick={run}
+          disabled={busy || stockSelectMontage <= 0}
+          className="w-full px-3 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700 disabled:opacity-50 font-semibold"
+        >
+          {busy ? "🤖 Calcul..." : "🤖 Calculer la tournée optimale"}
+        </button>
+
+        {/* Résultat */}
+        {result && (
+          <div className="mt-4">
+            {result.error ? (
+              <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800">
+                ❌ {result.error}
+              </div>
+            ) : result.ok && result.stops ? (
+              <>
+                <div className="bg-emerald-50 border border-emerald-300 rounded p-3 mb-3">
+                  <div className="text-sm font-bold text-emerald-900">
+                    ✓ Tournée optimale : {result.nbStops} arrêts · {result.totalVelos} vélos
+                  </div>
+                  <div className="text-xs text-emerald-800 mt-1">
+                    Capacité camion {mode} ({modeMontage}) : {result.capaciteCamion} v ·
+                    Capacité effective (limitée par stock) : <strong>{result.capaciteEffective} v</strong>
+                  </div>
+                </div>
+                <div className="border rounded-lg overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-gray-50 border-b text-xs text-gray-600">
+                      <tr>
+                        <th className="text-left px-3 py-2 font-medium">#</th>
+                        <th className="text-left px-3 py-2 font-medium">Client</th>
+                        <th className="text-left px-3 py-2 font-medium">Ville</th>
+                        <th className="text-right px-3 py-2 font-medium">Vélos</th>
+                        <th className="text-right px-3 py-2 font-medium">Distance</th>
+                        <th className="text-right px-3 py-2 font-medium">Reste après</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {result.stops.map((s, i) => (
+                        <tr key={s.id} className="hover:bg-gray-50">
+                          <td className="px-3 py-1.5 text-gray-400">{i + 1}</td>
+                          <td className="px-3 py-1.5 font-medium">{s.entreprise}</td>
+                          <td className="px-3 py-1.5 text-xs text-gray-600">{s.ville}</td>
+                          <td className="px-3 py-1.5 text-right font-semibold text-emerald-700">{s.nbVelos}</td>
+                          <td className="px-3 py-1.5 text-right text-xs text-gray-600">{s.distance} km</td>
+                          <td className="px-3 py-1.5 text-right text-xs text-gray-500">{s.velosRestantsApres}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                {result.candidatsHorsTournee && result.candidatsHorsTournee.length > 0 && (
+                  <details className="mt-3">
+                    <summary className="text-xs text-gray-500 cursor-pointer hover:underline">
+                      Voir les {result.candidatsHorsTournee.length} candidats hors tournée (capacité atteinte)
+                    </summary>
+                    <ul className="mt-1 text-[11px] text-gray-600 space-y-0.5">
+                      {result.candidatsHorsTournee.map((c) => (
+                        <li key={c.id}>
+                          {c.entreprise} ({c.ville}) — {c.distance} km, {c.velosRestants} vélos restants
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+                <div className="mt-3 text-[11px] text-gray-500 italic">
+                  💡 Cette suggestion est une heuristique distance Haversine (vol d&apos;oiseau).
+                  Pour créer la tournée, va sur Carte & Tournées et utilise le bouton
+                  &laquo; Planifier le jour &raquo; depuis le client cible (à venir : création
+                  directe depuis ce résultat).
+                </div>
+              </>
+            ) : (
+              <div className="text-sm text-gray-500 italic">Aucun résultat</div>
+            )}
+          </div>
+        )}
+
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">
+            Fermer
           </button>
         </div>
       </div>
