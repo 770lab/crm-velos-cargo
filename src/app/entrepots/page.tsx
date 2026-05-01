@@ -836,30 +836,30 @@ function CommandeCamionPanel({
 
   return (
     <>
-      <div className="mt-3 bg-blue-50 border border-blue-200 rounded-lg p-3">
+      <div className="bg-blue-50 border border-blue-200 rounded p-1.5">
         <div className="flex items-center justify-between gap-2">
-          <div className="text-xs text-blue-900 font-medium">
-            🚚 Commandes camion (Tiffany)
-            <span className="ml-2 text-blue-700">
+          <div className="text-[11px] text-blue-900 font-medium truncate">
+            🚚 <strong>Camion Tiffany</strong>
+            <span className="ml-1 text-blue-700">
               {enCours > 0 && `${enCours} en cours · `}
               {recues > 0 && `${recues} reçue${recues > 1 ? "s" : ""}`}
-              {enCours === 0 && recues === 0 && "aucune commande"}
+              {enCours === 0 && recues === 0 && "aucune"}
             </span>
           </div>
-          <div className="flex gap-1">
+          <div className="flex gap-1 shrink-0">
             {commandes.length > 0 && (
               <button
                 onClick={() => setShowHistory((v) => !v)}
-                className="text-[11px] px-2 py-1 bg-white border border-blue-300 rounded hover:bg-blue-50"
+                className="text-[10px] px-1.5 py-0.5 bg-white border border-blue-300 rounded hover:bg-blue-50"
               >
                 {showHistory ? "▲" : "▼"} {commandes.length}
               </button>
             )}
             <button
               onClick={() => setShowModal(true)}
-              className="text-[11px] px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 font-semibold"
+              className="text-[10px] px-2 py-0.5 bg-blue-600 text-white rounded hover:bg-blue-700 font-semibold"
             >
-              + Commander camion complet
+              + Commander
             </button>
           </div>
         </div>
@@ -1586,29 +1586,54 @@ function SessionsAtelierPanel({
     await setDoc(doc(db, "sessionsMontageAtelier", id), { statut, updatedAt: serverTimestamp() }, { merge: true });
   };
 
+  // Yoann 2026-05-01 : compact, "à venir" derrière toggle (cohérent avec
+  // CommandeCamionPanel) — header 1 ligne quand vide ou collapsed.
+  const [showOpen, setShowOpen] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+
   return (
     <>
-      <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg p-3">
-        <div className="flex items-center justify-between gap-2 mb-2">
-          <div className="text-xs text-amber-900 font-medium">
-            🔧 Sessions montage atelier
-            <span className="ml-2 text-amber-700">
+      <div className="bg-amber-50 border border-amber-200 rounded p-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-[11px] text-amber-900 font-medium truncate">
+            🔧 <strong>Sessions atelier</strong>
+            <span className="ml-1 text-amber-700">
               {aVenir.length > 0 && `${aVenir.length} à venir · `}
               {passees.length > 0 && `${passees.length} passée${passees.length > 1 ? "s" : ""}`}
-              {sessions.length === 0 && "aucune session"}
+              {sessions.length === 0 && "aucune"}
             </span>
           </div>
-          {editable && (
-            <button
-              onClick={() => setShowModal(true)}
-              className="text-[11px] px-2 py-1 bg-amber-600 text-white rounded hover:bg-amber-700 font-semibold"
-            >
-              + Planifier session
-            </button>
-          )}
+          <div className="flex gap-1 shrink-0">
+            {aVenir.length > 0 && (
+              <button
+                onClick={() => setShowOpen((v) => !v)}
+                className="text-[10px] px-1.5 py-0.5 bg-white border border-amber-300 rounded hover:bg-amber-50"
+                title="Voir/masquer les sessions à venir"
+              >
+                {showOpen ? "▲" : "▼"} {aVenir.length}
+              </button>
+            )}
+            {passees.length > 0 && (
+              <button
+                onClick={() => setShowHistory((v) => !v)}
+                className="text-[10px] px-1.5 py-0.5 bg-white border border-amber-300 rounded hover:bg-amber-50 opacity-70"
+                title="Historique"
+              >
+                {showHistory ? "▲" : "▼"} {passees.length}
+              </button>
+            )}
+            {editable && (
+              <button
+                onClick={() => setShowModal(true)}
+                className="text-[10px] px-2 py-0.5 bg-amber-600 text-white rounded hover:bg-amber-700 font-semibold"
+              >
+                + Planifier
+              </button>
+            )}
+          </div>
         </div>
-        {aVenir.length > 0 && (
-          <div className="space-y-1">
+        {showOpen && aVenir.length > 0 && (
+          <div className="space-y-1 mt-1.5">
             {aVenir.map((s) => (
               <SessionLine
                 key={s.id}
@@ -1620,23 +1645,18 @@ function SessionsAtelierPanel({
             ))}
           </div>
         )}
-        {passees.length > 0 && (
-          <details className="mt-2">
-            <summary className="text-[11px] text-amber-700 cursor-pointer hover:underline">
-              Voir l&apos;historique ({passees.length})
-            </summary>
-            <div className="space-y-1 mt-1 opacity-70">
-              {passees.map((s) => (
-                <SessionLine
-                  key={s.id}
-                  s={s}
-                  editable={editable}
-                  onRemove={removeSession}
-                  onUpdateStatut={updateStatut}
-                />
-              ))}
-            </div>
-          </details>
+        {showHistory && passees.length > 0 && (
+          <div className="space-y-1 mt-1.5 opacity-70">
+            {passees.map((s) => (
+              <SessionLine
+                key={s.id}
+                s={s}
+                editable={editable}
+                onRemove={removeSession}
+                onUpdateStatut={updateStatut}
+              />
+            ))}
+          </div>
         )}
       </div>
       {showModal && (
@@ -1668,58 +1688,53 @@ function SessionLine({
     annulee: "bg-red-100 text-red-700 line-through",
   };
   return (
-    <div className="bg-white border border-amber-200 rounded p-2 text-[11px]">
-      <div className="flex items-center justify-between gap-2 flex-wrap">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="font-mono font-bold">{s.date}</span>
-          <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${statutClasses[s.statut]}`}>
-            {s.statut === "planifiee" ? "📅 planifiée" : s.statut === "en_cours" ? "🔧 en cours" : s.statut === "terminee" ? "✓ terminée" : "✕ annulée"}
-          </span>
-          {s.quantitePrevue && (
-            <span className="text-gray-600">
-              {s.quantiteReelle != null ? `${s.quantiteReelle}/${s.quantitePrevue}` : `${s.quantitePrevue} prévus`} vélos
-            </span>
-          )}
-        </div>
-        {editable && (
-          <div className="flex gap-1 shrink-0">
-            {s.statut === "planifiee" && (
-              <button
-                onClick={() => onUpdateStatut(s.id, "en_cours")}
-                className="text-[10px] px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded hover:bg-emerald-200"
-                title="Démarrer la session"
-              >
-                ▶
-              </button>
-            )}
-            {s.statut === "en_cours" && (
-              <button
-                onClick={() => onUpdateStatut(s.id, "terminee")}
-                className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
-                title="Terminer"
-              >
-                ✓
-              </button>
-            )}
+    <div className="bg-white border border-amber-200 rounded px-2 py-1 text-[11px] flex items-center gap-2">
+      <span className="font-mono font-bold shrink-0">{s.date}</span>
+      <span className={`px-1 py-0.5 rounded text-[10px] font-semibold shrink-0 ${statutClasses[s.statut]}`}>
+        {s.statut === "planifiee" ? "📅" : s.statut === "en_cours" ? "🔧" : s.statut === "terminee" ? "✓" : "✕"}
+      </span>
+      {s.quantitePrevue && (
+        <span className="text-gray-600 shrink-0">
+          {s.quantiteReelle != null ? `${s.quantiteReelle}/${s.quantitePrevue}` : `${s.quantitePrevue}`}v
+        </span>
+      )}
+      <span className="flex-1 min-w-0 truncate text-gray-700">
+        {s.chefNom && <span className="font-semibold">{s.chefNom}</span>}
+        {s.chefNom && s.monteurNoms.length > 0 && " · "}
+        {s.monteurNoms.length > 0
+          ? <span>{s.monteurNoms.length}m: {s.monteurNoms.join(", ")}</span>
+          : <span className="italic text-gray-400">aucun monteur</span>}
+        {s.notes ? ` — ${s.notes}` : ""}
+      </span>
+      {editable && (
+        <div className="flex gap-1 shrink-0">
+          {s.statut === "planifiee" && (
             <button
-              onClick={() => onRemove(s.id)}
-              className="text-[10px] px-1.5 py-0.5 text-red-400 hover:text-red-700"
-              title="Supprimer"
+              onClick={() => onUpdateStatut(s.id, "en_cours")}
+              className="text-[10px] px-1 py-0.5 bg-emerald-100 text-emerald-700 rounded hover:bg-emerald-200"
+              title="Démarrer la session"
             >
-              🗑
+              ▶
             </button>
-          </div>
-        )}
-      </div>
-      <div className="mt-1 text-gray-700">
-        {s.chefNom && <span>👷 Chef : <strong>{s.chefNom}</strong> · </span>}
-        {s.monteurNoms.length > 0 ? (
-          <span>🔧 {s.monteurNoms.length} monteur{s.monteurNoms.length > 1 ? "s" : ""} : {s.monteurNoms.join(", ")}</span>
-        ) : (
-          <span className="italic text-gray-400">Aucun monteur assigné</span>
-        )}
-      </div>
-      {s.notes && <div className="text-[10px] text-gray-500 italic mt-0.5">{s.notes}</div>}
+          )}
+          {s.statut === "en_cours" && (
+            <button
+              onClick={() => onUpdateStatut(s.id, "terminee")}
+              className="text-[10px] px-1 py-0.5 bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
+              title="Terminer"
+            >
+              ✓
+            </button>
+          )}
+          <button
+            onClick={() => onRemove(s.id)}
+            className="text-[10px] px-1 text-red-400 hover:text-red-700"
+            title="Supprimer"
+          >
+            🗑
+          </button>
+        </div>
+      )}
     </div>
   );
 }
