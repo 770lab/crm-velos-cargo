@@ -60,6 +60,22 @@ type Livraison = {
   tourneeId: string;
 };
 
+// Entrepôts disponibles comme point de départ (Yoann 2026-05-01).
+// Si plus de 1 entrepôt actif avec stock, Gemini choisit le plus
+// pertinent par tournée (proche + stock dispo).
+type Entrepot = {
+  id: string;
+  nom: string;
+  ville: string;
+  adresse: string;
+  lat: number;
+  lng: number;
+  role: "fournisseur" | "stock" | "ephemere";
+  isPrimary: boolean;
+  stockCartons: number;
+  stockVelosMontes: number;
+};
+
 type CamionAvecRestant = Camion & { restant: number };
 
 type ClientEnrichi = {
@@ -213,6 +229,41 @@ async function loadCapaciteDuJour(date: string): Promise<Capacite> {
   };
 }
 
+// Charge tous les entrepôts actifs avec lat/lng (Yoann 2026-05-01).
+// AXDIS reste pris en compte (fournisseur, pas de tracking stock mais
+// on peut quand même partir de là). Les autres ont stock cartons +
+// vélos montés trackés.
+async function loadEntrepotsActifs(): Promise<Entrepot[]> {
+  const db = getFirestore();
+  const snap = await db.collection("entrepots").get();
+  const rows: Entrepot[] = [];
+  for (const d of snap.docs) {
+    const o = d.data() as Partial<Entrepot> & {
+      active?: boolean;
+      dateArchivage?: string | null;
+    };
+    if (o.active === false) continue;
+    if (o.dateArchivage) continue;
+    if (typeof o.lat !== "number" || typeof o.lng !== "number") continue;
+    rows.push({
+      id: d.id,
+      nom: String(o.nom || ""),
+      ville: String(o.ville || ""),
+      adresse: String(o.adresse || ""),
+      lat: o.lat,
+      lng: o.lng,
+      role:
+        o.role === "fournisseur" || o.role === "ephemere"
+          ? o.role
+          : "stock",
+      isPrimary: !!o.isPrimary,
+      stockCartons: Number(o.stockCartons || 0),
+      stockVelosMontes: Number(o.stockVelosMontes || 0),
+    });
+  }
+  return rows;
+}
+
 async function loadClientsLivrablesPourDate(date: string): Promise<{
   affectes: AffectesParTournee;
   dispo: Client[];
@@ -297,6 +348,7 @@ function buildProposeTourneePrompt(
   affectesExistants: AffectesParTournee,
   mode: string,
   capa: Capacite,
+  entrepots: Entrepot[] = [],
 ): string {
   const camionsStr = camions
     .map((c) => {
@@ -349,9 +401,36 @@ function buildProposeTourneePrompt(
       ? "Mode FROM SCRATCH : ignore les tournées existantes et propose une ventilation complète à partir de zéro."
       : "Mode FILL GAPS : si des tournées existent déjà (cf bloc 'Tournées déjà partiellement remplies'), NE LES MODIFIE PAS. Propose seulement des AJOUTS de clients dans ces tournées si la capacité du camion le permet, ou de nouvelles tournées avec les camions encore non utilisés.";
 
+  // Entrepôts disponibles comme point de départ. Si plusieurs, l'IA
+  // doit choisir le plus pertinent (proche client + stock dispo).
+  const entrepotsStr = entrepots.length > 0
+    ? entrepots
+        .map((e) => {
+          const stockInfo = e.role === "fournisseur"
+            ? "stock géré chez fournisseur (illimité côté CRM)"
+            : `${e.stockCartons} cartons + ${e.stockVelosMontes} vélos montés en stock`;
+          const tag = e.role === "fournisseur"
+            ? " [SOURCE]"
+            : e.role === "ephemere"
+              ? " [ÉPHÉMÈRE - chez client tête de groupe]"
+              : "";
+          return `- ${e.nom}${tag} (id=${e.id}, lat=${e.lat.toFixed(4)}, lng=${e.lng.toFixed(4)}, ${e.adresse}, ${e.ville}, ${stockInfo})`;
+        })
+        .join("\n")
+    : `- AXDIS PRO (par défaut, lat=${DEPOT_LAT}, lng=${DEPOT_LNG})`;
+
   return [
     "Tu es un planificateur de tournées de livraison de vélos cargo.",
-    `DÉPÔT DE DÉPART : AXDIS PRO, 2 Rue des Frères Lumière, 93150 Le Blanc-Mesnil (lat ${DEPOT_LAT}, lng ${DEPOT_LNG}).`,
+    "",
+    "ENTREPÔTS DE DÉPART POSSIBLES (choisis celui le plus proche du barycentre des clients ET avec stock dispo) :",
+    entrepotsStr,
+    "",
+    "RÈGLES STOCKS PAR ENTREPÔT :",
+    "- Si tu pars d'un entrepôt avec rôle 'stock' ou 'ephemere', tu DOIS respecter le stock dispo (cartons OU vélos montés selon mode montage).",
+    "- Si tu pars d'AXDIS (fournisseur), pas de limite stock côté CRM.",
+    "- Pour chaque tournée, tu DOIS spécifier `entrepotOrigineId` (id de l'entrepôt départ) et `modeMontage` ('client' = cartons + montage chez client, 'atelier' = vélos déjà montés, 'client_redistribue' = client redistribue lui-même).",
+    "- Capacités camions par mode : MODE 'client' (cartons) → utilise capaciteVelos du camion ; MODE 'atelier'/'client_redistribue' (vélos montés) → divise capacité par 3 environ (vélos montés prennent plus de place — petit camion 20 max, grand 40 max).",
+    "",
     `DATE DE LIVRAISON : ${date}`,
     "",
     "RESSOURCES DISPONIBLES — CAMIONS :",
@@ -878,6 +957,8 @@ export const proposeTournee = onCall<ProposePayload>(
     clientsEnrichis.sort((a, b) => a.distanceKmDepot - b.distanceKmDepot);
 
     // 8) Build prompt + appel Gemini
+    // Charge les entrepôts en parallèle (Yoann 2026-05-01)
+    const entrepots = await loadEntrepotsActifs();
     const prompt = buildProposeTourneePrompt(
       date,
       camionsAvecRestant,
@@ -885,6 +966,7 @@ export const proposeTournee = onCall<ProposePayload>(
       ctx.affectes,
       mode,
       capa,
+      entrepots,
     );
 
     const callRes = await callGemini(apiKey, prompt, request.data?.models);
