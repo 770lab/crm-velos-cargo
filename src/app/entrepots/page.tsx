@@ -759,7 +759,6 @@ function CommandeCamionModal({
     setBusy(true);
     try {
       // 1. Compteur global incrémental.
-      // Lecture max(numero) sur toutes les commandes existantes.
       const allSnap = await import("firebase/firestore").then((m) =>
         m.getDocs(collection(db, "commandesCamion")),
       );
@@ -772,7 +771,7 @@ function CommandeCamionModal({
       const reference = `VELO CARGO - COMMANDE ${numero}`;
       const today = new Date().toISOString().slice(0, 10);
       // 2. Crée le doc
-      await addDoc(collection(db, "commandesCamion"), {
+      const docRef = await addDoc(collection(db, "commandesCamion"), {
         numero,
         reference,
         entrepotDestinataireId: entrepotId,
@@ -787,24 +786,43 @@ function CommandeCamionModal({
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
-      // 3. Ouvre mailto: pour Tiffany — l opérateur valide et envoie depuis son client mail
-      const subject = encodeURIComponent(reference);
-      const livraisonLine = dateLivraisonSouhaitee
-        ? `Livraison souhaitée : ${dateLivraisonSouhaitee}\n`
-        : "";
-      const notesLine = notes.trim() ? `\nNotes : ${notes.trim()}\n` : "";
-      const palettes = Math.ceil(q / 10); // 1 palette ≈ 10 vélos
-      const body = encodeURIComponent(
-        `Bonjour Tiffany,\n\n` +
-          `Merci de préparer ${q} vélos cargo (${palettes} palette${palettes > 1 ? "s" : ""}) pour livraison à :\n\n` +
-          `${entrepotNom}\n${entrepotAdresse}\n\n` +
-          livraisonLine +
-          `Référence à reporter sur le bon de commande : ${reference}\n` +
-          notesLine +
-          `\nSi pas de place disponible pour la quantité demandée, merci de me dire combien tu peux mettre en envoi (minimum 5 palettes = 50 vélos pour rentabiliser le camion).\n\n` +
-          `Cordialement,\n${user?.nom || "Yoann"}`,
-      );
-      window.open(`mailto:${TIFFANY_EMAIL}?subject=${subject}&body=${body}`, "_blank");
+      // 3. Envoi SMTP via Cloud Function (depuis velos-cargo@artisansverts.energy,
+      // pas le mail perso de l'utilisateur). Yoann 2026-05-01.
+      const { getFunctions, httpsCallable } = await import("firebase/functions");
+      const { firebaseApp } = await import("@/lib/firebase");
+      const fn = httpsCallable(getFunctions(firebaseApp, "europe-west1"), "sendCommandeCamion");
+      try {
+        const r = (await fn({ commandeId: docRef.id })) as {
+          data?: { ok?: boolean; sentTo?: string; messageId?: string };
+        };
+        const sentTo = r.data?.sentTo || TIFFANY_EMAIL;
+        alert(`✓ Commande ${reference} envoyée à ${sentTo}`);
+      } catch (e) {
+        // Fallback : mailto si la Cloud Function plante (réseau, secret, etc.)
+        const errMsg = e instanceof Error ? e.message : String(e);
+        const useMailto = confirm(
+          `Échec envoi SMTP : ${errMsg}\n\nLa commande ${reference} a été enregistrée en base.\n\nOuvrir un mailto: pour envoyer manuellement depuis ton client mail ?`,
+        );
+        if (useMailto) {
+          const subject = encodeURIComponent(reference);
+          const livraisonLine = dateLivraisonSouhaitee
+            ? `Livraison souhaitée : ${dateLivraisonSouhaitee}\n`
+            : "";
+          const notesLine = notes.trim() ? `\nNotes : ${notes.trim()}\n` : "";
+          const palettes = Math.ceil(q / 10);
+          const body = encodeURIComponent(
+            `Bonjour Tiffany,\n\n` +
+              `Merci de préparer ${q} vélos cargo (${palettes} palette${palettes > 1 ? "s" : ""}) pour livraison à :\n\n` +
+              `${entrepotNom}\n${entrepotAdresse}\n\n` +
+              livraisonLine +
+              `Référence à reporter sur le bon de commande : ${reference}\n` +
+              notesLine +
+              `\nSi pas de place, merci de me dire combien tu peux mettre (min 5 palettes = 50 vélos).\n\n` +
+              `Cordialement,\n${user?.nom || "Yoann"}`,
+          );
+          window.open(`mailto:${TIFFANY_EMAIL}?subject=${subject}&body=${body}`, "_blank");
+        }
+      }
       onClose();
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e));
@@ -887,7 +905,7 @@ function CommandeCamionModal({
             disabled={busy}
             className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 font-semibold"
           >
-            {busy ? "Enregistrement…" : "📧 Enregistrer + ouvrir mail Tiffany"}
+            {busy ? "Envoi…" : "📧 Envoyer à Tiffany"}
           </button>
         </div>
       </div>

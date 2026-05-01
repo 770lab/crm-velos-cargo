@@ -1779,3 +1779,132 @@ export const sendBlToFranck = onCall<{ tourneeId: string; clientId: string }>(
     }
   },
 );
+
+// ─────────────────────────────────────────────────────────────────────────
+// sendCommandeCamion : envoie le mail "VELO CARGO - COMMANDE N" à Tiffany
+// pour passer commande d'un camion complet vers un entrepôt destinataire
+// (Yoann 2026-05-01). L'email part de velos-cargo@artisansverts.energy
+// (pas du mail personnel via mailto:).
+// ─────────────────────────────────────────────────────────────────────────
+type SendCommandeCamionPayload = {
+  commandeId: string;
+};
+
+export const sendCommandeCamion = onCall<SendCommandeCamionPayload>(
+  { secrets: [GMAIL_APP_PASSWORD], timeoutSeconds: 60, memory: "256MiB" },
+  async (request) => {
+    const password = GMAIL_APP_PASSWORD.value();
+    if (!password) {
+      throw new HttpsError(
+        "failed-precondition",
+        "GMAIL_APP_PASSWORD non configurée",
+      );
+    }
+    const auth = request.auth;
+    if (!auth) throw new HttpsError("unauthenticated", "Login requis");
+    const commandeId = request.data?.commandeId;
+    if (!commandeId) throw new HttpsError("invalid-argument", "commandeId requis");
+
+    // RBAC : seul admin/superadmin peut commander
+    const memberDoc = await db.collection("equipe").doc(auth.uid).get();
+    const role = memberDoc.exists ? (memberDoc.data() as { role?: string }).role : null;
+    if (role !== "admin" && role !== "superadmin") {
+      throw new HttpsError("permission-denied", "Réservé admin/superadmin");
+    }
+    const senderNom = memberDoc.exists
+      ? (memberDoc.data() as { nom?: string }).nom || "Yoann"
+      : "Yoann";
+
+    const cSnap = await db.collection("commandesCamion").doc(commandeId).get();
+    if (!cSnap.exists) throw new HttpsError("not-found", "Commande introuvable");
+    const c = cSnap.data() as {
+      reference?: string;
+      numero?: number;
+      quantite?: number;
+      entrepotDestinataireNom?: string;
+      entrepotDestinataireAdresse?: string;
+      dateLivraisonSouhaitee?: string | null;
+      notes?: string | null;
+      emailEnvoyeAt?: unknown;
+    };
+    if (c.emailEnvoyeAt) {
+      // Idempotent : déjà envoyé, on retourne ok sans renvoyer
+      logger.info("sendCommandeCamion déjà envoyé", { commandeId });
+      return { ok: true, alreadySent: true };
+    }
+
+    const reference = c.reference || `VELO CARGO - COMMANDE ${c.numero || "?"}`;
+    const quantite = Number(c.quantite || 0);
+    if (quantite < 50) {
+      throw new HttpsError("failed-precondition", "Minimum 50 vélos (5 palettes)");
+    }
+    const palettes = Math.ceil(quantite / 10);
+    const subject = reference;
+    const livraisonLine = c.dateLivraisonSouhaitee
+      ? `Livraison souhaitée : ${c.dateLivraisonSouhaitee}\n`
+      : "";
+    const notesLine = c.notes ? `\nNotes : ${c.notes}\n` : "";
+
+    const body = [
+      `Bonjour Tiffany,`,
+      ``,
+      `Merci de préparer ${quantite} vélos cargo (${palettes} palette${palettes > 1 ? "s" : ""}) pour livraison à :`,
+      ``,
+      `${c.entrepotDestinataireNom || ""}`,
+      `${c.entrepotDestinataireAdresse || ""}`,
+      ``,
+      livraisonLine,
+      `Référence à reporter sur le bon de commande : ${reference}`,
+      notesLine,
+      `Si pas de place disponible pour la quantité demandée, merci de me dire combien tu peux mettre en envoi (minimum 5 palettes = 50 vélos pour rentabiliser le camion).`,
+      ``,
+      `Cordialement,`,
+      senderNom,
+    ]
+      .filter((l) => l !== null && l !== undefined)
+      .join("\n");
+
+    const transporter = nodemailer.createTransport({
+      host: "smtp.gmail.com",
+      port: 465,
+      secure: true,
+      auth: { user: SENDER_EMAIL, pass: password },
+    });
+
+    try {
+      const info = await transporter.sendMail({
+        from: `"VELO CARGO" <${SENDER_EMAIL}>`,
+        to: TIFFANY_EMAIL,
+        cc: [SENDER_EMAIL, MARIA_EMAIL],
+        subject,
+        text: body,
+      });
+      logger.info("sendCommandeCamion envoyé", {
+        commandeId,
+        reference,
+        quantite,
+        messageId: info.messageId,
+      });
+      // Trace l'envoi sur le doc commande
+      await db.collection("commandesCamion").doc(commandeId).set(
+        {
+          emailEnvoyeAt: new Date().toISOString(),
+          emailEnvoyeTo: TIFFANY_EMAIL,
+          emailMessageId: info.messageId,
+          updatedAt: new Date().toISOString(),
+        },
+        { merge: true },
+      );
+      return {
+        ok: true,
+        alreadySent: false,
+        messageId: info.messageId,
+        sentTo: TIFFANY_EMAIL,
+      };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      logger.error("sendCommandeCamion SMTP failed", { commandeId, err: msg });
+      throw new HttpsError("internal", `Envoi SMTP échoué : ${msg}`);
+    }
+  },
+);
