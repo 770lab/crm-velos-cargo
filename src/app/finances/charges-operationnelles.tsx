@@ -199,12 +199,14 @@ export function ChargesOperationnellesSection({
   const coutVelosLivres = veloLivresCount * coutVeloHT;
   const totalFraisOps = frais.reduce((s, f) => s + f.montantHT, 0);
   const totalCharges = coutVelosLivres + totalFraisOps;
-  const coutParVeloLivre = veloLivresCount > 0 ? totalCharges / veloLivresCount : 0;
-  // Coût TOTAL incluant la main d'œuvre (salaires + primes + apporteurs).
-  // Demande Yoann 2026-05-01 : il veut le vrai coût all-in par vélo, pas
-  // juste hors masse salariale.
-  const totalChargesAllIn = totalCharges + coutMainOeuvre;
-  const coutParVeloAllIn = veloLivresCount > 0 ? totalChargesAllIn / veloLivresCount : 0;
+  // Coût LOGISTIQUE par vélo (Yoann 2026-05-01) = ce que coûte la livraison
+  // d'un vélo, EXCLUDING le coût d'achat AXDIS du vélo lui-même.
+  // = (frais ops camion/carburant/etc. + masse salariale équipe terrain
+  //    + commissions apporteurs) / nombre de vélos livrés sur la période.
+  // Exemple Yoann : 2 camions × 100 €/j + 5 chauffeurs × 100 € + 2 × 130 €
+  //                 = 960 € / nb vélos livrés ce jour = coût logistique/vélo.
+  const totalLogistique = totalFraisOps + coutMainOeuvre;
+  const coutLogistiqueParVelo = veloLivresCount > 0 ? totalLogistique / veloLivresCount : 0;
   const prixVenteHT = prixVenteVeloTTC / (1 + TVA_RATE);
   const encaissementsHT = veloLivresCount * prixVenteHT;
   const margeBruteHT = encaissementsHT - totalCharges;
@@ -248,35 +250,42 @@ export function ChargesOperationnellesSection({
           accent="text-orange-700"
           hint={`${veloLivresCount} × ${fmt(coutVeloHT)}`}
         />
-        <KpiCard label="Frais opérationnels" value={fmt(totalFraisOps)} accent="text-blue-700" />
-        <KpiCard label="Total charges" value={fmt(totalCharges)} accent="text-red-700" hint="hors masse salariale" />
-        <KpiCard label="Coût / vélo livré" value={fmt(coutParVeloLivre)} accent="text-gray-700" hint="hors masse salariale" />
+        <KpiCard
+          label="Frais opérationnels"
+          value={fmt(totalFraisOps)}
+          accent="text-blue-700"
+          hint="camion + carburant + etc."
+        />
+        <KpiCard
+          label="Main d'œuvre"
+          value={coutMainOeuvre > 0 ? fmt(coutMainOeuvre) : "—"}
+          accent="text-indigo-700"
+          hint="salaires + primes + apporteurs"
+        />
+        <KpiCard
+          label="Coût logistique / vélo"
+          value={coutMainOeuvre > 0 ? fmt(coutLogistiqueParVelo) : fmt(veloLivresCount > 0 ? totalFraisOps / veloLivresCount : 0)}
+          accent="text-gray-900"
+          hint={
+            coutMainOeuvre > 0
+              ? `${fmt(totalLogistique)} / ${veloLivresCount} vélos`
+              : `${fmt(totalFraisOps)} / ${veloLivresCount} (sans main d'œuvre)`
+          }
+        />
       </div>
 
-      {/* Coût TOTAL all-in (incluant masse salariale) — affiché seulement si
-          la main d'œuvre est chargée (data finances). */}
-      {coutMainOeuvre > 0 && (
-        <div className="mb-3 grid grid-cols-2 lg:grid-cols-3 gap-3">
-          <KpiCard
-            label="Main d'œuvre"
-            value={fmt(coutMainOeuvre)}
-            accent="text-indigo-700"
-            hint="salaires + primes + apporteurs"
-          />
-          <KpiCard
-            label="Total charges all-in"
-            value={fmt(totalChargesAllIn)}
-            accent="text-red-700"
-            hint="achats + frais ops + main d'œuvre"
-          />
-          <KpiCard
-            label="Coût / vélo livré (all-in)"
-            value={fmt(coutParVeloAllIn)}
-            accent="text-gray-900"
-            hint={`${fmt(totalChargesAllIn)} / ${veloLivresCount} vélos`}
-          />
-        </div>
-      )}
+      {/* Total charges (hors masse salariale) en sous-titre — sert de
+          référence pour la marge brute affichée plus bas. */}
+      <div className="mb-3 text-[11px] text-gray-500 px-1">
+        Total charges hors masse salariale (achats + frais ops) :{" "}
+        <strong className="text-red-700">{fmt(totalCharges)}</strong>
+        {coutMainOeuvre > 0 && (
+          <>
+            {" "}· Charges all-in (avec main d&apos;œuvre) :{" "}
+            <strong className="text-red-800">{fmt(totalCharges + coutMainOeuvre)}</strong>
+          </>
+        )}
+      </div>
 
       {/* Note pédagogique sur le calcul */}
       {totalAchatsCommandes > coutVelosLivres && (
