@@ -1821,6 +1821,9 @@ function TourneeModal({
     return MONTEURS_PAR_EQUIPE;
   });
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // Modal liste FNUCI client (Yoann 2026-05-01) — accès rapide aux FNUCI
+  // de tous les vélos d'une livraison + état des étapes + copie CSV.
+  const [fnuciListClient, setFnuciListClient] = useState<{ clientId: string; entreprise: string } | null>(null);
   // Modal saisie manuelle bon d'enlèvement (30-04 10h15) : quand le pipeline
   // gas-inbox/Gemini échoue (mail non extrait, doc mal classé), Yoann saisit
   // le bon directement depuis l'UI au lieu d'aller bidouiller le Sheet GAS.
@@ -3271,6 +3274,24 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                       >
                         {l.deposeAt ? "📥 Déposé" : "💰 À déposer"}
                       </button>
+                      {/* Liste FNUCI du client (Yoann 2026-05-01) :
+                          accès rapide à tous les FNUCI assignés + état
+                          stage par vélo. Utile pour COFRAC + traçabilité. */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (l.clientId) {
+                            setFnuciListClient({
+                              clientId: l.clientId,
+                              entreprise: l.client.entreprise || "?",
+                            });
+                          }
+                        }}
+                        className="px-2 py-0.5 text-[11px] rounded border bg-white border-blue-300 text-blue-700 hover:bg-blue-50"
+                        title="Voir tous les FNUCI du client (état stage par vélo, copier au format CSV pour COFRAC)"
+                      >
+                        📋 FNUCI
+                      </button>
                     </div>
                   )}
                   {tournee.tourneeId && (() => {
@@ -3575,6 +3596,14 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             setManualBonOpen(false);
             onChanged();
           }}
+        />
+      )}
+      {fnuciListClient && (
+        <FnuciListModal
+          clientId={fnuciListClient.clientId}
+          entreprise={fnuciListClient.entreprise}
+          progression={progression}
+          onClose={() => setFnuciListClient(null)}
         />
       )}
       {reportTargets && (
@@ -5421,6 +5450,159 @@ function computeSegments(livraisons: LivraisonRow[]): { distKm: number; trajetMi
 
 // Modale « Brief équipe » : génère un texte narratif à copier-coller dans
 // WhatsApp / mail pour briefer les équipes la veille au soir.
+// Modal liste FNUCI d'un client (Yoann 2026-05-01). Affiche tous les
+// vélos du client présents dans la progression de la tournée avec leur
+// FNUCI et l'état des 4 étapes (prép / charg / livr / mont). Permet
+// de copier la liste au format CSV pour Tiffany / COFRAC.
+type FnuciListProgression = {
+  clients?: {
+    clientId: string;
+    entreprise?: string;
+    velos?: {
+      veloId: string;
+      fnuci: string | null;
+      datePreparation?: string | null;
+      dateChargement?: string | null;
+    }[];
+    totals: { total: number; prepare: number; charge: number; livre: number; monte: number };
+  }[];
+} | null;
+function FnuciListModal({
+  clientId,
+  entreprise,
+  progression,
+  onClose,
+}: {
+  clientId: string;
+  entreprise: string;
+  progression: FnuciListProgression;
+  onClose: () => void;
+}) {
+  const cp = progression?.clients?.find((c) => c.clientId === clientId);
+  const velos = cp?.velos || [];
+  const withFnuci = velos.filter((v) => v.fnuci);
+  const sansFnuci = velos.filter((v) => !v.fnuci);
+
+  const copyCsv = async () => {
+    const lines = ["Entreprise;FNUCI"];
+    for (const v of withFnuci) lines.push(`${entreprise};${v.fnuci}`);
+    const text = lines.join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      alert(`✓ ${withFnuci.length} FNUCI copiés au presse-papier (format CSV)`);
+    } catch {
+      // Fallback : prompt avec le texte
+      window.prompt("Copie manuelle (Ctrl+A puis Ctrl+C) :", text);
+    }
+  };
+
+  const copyList = async () => {
+    const text = withFnuci.map((v) => v.fnuci).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      alert(`✓ ${withFnuci.length} FNUCI copiés au presse-papier (1 par ligne)`);
+    } catch {
+      window.prompt("Copie manuelle :", text);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl p-5 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex justify-between items-start mb-3">
+          <div>
+            <h2 className="text-lg font-semibold">📋 FNUCI de {entreprise}</h2>
+            {cp && (
+              <div className="text-xs text-gray-500 mt-0.5">
+                {withFnuci.length}/{cp.totals.total} vélos avec FNUCI assigné · Prép {cp.totals.prepare}/{cp.totals.total} · Charg {cp.totals.charge}/{cp.totals.total} · Livr {cp.totals.livre}/{cp.totals.total} · Mont {cp.totals.monte}/{cp.totals.total}
+              </div>
+            )}
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+
+        {!cp ? (
+          <div className="py-6 text-center text-sm text-gray-500 italic">
+            Aucune donnée de progression pour ce client. Ouvre la tournée pour charger les vélos.
+          </div>
+        ) : (
+          <>
+            <div className="flex gap-2 mb-3">
+              <button
+                onClick={copyList}
+                disabled={withFnuci.length === 0}
+                className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+              >
+                📋 Copier ({withFnuci.length} FNUCI)
+              </button>
+              <button
+                onClick={copyCsv}
+                disabled={withFnuci.length === 0}
+                className="px-3 py-1.5 text-xs bg-white border border-blue-300 text-blue-700 rounded hover:bg-blue-50 disabled:opacity-50"
+              >
+                📊 Copier en CSV (Entreprise;FNUCI)
+              </button>
+            </div>
+
+            {withFnuci.length > 0 && (
+              <div className="border rounded-lg overflow-hidden mb-3">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50 border-b">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-medium text-gray-600">#</th>
+                      <th className="text-left px-3 py-2 font-medium text-gray-600">FNUCI</th>
+                      <th className="text-center px-2 py-2 font-medium text-gray-600">Prép</th>
+                      <th className="text-center px-2 py-2 font-medium text-gray-600">Charg</th>
+                      <th className="text-center px-2 py-2 font-medium text-gray-600">Livr</th>
+                      <th className="text-center px-2 py-2 font-medium text-gray-600">Mont</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {withFnuci.map((v, i) => {
+                      const stages = v as unknown as Record<string, string | null>;
+                      const ok = (k: string) => (stages[k] ? "✓" : "—");
+                      return (
+                        <tr key={v.veloId} className="hover:bg-gray-50">
+                          <td className="px-3 py-1.5 text-gray-400">{i + 1}</td>
+                          <td className="px-3 py-1.5 font-mono font-bold">{v.fnuci}</td>
+                          <td className="text-center px-2 py-1.5">{ok("datePreparation")}</td>
+                          <td className="text-center px-2 py-1.5">{ok("dateChargement")}</td>
+                          <td className="text-center px-2 py-1.5">{ok("dateLivraisonScan")}</td>
+                          <td className="text-center px-2 py-1.5">{ok("dateMontage")}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {sansFnuci.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded p-2 text-[11px] text-amber-800">
+                ⚠ {sansFnuci.length} vélo{sansFnuci.length > 1 ? "s" : ""} sans FNUCI assigné
+                (slot vide sur la commande). Scanne-les depuis la prep pour
+                affecter un FNUCI.
+              </div>
+            )}
+          </>
+        )}
+
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">
+            Fermer
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function BriefEquipeModal({
   tournee,
   tourneeNumber,
