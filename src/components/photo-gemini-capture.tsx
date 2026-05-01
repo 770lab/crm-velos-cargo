@@ -53,13 +53,19 @@ async function mirrorGeminiResultsToFirestore(
   tourneeId: string,
   userId: string | null,
   bypassOrderLock: boolean = false,
-): Promise<{ failed: Array<{ fnuci: string; error: string }> }> {
+): Promise<{
+  failed: Array<{ fnuci: string; error: string }>;
+  // Successes (fnuci + veloId) renvoyés pour permettre l'upload de la photo
+  // CEE en aval (chargement). veloId vient de la réponse markVeloCharge.
+  successes: Array<{ fnuci: string; veloId: string }>;
+}> {
   // Important: depuis la migration Firestore, gasPost résout DIRECTEMENT
   // sur Firestore (USE_FIREBASE=1) — il n'y a plus de filet GAS en aval.
   // On collecte les erreurs pour les remonter à l'UI au lieu de les
   // avaler silencieusement (sinon un scan "OK Gemini" apparaît mais le
   // vélo reste invisible côté compteurs préparation → bug fantôme).
   const failed: Array<{ fnuci: string; error: string }> = [];
+  const successes: Array<{ fnuci: string; veloId: string }> = [];
   for (const resp of responses) {
     if (!("ok" in resp) || !resp.ok || !resp.results) continue;
     for (const r of resp.results) {
@@ -90,6 +96,7 @@ async function mirrorGeminiResultsToFirestore(
           return null;
         };
         let serverErr: string | null = null;
+        let veloId: string | null = null;
         const bypass = bypassOrderLock || undefined;
         if (etape === "preparation") {
           if (clientId) {
@@ -97,19 +104,24 @@ async function mirrorGeminiResultsToFirestore(
             serverErr = checkResp(a);
           }
           if (!serverErr) {
-            const m = await gasPost("markVeloPrepare", { fnuci: r.fnuci, tourneeId, userId: userId || "", bypassOrderLock: bypass });
+            const m = await gasPost("markVeloPrepare", { fnuci: r.fnuci, tourneeId, userId: userId || "", bypassOrderLock: bypass }) as { veloId?: string };
             serverErr = checkResp(m);
+            if (!serverErr && m && typeof m.veloId === "string") veloId = m.veloId;
           }
         } else if (etape === "chargement") {
-          const m = await gasPost("markVeloCharge", { fnuci: r.fnuci, tourneeId, userId: userId || "", bypassOrderLock: bypass });
+          const m = await gasPost("markVeloCharge", { fnuci: r.fnuci, tourneeId, userId: userId || "", bypassOrderLock: bypass }) as { veloId?: string };
           serverErr = checkResp(m);
+          if (!serverErr && m && typeof m.veloId === "string") veloId = m.veloId;
         } else if (etape === "livraisonScan") {
-          const m = await gasPost("markVeloLivreScan", { fnuci: r.fnuci, tourneeId, userId: userId || "", bypassOrderLock: bypass });
+          const m = await gasPost("markVeloLivreScan", { fnuci: r.fnuci, tourneeId, userId: userId || "", bypassOrderLock: bypass }) as { veloId?: string };
           serverErr = checkResp(m);
+          if (!serverErr && m && typeof m.veloId === "string") veloId = m.veloId;
         }
         if (serverErr) {
           failed.push({ fnuci: r.fnuci, error: serverErr });
           console.warn("[scan] mirror serveur a refusé", r.fnuci, etape, serverErr);
+        } else if (veloId) {
+          successes.push({ fnuci: r.fnuci, veloId });
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
@@ -118,7 +130,38 @@ async function mirrorGeminiResultsToFirestore(
       }
     }
   }
-  return { failed };
+  return { failed, successes };
+}
+
+// Upload best-effort de la photo CEE au chargement vers Firebase Storage.
+// Indispensable pour la conformité COFRAC (TRA-EQ-131) : la photo du sticker
+// BicyCode prise par le chauffeur lors du chargement est la preuve que le
+// FNUCI déclaré correspond bien à un vélo physique. Best-effort : si l'upload
+// échoue (réseau, taille…), le scan reste validé côté Firestore et un log
+// console permet à Yoann de réuploader manuellement plus tard.
+async function uploadChargementPhotoBestEffort(
+  veloId: string,
+  fnuci: string,
+  base64: string,
+  mimeType: string,
+): Promise<void> {
+  try {
+    const dataUrl = base64.startsWith("data:")
+      ? base64
+      : `data:${mimeType || "image/jpeg"};base64,${base64}`;
+    const r = (await gasUpload("uploadVeloPhoto", {
+      veloId,
+      kind: "chargement",
+      fileData: dataUrl,
+    })) as { ok?: boolean; url?: string; error?: string };
+    if (!r || r.error || !r.url) {
+      console.warn("[scan] upload photo chargement échoué", fnuci, veloId, r?.error || "?");
+      return;
+    }
+    console.log("[scan] photo chargement uploadée", fnuci, veloId, r.url);
+  } catch (e) {
+    console.warn("[scan] upload photo chargement exception", fnuci, veloId, e);
+  }
 }
 
 async function callExtractWithRetry(
@@ -420,7 +463,7 @@ export default function PhotoGeminiCapture({
     // de référence : si Gemini hallucine, le serveur dit FNUCI_INCONNU et
     // n'écrit rien -> pas de pollution possible. Donc auto-mirror OK ailleurs.
     if (etape !== "preparation") {
-      const { failed } = await mirrorGeminiResultsToFirestore(
+      const { failed, successes } = await mirrorGeminiResultsToFirestore(
         collectedResps, etape, forceClientId, tourneeId, userId, bypassOrderLock,
       );
       if (failed.length) {
@@ -429,6 +472,21 @@ export default function PhotoGeminiCapture({
         console.error(`[scan] ${failed.length} écriture(s) Firestore échouée(s)\n${summary}`);
       } else {
         setMirrorErrors([]);
+      }
+
+      // Persistance photo CEE chargement (preuve TRA-EQ-131). Pour chaque
+      // FNUCI confirmé OK par le serveur, on retrouve l'item batch qui contient
+      // la photo (base64 + mimeType) et on l'upload dans Storage.
+      // Séquentiel pour limiter le pic réseau iPhone 4G.
+      if (etape === "chargement" && successes.length > 0) {
+        for (const s of successes) {
+          const item = items.find(
+            (it) => (it.validatedFnuci || it.pendingFnuci || "").toUpperCase() === s.fnuci ||
+                    (it.resp && "ok" in it.resp && it.resp.results.some((rr) => rr.fnuci === s.fnuci)),
+          );
+          if (!item || !item.base64) continue;
+          await uploadChargementPhotoBestEffort(s.veloId, s.fnuci, item.base64, item.mimeType);
+        }
       }
     }
 
@@ -533,12 +591,19 @@ export default function PhotoGeminiCapture({
       setItems((prev) =>
         prev.map((it) => (it.id === item.id ? { ...it, status: "done", resp } : it)),
       );
-      const { failed } = await mirrorGeminiResultsToFirestore(
+      const { failed, successes } = await mirrorGeminiResultsToFirestore(
         [resp], etape, forceClientId, tourneeId, userId, bypassOrderLock,
       );
       if (failed.length) {
         setMirrorErrors((prev) => [...prev, ...failed]);
         console.error(`[scan retry] ${failed.length} écriture(s) Firestore échouée(s)`);
+      }
+      // Photo CEE chargement (cf. identifyAll). Best-effort, l'item courant
+      // est forcément le source de la photo donc pas besoin de matcher.
+      if (etape === "chargement" && item.base64) {
+        for (const s of successes) {
+          await uploadChargementPhotoBestEffort(s.veloId, s.fnuci, item.base64, item.mimeType);
+        }
       }
     } catch (e) {
       setItems((prev) =>

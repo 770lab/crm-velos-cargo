@@ -79,6 +79,20 @@ service firebase.storage {
       allow write: if isStaff() && isImage() && maxSize(10);
     }
 
+    // Photo CEE chargement (chauffeur prend en photo le sticker BicyCode du
+    // vélo au chargement, preuve TRA-EQ-131 pour le contrôle COFRAC).
+    match /chargement/{veloId}/{fileName} {
+      allow read: if isStaff();
+      allow write: if isStaff() && isImage() && maxSize(10);
+    }
+
+    // Photos vélo + FNUCI prises au moment de la livraison (uploadVeloPhoto
+    // kind=velo / kind=fnuci, lues par tournee-execute / admin).
+    match /livraison/{veloId}/{fileName} {
+      allow read: if isStaff();
+      allow write: if isStaff() && isImage() && maxSize(10);
+    }
+
     // Bons d'enlèvement (PDF arrivés par email)
     match /bonsEnlevement/{id}/{fileName} {
       allow read: if isStaff();

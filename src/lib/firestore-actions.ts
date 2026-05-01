@@ -2715,10 +2715,11 @@ export async function runFirestoreAction(
       if (!photoData) throw new Error("photoData ou fileData requis");
 
       // Détermine le "rôle" canonique de la photo
-      type Role = "qr" | "etiquette" | "veloLivraison" | "fnuciLivraison";
+      type Role = "qr" | "etiquette" | "veloLivraison" | "fnuciLivraison" | "chargement";
       let role: Role;
       if (kind === "velo") role = "veloLivraison";
       else if (kind === "fnuci") role = "fnuciLivraison";
+      else if (kind === "chargement" || stage === "chargement") role = "chargement";
       else if (stage === "etiquette") role = "etiquette";
       else role = "qr";
 
@@ -2727,6 +2728,7 @@ export async function runFirestoreAction(
         etiquette: "preparation",
         veloLivraison: "livraison",
         fnuciLivraison: "livraison",
+        chargement: "chargement",
       };
       const url = await uploadDataUrl(
         `${folder[role]}/${veloId}/${role}-${Date.now()}.jpg`,
@@ -2747,6 +2749,13 @@ export async function runFirestoreAction(
       } else if (role === "fnuciLivraison") {
         updates["photos.fnuciLivraison"] = url;
         updates.photoFnuciUrl = url;
+      } else if (role === "chargement") {
+        // Preuve CEE : photo du sticker BicyCode prise par le chauffeur au
+        // chargement. Indispensable pour le contrôle COFRAC (TRA-EQ-131).
+        // Top-level pour requêtes / affichage admin direct.
+        updates["photos.chargement"] = url;
+        updates.photoChargementUrl = url;
+        updates.photoChargementUploadedAt = ts();
       }
 
       await updateDoc(doc(db, "velos", veloId), updates);
