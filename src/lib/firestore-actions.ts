@@ -30,6 +30,7 @@ import {
   getDocsFromServer,
   runTransaction,
   Timestamp,
+  increment,
   type FieldValue,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
@@ -104,6 +105,81 @@ async function uploadDataUrl(path: string, dataUrl: string, mimeOverride?: strin
   const r = ref(storage, path);
   await uploadBytes(r, blob, { contentType: mimeOverride || mime });
   return getDownloadURL(r);
+}
+
+// ─────────────────────────────────────────────────────────────────────────
+// Helpers stock entrepôts (Phase 2C — Yoann 2026-05-01) :
+// auto-création de mouvements de stock à chaque event terrain (chargement,
+// montage atelier, dé-marquage). Le stock dénormalisé sur le doc parent
+// est mis à jour via FieldValue.increment pour rester atomique.
+// ─────────────────────────────────────────────────────────────────────────
+async function createStockMouvement(params: {
+  entrepotId: string;
+  type: "carton" | "monte";
+  quantite: number; // signé
+  source: string; // "tournee-charge", "montage-atelier", "unmark-charge", "manuelle"
+  notes?: string | null;
+  veloId?: string | null;
+  fnuci?: string | null;
+}) {
+  const { entrepotId, type, quantite, source, notes, veloId, fnuci } = params;
+  if (!entrepotId || quantite === 0) return;
+  try {
+    await addDoc(collection(db, "entrepots", entrepotId, "mouvements"), {
+      type,
+      quantite,
+      date: new Date().toISOString().slice(0, 10),
+      source,
+      notes: notes || null,
+      veloId: veloId || null,
+      fnuci: fnuci || null,
+      createdAt: ts(),
+    });
+    const field = type === "carton" ? "stockCartons" : "stockVelosMontes";
+    await updateDoc(doc(db, "entrepots", entrepotId), {
+      [field]: increment(quantite),
+      updatedAt: ts(),
+    });
+  } catch (e) {
+    // Best-effort : on log mais on ne fait pas échouer l'action terrain pour
+    // un problème de stock (le scan FNUCI reste prioritaire pour CEE).
+    console.warn("[stock] createStockMouvement KO", entrepotId, type, quantite, e);
+  }
+}
+
+/** Trouve l'entrepôt origine + mode montage pour un client. Si tourneeId
+ *  fourni, on cherche la livraison de cette tournée. Sinon on prend la
+ *  livraison la plus récente non-annulée du client. Renvoie null si
+ *  aucune livraison ou pas d'entrepôt configuré. */
+async function getEntrepotOrigineForClient(params: {
+  tourneeId?: string;
+  clientId: string;
+}): Promise<{ entrepotOrigineId: string; modeMontage: "client" | "atelier" | "client_redistribue" } | null> {
+  const { tourneeId, clientId } = params;
+  try {
+    const constraints = [where("clientId", "==", clientId)];
+    if (tourneeId) constraints.push(where("tourneeId", "==", tourneeId));
+    const livSnap = await getDocs(query(collection(db, "livraisons"), ...constraints));
+    if (livSnap.empty) return null;
+    // Filtre les annulées et prend la 1ère avec entrepotOrigineId défini.
+    for (const d of livSnap.docs) {
+      const liv = d.data() as {
+        statut?: string;
+        entrepotOrigineId?: string | null;
+        modeMontage?: "client" | "atelier" | "client_redistribue" | null;
+      };
+      if (liv.statut === "annulee") continue;
+      if (!liv.entrepotOrigineId) continue;
+      return {
+        entrepotOrigineId: liv.entrepotOrigineId,
+        modeMontage: liv.modeMontage || "client",
+      };
+    }
+    return null;
+  } catch (e) {
+    console.warn("[stock] getEntrepotOrigineForClient KO", e);
+    return null;
+  }
 }
 
 // Token unique par étiquette carton (29-04 12h30, demande Yoann anti-double-scan).
@@ -1416,6 +1492,27 @@ export async function runFirestoreAction(
       };
       if (userId) updates[stage.userField] = userId;
       await updateDoc(veloDoc.ref, updates);
+
+      // 5. Phase 2C — Auto-décrément stock entrepôt origine au chargement
+      // (Yoann 2026-05-01). Mode "client" → -1 carton, "atelier" /
+      // "client_redistribue" → -1 monté. Best-effort, n'échoue jamais le
+      // scan terrain.
+      if (action === "markVeloCharge") {
+        const orig = await getEntrepotOrigineForClient({ tourneeId, clientId: veloClientId });
+        if (orig) {
+          const stockType: "carton" | "monte" = orig.modeMontage === "client" ? "carton" : "monte";
+          await createStockMouvement({
+            entrepotId: orig.entrepotOrigineId,
+            type: stockType,
+            quantite: -1,
+            source: `tournee-charge`,
+            notes: livraisonClientName ? `${livraisonClientName} (chargement)` : "Chargement tournée",
+            veloId: veloDoc.id,
+            fnuci,
+          });
+        }
+      }
+
       return {
         ok: true,
         alreadyDone: false,
@@ -2552,6 +2649,34 @@ export async function runFirestoreAction(
       };
       if (monteurId) updates.monteParId = monteurId;
       await updateDoc(veloDoc.ref, updates);
+
+      // 5bis. Phase 2C — Détection montage atelier (Yoann 2026-05-01).
+      // Si le vélo n'avait PAS dateChargement avant ce montage, c'est qu'il
+      // a été monté en atelier (pas chez le client). On crée 2 mvts stock
+      // sur l'entrepôt origine : -1 carton, +1 monté.
+      if (!velo.dateChargement) {
+        const orig = await getEntrepotOrigineForClient({ clientId });
+        if (orig) {
+          await createStockMouvement({
+            entrepotId: orig.entrepotOrigineId,
+            type: "carton",
+            quantite: -1,
+            source: "montage-atelier",
+            notes: `Vélo ${fnuci} monté atelier`,
+            veloId: veloDoc.id,
+            fnuci,
+          });
+          await createStockMouvement({
+            entrepotId: orig.entrepotOrigineId,
+            type: "monte",
+            quantite: 1,
+            source: "montage-atelier",
+            notes: `Vélo ${fnuci} monté atelier`,
+            veloId: veloDoc.id,
+            fnuci,
+          });
+        }
+      }
 
       // 6. Récupérer nom client pour message UX
       let clientName: string | null = null;
