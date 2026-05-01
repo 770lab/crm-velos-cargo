@@ -1756,6 +1756,9 @@ function SessionAtelierModal({
   const [quantitePrevue, setQuantitePrevue] = useState("");
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
+  // Détection conflit (Yoann 2026-05-01) : monteurId -> "tournée X (Client)" ou
+  // "atelier Y" pour ce jour. Affiché en warning sur les boutons + bandeau.
+  const [conflits, setConflits] = useState<Map<string, string>>(new Map());
 
   useEffect(() => {
     let alive = true;
@@ -1781,6 +1784,63 @@ function SessionAtelierModal({
     })();
     return () => { alive = false; };
   }, []);
+
+  // Charge les conflits monteur pour la date sélectionnée :
+  //  - livraisons.monteurIds dont datePrevue commence par YYYY-MM-DD
+  //  - autres sessionsMontageAtelier ce jour (même date string)
+  // Ignore livraisons/sessions annulées et la session courante (en édition).
+  useEffect(() => {
+    if (!date) {
+      setConflits(new Map());
+      return;
+    }
+    let alive = true;
+    (async () => {
+      const { collection, query, where, getDocs } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const conf = new Map<string, string>();
+      try {
+        const livQ = query(
+          collection(db, "livraisons"),
+          where("datePrevue", ">=", date),
+          where("datePrevue", "<", date + "￿"),
+        );
+        const livSnap = await getDocs(livQ);
+        for (const d of livSnap.docs) {
+          const l = d.data() as {
+            monteurIds?: string[];
+            statut?: string;
+            tourneeNumero?: number;
+            clientSnapshot?: { entreprise?: string };
+          };
+          if (l.statut === "annulee") continue;
+          const ids = Array.isArray(l.monteurIds) ? l.monteurIds : [];
+          for (const id of ids) {
+            if (!id) continue;
+            const label = `🚚 tournée ${l.tourneeNumero ?? "?"} · ${l.clientSnapshot?.entreprise ?? "?"}`;
+            if (!conf.has(id)) conf.set(id, label);
+          }
+        }
+      } catch {}
+      try {
+        const sQ = query(collection(db, "sessionsMontageAtelier"), where("date", "==", date));
+        const sSnap = await getDocs(sQ);
+        for (const d of sSnap.docs) {
+          const s = d.data() as { monteurIds?: string[]; statut?: string; entrepotNom?: string; entrepotId?: string };
+          if (s.statut === "annulee") continue;
+          if (s.entrepotId === entrepotId) continue; // même entrepôt = doublon, pas conflit
+          const ids = Array.isArray(s.monteurIds) ? s.monteurIds : [];
+          for (const id of ids) {
+            if (!id) continue;
+            const label = `🔧 atelier ${s.entrepotNom ?? "?"}`;
+            if (!conf.has(id)) conf.set(id, label);
+          }
+        }
+      } catch {}
+      if (alive) setConflits(conf);
+    })();
+    return () => { alive = false; };
+  }, [date, entrepotId]);
 
   const chefs = equipe.filter((m) => m.role === "chef");
   const monteurs = equipe.filter((m) => m.role === "monteur" || (m.role === "chef" && m.aussiMonteur));
@@ -1813,6 +1873,17 @@ function SessionAtelierModal({
     if (monteurIds.length === 0) {
       alert("Sélectionne au moins 1 monteur");
       return;
+    }
+    // Confirmation explicite si certains monteurs sélectionnés sont déjà
+    // engagés sur une tournée ou un autre atelier le même jour.
+    const conflictSel = monteurIds.filter((id) => conflits.has(id));
+    if (conflictSel.length > 0) {
+      const labels = conflictSel
+        .map((id) => `• ${equipe.find((m) => m.id === id)?.nom || "?"} : ${conflits.get(id)}`)
+        .join("\n");
+      if (!confirm(`⚠️ ${conflictSel.length} conflit${conflictSel.length > 1 ? "s" : ""} ce jour :\n\n${labels}\n\nContinuer quand même ?`)) {
+        return;
+      }
     }
     setBusy(true);
     try {
@@ -1893,6 +1964,11 @@ function SessionAtelierModal({
           </div>
           <div>
             <label className="text-xs text-gray-600 block mb-1">Monteurs assignés ({monteurIds.length} sélectionnés)</label>
+            {conflits.size > 0 && (
+              <div className="mb-2 bg-amber-100 border border-amber-300 rounded p-2 text-[10px] text-amber-900">
+                ⚠️ <strong>{conflits.size} monteur{conflits.size > 1 ? "s" : ""}</strong> déjà engagé{conflits.size > 1 ? "s" : ""} ce jour-là (signalé en orange ci-dessous).
+              </div>
+            )}
             {teamsByChef.size > 0 && (
               <div className="mb-2 flex flex-wrap gap-1">
                 <span className="text-[10px] text-gray-500 self-center">Sélection rapide :</span>
@@ -1923,17 +1999,21 @@ function SessionAtelierModal({
               {monteurs.map((m) => {
                 const on = monteurIds.includes(m.id);
                 const chef = m.chefId ? chefs.find((c) => c.id === m.chefId) : null;
+                const conflit = conflits.get(m.id);
                 return (
                   <button
                     key={m.id}
                     type="button"
                     onClick={() => toggleMonteur(m.id)}
+                    title={conflit ? `Déjà engagé ce jour : ${conflit}` : undefined}
                     className={`text-[10px] px-2 py-0.5 rounded-full border ${
                       on ? "bg-emerald-600 text-white border-emerald-600"
-                        : "bg-white border-gray-300 text-gray-700 hover:bg-gray-50"
+                        : conflit
+                          ? "bg-amber-50 border-amber-400 text-amber-900 hover:bg-amber-100"
+                          : "bg-white border-gray-300 text-gray-700 hover:bg-gray-50"
                     }`}
                   >
-                    {on && "✓ "}{m.nom}
+                    {on && "✓ "}{conflit && !on && "⚠️ "}{m.nom}
                     {chef && <span className={`ml-1 text-[9px] ${on ? "opacity-80" : "opacity-50"}`}>· {chef.nom}</span>}
                   </button>
                 );
