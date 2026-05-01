@@ -168,6 +168,11 @@ service cloud.firestore {
     match /entrepots/{id} {
       allow read: if isStaff();
       allow write: if isAdmin();
+      // Mouvements de stock (entrées datées, manuelles ou auto)
+      match /mouvements/{mvtId} {
+        allow read: if isStaff();
+        allow write: if isAdmin();
+      }
     }
 
     // Tout le reste est refusé par défaut.

@@ -2993,7 +2993,11 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           // d'admin.
           const liv0 = tournee.livraisons[0];
           const find = (id: string | null | undefined) => id ? equipe.find((m) => m.id === id)?.nom || null : null;
-          const chauffeur = find(liv0?.chauffeurId);
+          // Sentinel "__client__" = camion client (Yoann 2026-05-01) :
+          // pas de chauffeur Yoann, le client redistribue lui-même.
+          const chauffeur = liv0?.chauffeurId === "__client__"
+            ? "🚚 Chauffeur client"
+            : find(liv0?.chauffeurId);
           const chefIds = (liv0?.chefEquipeIds && liv0.chefEquipeIds.length > 0)
             ? liv0.chefEquipeIds
             : (liv0?.chefEquipeId ? [liv0.chefEquipeId] : []);
@@ -4298,12 +4302,19 @@ function EquipeAssignBlock({
             disabled={!hasEquipe}
           >
             <option value="">— non affecté —</option>
+            <option value="__client__">🚚 Chauffeur du client (camion client)</option>
             {chauffeurs.map((m) => (
               <option key={m.id} value={m.id}>
                 {m.nom}
               </option>
             ))}
           </select>
+          {chauffeurId === "__client__" && (
+            <div className="mt-1 text-[11px] text-purple-700">
+              Le client redistribue avec son propre camion. Pas de chauffeur Yoann mobilisé.
+              Le chef d&apos;équipe Yoann l&apos;accompagne pour BL signature + COFRAC.
+            </div>
+          )}
         </div>
       )}
 

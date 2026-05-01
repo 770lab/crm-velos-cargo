@@ -2,9 +2,12 @@
 
 import { useEffect, useState } from "react";
 import {
+  addDoc,
   collection,
   doc,
   onSnapshot,
+  orderBy,
+  query,
   setDoc,
   deleteDoc,
   serverTimestamp,
@@ -124,17 +127,9 @@ export default function EntrepotsPage() {
 
   const isAdmin = user?.role === "admin" || user?.role === "superadmin";
 
-  const adjustStock = async (id: string, field: "stockCartons" | "stockVelosMontes", delta: number) => {
-    const e = entrepots.find((x) => x.id === id);
-    if (!e) return;
-    const next = Math.max(0, e[field] + delta);
-    await setDoc(doc(db, "entrepots", id), { [field]: next, updatedAt: serverTimestamp() }, { merge: true });
-  };
-
-  const setStock = async (id: string, field: "stockCartons" | "stockVelosMontes", value: number) => {
-    const v = Math.max(0, Math.floor(value || 0));
-    await setDoc(doc(db, "entrepots", id), { [field]: v, updatedAt: serverTimestamp() }, { merge: true });
-  };
+  // (boutons +/-/setStock supprimés Yoann 2026-05-01 — remplacés par
+  // "Entrée de stock" datée. Le stock affiché est dénormalisé sur le doc
+  // parent via addMouvement / removeMouvement.)
 
   const removeEntrepot = async (e: Entrepot) => {
     if (e.isPrimary) {
@@ -165,8 +160,11 @@ export default function EntrepotsPage() {
     );
   };
 
-  const totalCartons = entrepots.reduce((s, e) => s + e.stockCartons, 0);
-  const totalMontes = entrepots.reduce((s, e) => s + e.stockVelosMontes, 0);
+  // Exclut les entrepôts "fournisseur" (AXDIS) du total — pas de gestion
+  // de stock côté Yoann (Yoann 2026-05-01).
+  const stockTrackedEntrepots = entrepots.filter((e) => e.role !== "fournisseur");
+  const totalCartons = stockTrackedEntrepots.reduce((s, e) => s + e.stockCartons, 0);
+  const totalMontes = stockTrackedEntrepots.reduce((s, e) => s + e.stockVelosMontes, 0);
 
   return (
     <div>
@@ -297,24 +295,28 @@ export default function EntrepotsPage() {
               )}
             </div>
 
-            <div className="grid grid-cols-2 gap-3">
-              <StockCounter
-                label="Cartons"
-                value={e.stockCartons}
-                color="orange"
-                editable={isAdmin}
-                onAdjust={(delta) => adjustStock(e.id, "stockCartons", delta)}
-                onSet={(v) => setStock(e.id, "stockCartons", v)}
-              />
-              <StockCounter
-                label="Vélos montés"
-                value={e.stockVelosMontes}
-                color="emerald"
-                editable={isAdmin}
-                onAdjust={(delta) => adjustStock(e.id, "stockVelosMontes", delta)}
-                onSet={(v) => setStock(e.id, "stockVelosMontes", v)}
-              />
-            </div>
+            {e.role === "fournisseur" ? (
+              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-[12px] text-gray-600">
+                <strong>📋 Pas de gestion de stock</strong> — c&apos;est l&apos;inventaire
+                du fournisseur. Yoann prépare les commandes directement depuis
+                leur stock, pas besoin de tracker les cartons ici.
+              </div>
+            ) : (
+              <div className="grid grid-cols-2 gap-3">
+                <StockPanel
+                  entrepotId={e.id}
+                  kind="carton"
+                  value={e.stockCartons}
+                  editable={isAdmin}
+                />
+                <StockPanel
+                  entrepotId={e.id}
+                  kind="monte"
+                  value={e.stockVelosMontes}
+                  editable={isAdmin}
+                />
+              </div>
+            )}
 
             {e.capaciteMax && e.capaciteMax > 0 && (
               <div className="mt-3 text-[11px] text-gray-500">
@@ -341,91 +343,301 @@ export default function EntrepotsPage() {
   );
 }
 
-function StockCounter({
-  label,
+// Mouvement de stock : entrée (positive) ou sortie/correction (négative).
+// Source manuelle ou auto (futur : auto-detect montage / tournée / bon Axdis).
+type Mouvement = {
+  id: string;
+  type: "carton" | "monte";
+  quantite: number; // signé : +N entrée, -N sortie
+  date: string; // YYYY-MM-DD
+  source: string; // "manuelle" | "bon-axdis-XXX" | "tournee-XXX" | "montage-XXX"
+  notes?: string;
+  createdAt?: Timestamp;
+  createdByNom?: string;
+};
+
+function StockPanel({
+  entrepotId,
+  kind,
   value,
-  color,
   editable,
-  onAdjust,
-  onSet,
 }: {
-  label: string;
+  entrepotId: string;
+  kind: "carton" | "monte";
   value: number;
-  color: "orange" | "emerald";
   editable: boolean;
-  onAdjust: (delta: number) => void;
-  onSet: (v: number) => void;
 }) {
-  const [editMode, setEditMode] = useState(false);
-  const [draft, setDraft] = useState(String(value));
+  const [mouvements, setMouvements] = useState<Mouvement[]>([]);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showModal, setShowModal] = useState(false);
+
   useEffect(() => {
-    if (!editMode) setDraft(String(value));
-  }, [value, editMode]);
+    const q = query(
+      collection(db, "entrepots", entrepotId, "mouvements"),
+      orderBy("createdAt", "desc"),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const rows: Mouvement[] = [];
+      for (const d of snap.docs) {
+        const data = d.data();
+        if (data.type !== kind) continue;
+        rows.push({
+          id: d.id,
+          type: data.type === "monte" ? "monte" : "carton",
+          quantite: Number(data.quantite || 0),
+          date: String(data.date || ""),
+          source: String(data.source || "manuelle"),
+          notes: typeof data.notes === "string" ? data.notes : undefined,
+          createdAt: data.createdAt instanceof Timestamp ? data.createdAt : undefined,
+          createdByNom: typeof data.createdByNom === "string" ? data.createdByNom : undefined,
+        });
+      }
+      setMouvements(rows);
+    });
+    return () => unsub();
+  }, [entrepotId, kind]);
 
   const colorClasses =
-    color === "orange"
+    kind === "carton"
       ? "bg-orange-50 border-orange-200 text-orange-800"
       : "bg-emerald-50 border-emerald-200 text-emerald-800";
+  const label = kind === "carton" ? "Cartons" : "Vélos montés";
 
   return (
-    <div className={`rounded-lg border p-3 ${colorClasses}`}>
-      <div className="text-[11px] uppercase tracking-wide opacity-70 font-semibold">{label}</div>
-      {editMode && editable ? (
-        <div className="mt-1 flex gap-1">
-          <input
-            type="number"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            className="w-full px-2 py-1 border rounded text-lg font-bold text-gray-900"
-            autoFocus
-          />
-          <button
-            onClick={() => {
-              onSet(parseInt(draft || "0", 10));
-              setEditMode(false);
-            }}
-            className="px-2 py-1 bg-white border rounded text-xs"
-          >
-            OK
-          </button>
+    <>
+      <div className={`rounded-lg border p-3 ${colorClasses}`}>
+        <div className="text-[11px] uppercase tracking-wide opacity-70 font-semibold">
+          {label}
         </div>
-      ) : (
-        <div
-          className={`text-3xl font-bold mt-0.5 ${editable ? "cursor-pointer hover:opacity-70" : ""}`}
-          onClick={() => editable && setEditMode(true)}
-          title={editable ? "Cliquer pour saisir le stock exact" : ""}
+        <div className="text-3xl font-bold mt-0.5 text-gray-900">{fmt(value)}</div>
+        {editable && (
+          <div className="mt-2 flex gap-1">
+            <button
+              onClick={() => setShowModal(true)}
+              className="flex-1 px-2 py-1 bg-white border rounded text-xs hover:bg-gray-50 font-medium"
+            >
+              + Entrée
+            </button>
+            <button
+              onClick={() => setShowHistory((v) => !v)}
+              className="px-2 py-1 bg-white border rounded text-xs hover:bg-gray-50"
+              title="Voir l'historique"
+            >
+              {showHistory ? "▲" : "▼"} {mouvements.length}
+            </button>
+          </div>
+        )}
+        {showHistory && mouvements.length > 0 && (
+          <div className="mt-2 max-h-48 overflow-y-auto bg-white rounded border border-gray-200 divide-y text-[11px]">
+            {mouvements.slice(0, 30).map((m) => (
+              <MouvementLine
+                key={m.id}
+                entrepotId={entrepotId}
+                m={m}
+                editable={editable}
+              />
+            ))}
+          </div>
+        )}
+        {showHistory && mouvements.length === 0 && (
+          <div className="mt-2 px-2 py-2 text-[11px] text-gray-500 italic text-center bg-white rounded border border-gray-200">
+            Aucun mouvement.
+          </div>
+        )}
+      </div>
+      {showModal && (
+        <MouvementModal
+          entrepotId={entrepotId}
+          kind={kind}
+          onClose={() => setShowModal(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function MouvementLine({
+  entrepotId,
+  m,
+  editable,
+}: {
+  entrepotId: string;
+  m: Mouvement;
+  editable: boolean;
+}) {
+  const isAuto = m.source !== "manuelle";
+  const remove = async () => {
+    if (!confirm(`Supprimer ce mouvement (${m.quantite > 0 ? "+" : ""}${m.quantite}) ?`)) return;
+    await deleteDoc(doc(db, "entrepots", entrepotId, "mouvements", m.id));
+    // Décrémente le stock dénormalisé : on retire la quantité du mouvement.
+    const field = m.type === "carton" ? "stockCartons" : "stockVelosMontes";
+    const { getDoc: getDocFn } = await import("firebase/firestore");
+    const eSnap = await getDocFn(doc(db, "entrepots", entrepotId));
+    const cur = Number((eSnap.data() as Record<string, unknown>)?.[field] || 0);
+    await setDoc(
+      doc(db, "entrepots", entrepotId),
+      { [field]: Math.max(0, cur - m.quantite), updatedAt: serverTimestamp() },
+      { merge: true },
+    );
+  };
+  return (
+    <div className="px-2 py-1.5 flex items-center gap-2">
+      <div className="text-[10px] text-gray-500 shrink-0 w-20">{m.date}</div>
+      <div
+        className={`text-xs font-bold shrink-0 w-12 text-right ${
+          m.quantite > 0 ? "text-emerald-700" : "text-red-700"
+        }`}
+      >
+        {m.quantite > 0 ? "+" : ""}
+        {m.quantite}
+      </div>
+      <div className="flex-1 min-w-0 truncate">
+        {isAuto ? (
+          <span className="text-purple-700 font-medium">{m.source}</span>
+        ) : (
+          <span className="text-gray-700">{m.notes || "—"}</span>
+        )}
+        {m.createdByNom && (
+          <span className="text-gray-400 text-[10px] ml-1">par {m.createdByNom}</span>
+        )}
+      </div>
+      {editable && !isAuto && (
+        <button
+          onClick={remove}
+          className="text-red-400 hover:text-red-700 text-[10px] shrink-0"
+          title="Supprimer ce mouvement"
         >
-          {fmt(value)}
-        </div>
+          ×
+        </button>
       )}
-      {editable && !editMode && (
-        <div className="mt-2 flex gap-1">
-          <button
-            onClick={() => onAdjust(-1)}
-            className="flex-1 px-2 py-1 bg-white border rounded text-xs hover:bg-gray-50"
-          >
-            −1
-          </button>
-          <button
-            onClick={() => onAdjust(-10)}
-            className="flex-1 px-2 py-1 bg-white border rounded text-xs hover:bg-gray-50"
-          >
-            −10
-          </button>
-          <button
-            onClick={() => onAdjust(+10)}
-            className="flex-1 px-2 py-1 bg-white border rounded text-xs hover:bg-gray-50"
-          >
-            +10
-          </button>
-          <button
-            onClick={() => onAdjust(+1)}
-            className="flex-1 px-2 py-1 bg-white border rounded text-xs hover:bg-gray-50"
-          >
-            +1
+    </div>
+  );
+}
+
+function MouvementModal({
+  entrepotId,
+  kind,
+  onClose,
+}: {
+  entrepotId: string;
+  kind: "carton" | "monte";
+  onClose: () => void;
+}) {
+  const user = useCurrentUser();
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [quantite, setQuantite] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    const q = parseInt(quantite.replace(",", "."), 10);
+    if (!Number.isFinite(q) || q === 0) {
+      alert("Quantité invalide (positive pour entrée, négative pour correction)");
+      return;
+    }
+    if (!date) {
+      alert("Date obligatoire");
+      return;
+    }
+    setBusy(true);
+    try {
+      // 1. Crée le mouvement en sous-collection
+      await addDoc(collection(db, "entrepots", entrepotId, "mouvements"), {
+        type: kind,
+        quantite: q,
+        date,
+        source: "manuelle",
+        notes: notes.trim() || null,
+        createdAt: serverTimestamp(),
+        createdByNom: user?.nom || null,
+      });
+      // 2. Met à jour le stock dénormalisé sur le doc parent (somme cumulée).
+      // Pour simplicité : on lit le stock actuel + q (FieldValue.increment
+      // serait idéal mais nécessite import). Workaround : recalcul via setDoc
+      // depuis la valeur connue au moment du clic.
+      const field = kind === "carton" ? "stockCartons" : "stockVelosMontes";
+      const eSnap = await import("firebase/firestore").then((m) => m.getDoc(doc(db, "entrepots", entrepotId)));
+      const cur = Number((eSnap.data() as Record<string, unknown>)?.[field] || 0);
+      await setDoc(
+        doc(db, "entrepots", entrepotId),
+        { [field]: Math.max(0, cur + q), updatedAt: serverTimestamp() },
+        { merge: true },
+      );
+      onClose();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const labelKind = kind === "carton" ? "cartons" : "vélos montés";
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl p-5 w-full max-w-sm"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex justify-between items-start mb-3">
+          <h2 className="text-lg font-semibold">+ Entrée de stock {labelKind}</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">
+            ×
           </button>
         </div>
-      )}
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-gray-600">Date d&apos;entrée</label>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">
+              Quantité <span className="text-gray-400">(positive = entrée, négative = correction)</span>
+            </label>
+            <input
+              type="number"
+              value={quantite}
+              onChange={(e) => setQuantite(e.target.value)}
+              placeholder="Ex: 132"
+              className="w-full px-2 py-1.5 border rounded text-sm"
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Notes (optionnel)</label>
+            <input
+              type="text"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder='Ex: "Camion PL #354510 reçu"'
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            />
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50"
+          >
+            Annuler
+          </button>
+          <button
+            onClick={submit}
+            disabled={busy}
+            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+          >
+            {busy ? "Enregistrement…" : "Enregistrer"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
