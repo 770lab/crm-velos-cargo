@@ -13,6 +13,7 @@ import {
   Timestamp,
   setDoc,
   getDoc,
+  updateDoc,
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 
@@ -59,7 +60,49 @@ type Frais = {
   montantHT: number;
   tournee?: string | null;
   createdAt?: number | null;
+  /** "ponctuel" (default) : montant compté tel quel sur la date.
+   *  "mensuel" : lissé sur les jours ouvrés (Mon-Fri) du mois de la date,
+   *  puis prorata des jours ouvrés intersection période sélectionnée
+   *  (Yoann 2026-05-01 : location camion 3080 € / 22 jours ouvrés). */
+  frequence?: "ponctuel" | "mensuel";
 };
+
+// Helpers jours ouvrés (Lun-Ven, en UTC pour ne pas dépendre du fuseau).
+function workingDaysInRange(startISO: string, endISO: string): number {
+  const start = new Date(startISO + "T00:00:00Z");
+  const end = new Date(endISO + "T00:00:00Z");
+  if (end < start) return 0;
+  let count = 0;
+  const cur = new Date(start);
+  while (cur <= end) {
+    const day = cur.getUTCDay();
+    if (day !== 0 && day !== 6) count++;
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return count;
+}
+function monthBoundsISO(dateISO: string): { start: string; end: string } {
+  const d = new Date(dateISO + "T00:00:00Z");
+  const y = d.getUTCFullYear();
+  const m = d.getUTCMonth();
+  const start = new Date(Date.UTC(y, m, 1));
+  const end = new Date(Date.UTC(y, m + 1, 0));
+  return { start: start.toISOString().slice(0, 10), end: end.toISOString().slice(0, 10) };
+}
+function maxISO(a: string, b: string): string { return a > b ? a : b; }
+function minISO(a: string, b: string): string { return a < b ? a : b; }
+/** Coût d'un frais sur une période donnée, en respectant la fréquence. */
+function fraisProrataOnPeriod(f: Frais, periodFrom: string, periodTo: string): number {
+  if (f.frequence !== "mensuel") return f.montantHT;
+  const { start: monthStart, end: monthEnd } = monthBoundsISO(f.date);
+  const monthDays = workingDaysInRange(monthStart, monthEnd);
+  if (monthDays === 0) return 0;
+  const interStart = maxISO(periodFrom, monthStart);
+  const interEnd = minISO(periodTo, monthEnd);
+  if (interEnd < interStart) return 0;
+  const interDays = workingDaysInRange(interStart, interEnd);
+  return (f.montantHT / monthDays) * interDays;
+}
 
 type BonRow = {
   id: string;
@@ -132,6 +175,7 @@ export function ChargesOperationnellesSection({
           montantHT: Number(data.montantHT || 0),
           tournee: typeof data.tournee === "string" ? data.tournee : null,
           createdAt: data.createdAt instanceof Timestamp ? data.createdAt.toMillis() : null,
+          frequence: data.frequence === "mensuel" ? "mensuel" : "ponctuel",
         });
       }
       rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
@@ -197,7 +241,9 @@ export function ChargesOperationnellesSection({
   // explose artificiellement quand on commande 47 vélos en 1 fois pour
   // n'en livrer que 13 dans le mois (Yoann 30-04 00h10).
   const coutVelosLivres = veloLivresCount * coutVeloHT;
-  const totalFraisOps = frais.reduce((s, f) => s + f.montantHT, 0);
+  // Total frais ops avec lissage des frais "mensuel" sur les jours ouvrés
+  // intersectés avec la période. Voir fraisProrataOnPeriod.
+  const totalFraisOps = frais.reduce((s, f) => s + fraisProrataOnPeriod(f, from, to), 0);
   const totalCharges = coutVelosLivres + totalFraisOps;
   // Coût LOGISTIQUE par vélo (Yoann 2026-05-01) = ce que coûte la livraison
   // d'un vélo, EXCLUDING le coût d'achat AXDIS du vélo lui-même.
@@ -218,13 +264,21 @@ export function ChargesOperationnellesSection({
   // Agrégat par catégorie pour la répartition.
   const fraisParCat = useMemo(() => {
     const m: Record<string, number> = {};
-    for (const f of frais) m[f.categorie] = (m[f.categorie] || 0) + f.montantHT;
+    for (const f of frais) m[f.categorie] = (m[f.categorie] || 0) + fraisProrataOnPeriod(f, from, to);
     return m;
-  }, [frais]);
+  }, [frais, from, to]);
 
   const removeFrais = async (id: string) => {
     if (!confirm("Supprimer ce frais ?")) return;
     await deleteDoc(doc(db, "frais", id));
+  };
+
+  // Toggle ponctuel <-> mensuel sur un frais existant. Yoann 2026-05-01 :
+  // permet de marquer la location camion (3080 € MENSUEL) comme à lisser
+  // sur les jours ouvrés du mois.
+  const toggleFrequence = async (f: Frais) => {
+    const next = f.frequence === "mensuel" ? "ponctuel" : "mensuel";
+    await updateDoc(doc(db, "frais", f.id), { frequence: next });
   };
 
   const saveCoutVelo = async (val: number) => {
@@ -455,6 +509,13 @@ export function ChargesOperationnellesSection({
             <tbody className="divide-y">
               {frais.map((f) => {
                 const c = CATEGORIES_FRAIS[f.categorie];
+                const isMensuel = f.frequence === "mensuel";
+                const prorata = isMensuel ? fraisProrataOnPeriod(f, from, to) : f.montantHT;
+                const monthBounds = isMensuel ? monthBoundsISO(f.date) : null;
+                const monthDays = monthBounds
+                  ? workingDaysInRange(monthBounds.start, monthBounds.end)
+                  : 0;
+                const dailyRate = monthDays > 0 ? f.montantHT / monthDays : 0;
                 return (
                   <tr key={f.id} className="hover:bg-gray-50">
                     <td className="px-3 py-1.5 whitespace-nowrap">{f.date}</td>
@@ -464,9 +525,42 @@ export function ChargesOperationnellesSection({
                       </span>
                       {f.sousCategorie && <span className="text-[11px] text-gray-500 ml-2">{f.sousCategorie}</span>}
                     </td>
-                    <td className="px-3 py-1.5 text-xs text-gray-700">{f.libelle}</td>
-                    <td className="px-3 py-1.5 text-right font-medium">{fmt(f.montantHT)}</td>
-                    <td className="px-2 text-right">
+                    <td className="px-3 py-1.5 text-xs text-gray-700">
+                      {f.libelle}
+                      {isMensuel && (
+                        <div className="text-[10px] text-indigo-700 mt-0.5">
+                          📆 Mensuel · lissé sur {monthDays} jours ouvrés ({fmt(dailyRate)}/jour)
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-3 py-1.5 text-right font-medium">
+                      {isMensuel ? (
+                        <div>
+                          <div>{fmt(prorata)}</div>
+                          <div className="text-[10px] text-gray-400 font-normal">
+                            sur {fmt(f.montantHT)}/mois
+                          </div>
+                        </div>
+                      ) : (
+                        fmt(f.montantHT)
+                      )}
+                    </td>
+                    <td className="px-2 text-right whitespace-nowrap">
+                      <button
+                        onClick={() => toggleFrequence(f)}
+                        className={`text-[11px] px-1.5 py-0.5 rounded mr-1 ${
+                          isMensuel
+                            ? "bg-indigo-100 text-indigo-800 hover:bg-indigo-200"
+                            : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                        }`}
+                        title={
+                          isMensuel
+                            ? "Repasser ce frais en ponctuel (compté tel quel à la date)"
+                            : "Lisser ce frais sur les jours ouvrés du mois (location, abonnement, etc.)"
+                        }
+                      >
+                        📆
+                      </button>
                       <button
                         onClick={() => removeFrais(f.id)}
                         className="text-red-500 hover:text-red-700 text-xs"
@@ -494,6 +588,7 @@ function AddFraisModal({ onClose }: { onClose: () => void }) {
   const [sousCategorie, setSousCategorie] = useState<string>(CATEGORIES_FRAIS.vehicules.sousCats[0]);
   const [libelle, setLibelle] = useState("");
   const [montantHT, setMontantHT] = useState<string>("");
+  const [mensuel, setMensuel] = useState(false);
   const [busy, setBusy] = useState(false);
 
   const sousCats = CATEGORIES_FRAIS[categorie].sousCats;
@@ -516,6 +611,7 @@ function AddFraisModal({ onClose }: { onClose: () => void }) {
         sousCategorie,
         libelle: libelle.trim(),
         montantHT: m,
+        frequence: mensuel ? "mensuel" : "ponctuel",
         createdAt: serverTimestamp(),
       });
       onClose();
@@ -586,6 +682,21 @@ function AddFraisModal({ onClose }: { onClose: () => void }) {
               className="w-full px-2 py-1.5 border rounded text-sm"
             />
           </div>
+          <label className="flex items-start gap-2 text-xs cursor-pointer pt-1">
+            <input
+              type="checkbox"
+              checked={mensuel}
+              onChange={(e) => setMensuel(e.target.checked)}
+              className="mt-0.5"
+            />
+            <span>
+              <strong>📆 Mensuel</strong> — lisser sur les jours ouvrés du mois
+              <div className="text-[10px] text-gray-500 mt-0.5">
+                Pour location, abonnement, assurance… Le coût sera prorata des
+                jours ouvrés (Lun-Ven) intersection période sélectionnée.
+              </div>
+            </span>
+          </label>
         </div>
         <div className="mt-4 flex justify-end gap-2">
           <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Annuler</button>
