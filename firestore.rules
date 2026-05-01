@@ -191,6 +191,15 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Sessions de montage atelier (Yoann 2026-05-01) : journées où des
+    // monteurs viennent à un entrepôt pour faire du montage en masse.
+    // Lecture par tout le staff (les monteurs voient leur planning),
+    // écriture admin uniquement.
+    match /sessionsMontageAtelier/{id} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
     // Tout le reste est refusé par défaut.
     match /{document=**} {
       allow read, write: if false;

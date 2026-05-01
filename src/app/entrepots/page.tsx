@@ -326,6 +326,11 @@ export default function EntrepotsPage() {
                     stockCartons={e.stockCartons}
                   />
                 )}
+                <SessionsAtelierPanel
+                  entrepotId={e.id}
+                  entrepotNom={e.nom}
+                  editable={isAdmin}
+                />
                 {isAdmin && (
                   <CommandeCamionPanel
                     entrepotId={e.id}
@@ -1489,6 +1494,449 @@ function EntrepotModal({
             className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
           >
             {busy ? "Enregistrement…" : "Enregistrer"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Sessions montage atelier (Yoann 2026-05-01) : journées planifiées où
+// des monteurs viennent monter en masse à un entrepôt. Affiche les
+// sessions à venir + permet d en planifier de nouvelles.
+type SessionAtelier = {
+  id: string;
+  date: string;
+  monteurIds: string[];
+  monteurNoms: string[];
+  chefId?: string | null;
+  chefNom?: string;
+  quantitePrevue?: number | null;
+  quantiteReelle?: number | null;
+  statut: "planifiee" | "en_cours" | "terminee" | "annulee";
+  notes?: string;
+};
+
+function SessionsAtelierPanel({
+  entrepotId,
+  entrepotNom,
+  editable,
+}: {
+  entrepotId: string;
+  entrepotNom: string;
+  editable: boolean;
+}) {
+  const [sessions, setSessions] = useState<SessionAtelier[]>([]);
+  const [showModal, setShowModal] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, query, where, onSnapshot, orderBy } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const q = query(
+        collection(db, "sessionsMontageAtelier"),
+        where("entrepotId", "==", entrepotId),
+        orderBy("date", "desc"),
+      );
+      const unsub = onSnapshot(q, (snap) => {
+        if (!alive) return;
+        const rows: SessionAtelier[] = [];
+        for (const d of snap.docs) {
+          const data = d.data();
+          rows.push({
+            id: d.id,
+            date: String(data.date || ""),
+            monteurIds: Array.isArray(data.monteurIds) ? data.monteurIds : [],
+            monteurNoms: Array.isArray(data.monteurNoms) ? data.monteurNoms : [],
+            chefId: typeof data.chefId === "string" ? data.chefId : null,
+            chefNom: typeof data.chefNom === "string" ? data.chefNom : undefined,
+            quantitePrevue: typeof data.quantitePrevue === "number" ? data.quantitePrevue : null,
+            quantiteReelle: typeof data.quantiteReelle === "number" ? data.quantiteReelle : null,
+            statut: ["en_cours", "terminee", "annulee"].includes(data.statut) ? data.statut : "planifiee",
+            notes: typeof data.notes === "string" ? data.notes : undefined,
+          });
+        }
+        setSessions(rows);
+      });
+      return () => unsub();
+    })();
+    return () => { alive = false; };
+  }, [entrepotId]);
+
+  const aVenir = sessions.filter((s) => s.statut === "planifiee" || s.statut === "en_cours");
+  const passees = sessions.filter((s) => s.statut === "terminee" || s.statut === "annulee");
+
+  const removeSession = async (id: string) => {
+    if (!confirm("Supprimer cette session de montage atelier ?")) return;
+    const { doc, deleteDoc } = await import("firebase/firestore");
+    const { db } = await import("@/lib/firebase");
+    await deleteDoc(doc(db, "sessionsMontageAtelier", id));
+  };
+  const updateStatut = async (id: string, statut: SessionAtelier["statut"]) => {
+    const { doc, setDoc, serverTimestamp } = await import("firebase/firestore");
+    const { db } = await import("@/lib/firebase");
+    await setDoc(doc(db, "sessionsMontageAtelier", id), { statut, updatedAt: serverTimestamp() }, { merge: true });
+  };
+
+  return (
+    <>
+      <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg p-3">
+        <div className="flex items-center justify-between gap-2 mb-2">
+          <div className="text-xs text-amber-900 font-medium">
+            🔧 Sessions montage atelier
+            <span className="ml-2 text-amber-700">
+              {aVenir.length > 0 && `${aVenir.length} à venir · `}
+              {passees.length > 0 && `${passees.length} passée${passees.length > 1 ? "s" : ""}`}
+              {sessions.length === 0 && "aucune session"}
+            </span>
+          </div>
+          {editable && (
+            <button
+              onClick={() => setShowModal(true)}
+              className="text-[11px] px-2 py-1 bg-amber-600 text-white rounded hover:bg-amber-700 font-semibold"
+            >
+              + Planifier session
+            </button>
+          )}
+        </div>
+        {aVenir.length > 0 && (
+          <div className="space-y-1">
+            {aVenir.map((s) => (
+              <SessionLine
+                key={s.id}
+                s={s}
+                editable={editable}
+                onRemove={removeSession}
+                onUpdateStatut={updateStatut}
+              />
+            ))}
+          </div>
+        )}
+        {passees.length > 0 && (
+          <details className="mt-2">
+            <summary className="text-[11px] text-amber-700 cursor-pointer hover:underline">
+              Voir l&apos;historique ({passees.length})
+            </summary>
+            <div className="space-y-1 mt-1 opacity-70">
+              {passees.map((s) => (
+                <SessionLine
+                  key={s.id}
+                  s={s}
+                  editable={editable}
+                  onRemove={removeSession}
+                  onUpdateStatut={updateStatut}
+                />
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+      {showModal && (
+        <SessionAtelierModal
+          entrepotId={entrepotId}
+          entrepotNom={entrepotNom}
+          onClose={() => setShowModal(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function SessionLine({
+  s,
+  editable,
+  onRemove,
+  onUpdateStatut,
+}: {
+  s: SessionAtelier;
+  editable: boolean;
+  onRemove: (id: string) => void;
+  onUpdateStatut: (id: string, statut: SessionAtelier["statut"]) => void;
+}) {
+  const statutClasses: Record<SessionAtelier["statut"], string> = {
+    planifiee: "bg-blue-100 text-blue-800",
+    en_cours: "bg-emerald-100 text-emerald-800",
+    terminee: "bg-gray-200 text-gray-700",
+    annulee: "bg-red-100 text-red-700 line-through",
+  };
+  return (
+    <div className="bg-white border border-amber-200 rounded p-2 text-[11px]">
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <div className="flex items-center gap-2 min-w-0">
+          <span className="font-mono font-bold">{s.date}</span>
+          <span className={`px-1.5 py-0.5 rounded text-[10px] font-semibold ${statutClasses[s.statut]}`}>
+            {s.statut === "planifiee" ? "📅 planifiée" : s.statut === "en_cours" ? "🔧 en cours" : s.statut === "terminee" ? "✓ terminée" : "✕ annulée"}
+          </span>
+          {s.quantitePrevue && (
+            <span className="text-gray-600">
+              {s.quantiteReelle != null ? `${s.quantiteReelle}/${s.quantitePrevue}` : `${s.quantitePrevue} prévus`} vélos
+            </span>
+          )}
+        </div>
+        {editable && (
+          <div className="flex gap-1 shrink-0">
+            {s.statut === "planifiee" && (
+              <button
+                onClick={() => onUpdateStatut(s.id, "en_cours")}
+                className="text-[10px] px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded hover:bg-emerald-200"
+                title="Démarrer la session"
+              >
+                ▶
+              </button>
+            )}
+            {s.statut === "en_cours" && (
+              <button
+                onClick={() => onUpdateStatut(s.id, "terminee")}
+                className="text-[10px] px-1.5 py-0.5 bg-gray-100 text-gray-700 rounded hover:bg-gray-200"
+                title="Terminer"
+              >
+                ✓
+              </button>
+            )}
+            <button
+              onClick={() => onRemove(s.id)}
+              className="text-[10px] px-1.5 py-0.5 text-red-400 hover:text-red-700"
+              title="Supprimer"
+            >
+              🗑
+            </button>
+          </div>
+        )}
+      </div>
+      <div className="mt-1 text-gray-700">
+        {s.chefNom && <span>👷 Chef : <strong>{s.chefNom}</strong> · </span>}
+        {s.monteurNoms.length > 0 ? (
+          <span>🔧 {s.monteurNoms.length} monteur{s.monteurNoms.length > 1 ? "s" : ""} : {s.monteurNoms.join(", ")}</span>
+        ) : (
+          <span className="italic text-gray-400">Aucun monteur assigné</span>
+        )}
+      </div>
+      {s.notes && <div className="text-[10px] text-gray-500 italic mt-0.5">{s.notes}</div>}
+    </div>
+  );
+}
+
+function SessionAtelierModal({
+  entrepotId,
+  entrepotNom,
+  onClose,
+}: {
+  entrepotId: string;
+  entrepotNom: string;
+  onClose: () => void;
+}) {
+  type Member = { id: string; nom: string; role: string; chefId?: string | null; aussiMonteur?: boolean };
+  const [equipe, setEquipe] = useState<Member[]>([]);
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [chefId, setChefId] = useState("");
+  const [monteurIds, setMonteurIds] = useState<string[]>([]);
+  const [quantitePrevue, setQuantitePrevue] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, getDocs } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const snap = await getDocs(collection(db, "equipe"));
+      if (!alive) return;
+      const rows: Member[] = snap.docs
+        .map((d) => {
+          const data = d.data() as Record<string, unknown>;
+          return {
+            id: d.id,
+            nom: String(data.nom || ""),
+            role: String(data.role || ""),
+            chefId: typeof data.chefId === "string" ? data.chefId : null,
+            aussiMonteur: data.aussiMonteur === true,
+            actif: data.actif !== false,
+          };
+        })
+        .filter((m) => (m as { actif: boolean }).actif);
+      setEquipe(rows);
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const chefs = equipe.filter((m) => m.role === "chef");
+  const monteurs = equipe.filter((m) => m.role === "monteur" || (m.role === "chef" && m.aussiMonteur));
+  const teamsByChef = new Map<string, Member[]>();
+  for (const m of monteurs) {
+    if (!m.chefId) continue;
+    if (!teamsByChef.has(m.chefId)) teamsByChef.set(m.chefId, []);
+    teamsByChef.get(m.chefId)!.push(m);
+  }
+
+  const toggleMonteur = (id: string) => {
+    setMonteurIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
+  };
+  const toggleTeam = (chefId: string) => {
+    const team = teamsByChef.get(chefId) || [];
+    const teamIds = team.map((m) => m.id);
+    const allSelected = teamIds.every((id) => monteurIds.includes(id));
+    if (allSelected) {
+      setMonteurIds((prev) => prev.filter((id) => !teamIds.includes(id)));
+    } else {
+      setMonteurIds((prev) => Array.from(new Set([...prev, ...teamIds])));
+    }
+  };
+
+  const submit = async () => {
+    if (!date) {
+      alert("Date obligatoire");
+      return;
+    }
+    if (monteurIds.length === 0) {
+      alert("Sélectionne au moins 1 monteur");
+      return;
+    }
+    setBusy(true);
+    try {
+      const { collection, addDoc, serverTimestamp } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const monteurNoms = monteurIds.map((id) => equipe.find((m) => m.id === id)?.nom || "?");
+      const chef = chefs.find((c) => c.id === chefId);
+      const q = quantitePrevue ? parseInt(quantitePrevue, 10) : null;
+      await addDoc(collection(db, "sessionsMontageAtelier"), {
+        entrepotId,
+        entrepotNom,
+        date,
+        monteurIds,
+        monteurNoms,
+        chefId: chef?.id || null,
+        chefNom: chef?.nom || null,
+        quantitePrevue: q && q > 0 ? q : null,
+        notes: notes.trim() || null,
+        statut: "planifiee",
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      onClose();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <h2 className="text-lg font-semibold">+ Planifier session montage atelier</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+        <div className="space-y-3">
+          <div className="bg-amber-50 border border-amber-200 rounded p-2 text-[11px] text-amber-900">
+            📍 Entrepôt : <strong>{entrepotNom}</strong>
+            <br />
+            <span className="opacity-80">
+              Les monteurs assignés verront cette journée dans leur planning et sauront qu&apos;ils
+              doivent venir monter à cet entrepôt.
+            </span>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Date</label>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Chef d&apos;équipe (optionnel)</label>
+            <select
+              value={chefId}
+              onChange={(e) => setChefId(e.target.value)}
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            >
+              <option value="">— Aucun —</option>
+              {chefs.map((c) => (
+                <option key={c.id} value={c.id}>{c.nom}</option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Quantité prévue (vélos à monter)</label>
+            <input
+              type="number"
+              value={quantitePrevue}
+              onChange={(e) => setQuantitePrevue(e.target.value)}
+              placeholder="Ex: 100"
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-600 block mb-1">Monteurs assignés ({monteurIds.length} sélectionnés)</label>
+            {teamsByChef.size > 0 && (
+              <div className="mb-2 flex flex-wrap gap-1">
+                <span className="text-[10px] text-gray-500 self-center">Sélection rapide :</span>
+                {Array.from(teamsByChef.entries()).map(([chefIdKey, team]) => {
+                  const chef = chefs.find((c) => c.id === chefIdKey);
+                  if (!chef) return null;
+                  const teamIds = team.map((m) => m.id);
+                  const allSel = teamIds.every((id) => monteurIds.includes(id));
+                  const someSel = teamIds.some((id) => monteurIds.includes(id));
+                  return (
+                    <button
+                      key={chefIdKey}
+                      type="button"
+                      onClick={() => toggleTeam(chefIdKey)}
+                      className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                        allSel ? "bg-blue-600 text-white border-blue-600"
+                        : someSel ? "bg-blue-100 text-blue-800 border-blue-300"
+                        : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50"
+                      }`}
+                    >
+                      {allSel ? "✓" : someSel ? "◐" : "+"} {chef.nom} ({team.length})
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div className="flex flex-wrap gap-1 max-h-40 overflow-y-auto">
+              {monteurs.map((m) => {
+                const on = monteurIds.includes(m.id);
+                const chef = m.chefId ? chefs.find((c) => c.id === m.chefId) : null;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => toggleMonteur(m.id)}
+                    className={`text-[10px] px-2 py-0.5 rounded-full border ${
+                      on ? "bg-emerald-600 text-white border-emerald-600"
+                        : "bg-white border-gray-300 text-gray-700 hover:bg-gray-50"
+                    }`}
+                  >
+                    {on && "✓ "}{m.nom}
+                    {chef && <span className={`ml-1 text-[9px] ${on ? "opacity-80" : "opacity-50"}`}>· {chef.nom}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Notes (optionnel)</label>
+            <input
+              type="text"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder='Ex: "Préparation Firat Food + LAV"'
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            />
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Annuler</button>
+          <button
+            onClick={submit}
+            disabled={busy || monteurIds.length === 0}
+            className="px-3 py-1.5 text-sm bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50 font-semibold"
+          >
+            {busy ? "..." : "🔧 Planifier la session"}
           </button>
         </div>
       </div>

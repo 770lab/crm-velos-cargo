@@ -652,6 +652,8 @@ export default function LivraisonsPage() {
         <NavBar refDate={refDate} setRefDate={setRefDate} view={view} />
       )}
 
+      {currentUser?.id && <SessionsAtelierBanner monteurId={currentUser.id} />}
+
       {view === "jour" && (
         <DayView
           refDate={refDate}
@@ -6010,6 +6012,85 @@ function MultiIntervenantSelect({
           ))}
         </div>
       )}
+    </div>
+  );
+}
+
+// Bandeau sessions atelier (Yoann 2026-05-01) : affiche au monteur ses
+// sessions de montage atelier à venir (planifiees ou en cours), pour
+// qu il sache où aller quel jour.
+function SessionsAtelierBanner({ monteurId }: { monteurId: string }) {
+  type S = {
+    id: string;
+    entrepotNom: string;
+    date: string;
+    statut: string;
+    quantitePrevue?: number | null;
+    chefNom?: string;
+    monteurNoms: string[];
+    notes?: string;
+  };
+  const [sessions, setSessions] = useState<S[]>([]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, query, where, onSnapshot, orderBy } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const today = new Date().toISOString().slice(0, 10);
+      const q = query(
+        collection(db, "sessionsMontageAtelier"),
+        where("monteurIds", "array-contains", monteurId),
+        where("date", ">=", today),
+        orderBy("date", "asc"),
+      );
+      const unsub = onSnapshot(q, (snap) => {
+        if (!alive) return;
+        const rows: S[] = [];
+        for (const d of snap.docs) {
+          const data = d.data();
+          if (data.statut === "annulee" || data.statut === "terminee") continue;
+          rows.push({
+            id: d.id,
+            entrepotNom: String(data.entrepotNom || "?"),
+            date: String(data.date || ""),
+            statut: String(data.statut || "planifiee"),
+            quantitePrevue: typeof data.quantitePrevue === "number" ? data.quantitePrevue : null,
+            chefNom: typeof data.chefNom === "string" ? data.chefNom : undefined,
+            monteurNoms: Array.isArray(data.monteurNoms) ? data.monteurNoms : [],
+            notes: typeof data.notes === "string" ? data.notes : undefined,
+          });
+        }
+        setSessions(rows);
+      });
+      return () => unsub();
+    })();
+    return () => { alive = false; };
+  }, [monteurId]);
+
+  if (sessions.length === 0) return null;
+  return (
+    <div className="mb-4 bg-amber-50 border-2 border-amber-300 rounded-xl p-3">
+      <div className="text-sm font-bold text-amber-900 mb-2">
+        🔧 Tes sessions montage atelier à venir ({sessions.length})
+      </div>
+      <div className="space-y-2">
+        {sessions.map((s) => (
+          <div key={s.id} className="bg-white border border-amber-200 rounded-lg p-2 text-xs">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="font-mono font-bold">{s.date}</span>
+              <span className="text-amber-700 font-semibold">→ Atelier {s.entrepotNom}</span>
+              {s.quantitePrevue && (
+                <span className="text-gray-600">· {s.quantitePrevue} vélos prévus</span>
+              )}
+              {s.chefNom && <span className="text-gray-600">· Chef : {s.chefNom}</span>}
+            </div>
+            <div className="mt-1 text-gray-600">
+              Avec : {s.monteurNoms.length} monteur{s.monteurNoms.length > 1 ? "s" : ""}
+              {s.notes && <span className="italic"> · {s.notes}</span>}
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
