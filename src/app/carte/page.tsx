@@ -59,6 +59,10 @@ export default function CartePage() {
   const { carte: allClients, clients: allClientsFull, livraisons, stats, flotte, refresh } = useData();
   const [selected, setSelected] = useState<string | null>(null);
   const [mode, setMode] = useState<"gros" | "moyen" | "camionnette" | "retrait">("moyen");
+  // Vue (Yoann 2026-05-01) : "clients" = vue actuelle (clients à livrer),
+  // "entrepots" = nouvelle vue avec les dépôts + leur stock pour planifier
+  // les tournées en fonction du stock disponible.
+  const [vue, setVue] = useState<"clients" | "entrepots">("clients");
   // ID du camion spécifique sélectionné (pour passer la vraie capacité à
   // suggestTournee). null = bouton "type" générique sans camion précis.
   const [selectedCamionId, setSelectedCamionId] = useState<string | null>(null);
@@ -216,6 +220,27 @@ export default function CartePage() {
           <DashCard label="Tournées" value={dashStats.nbTournees} color="purple" />
           <DashCard label="Clients à livrer" value={dashStats.clientsRestants} color="red" />
           <div className="flex items-center gap-2 ml-auto">
+            {/* Toggle vue (Yoann 2026-05-01) : clients à livrer / entrepôts + stocks */}
+            <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
+              <button
+                onClick={() => setVue("clients")}
+                className={`px-3 py-1.5 text-xs font-medium ${
+                  vue === "clients" ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
+                }`}
+                title="Vue clients à livrer"
+              >
+                🏢 Clients
+              </button>
+              <button
+                onClick={() => setVue("entrepots")}
+                className={`px-3 py-1.5 text-xs font-medium border-l border-gray-300 ${
+                  vue === "entrepots" ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
+                }`}
+                title="Vue entrepôts + stocks disponibles"
+              >
+                🏬 Entrepôts
+              </button>
+            </div>
             <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
               <div
                 className="h-full bg-green-500 rounded-full transition-all"
@@ -239,6 +264,9 @@ export default function CartePage() {
       </div>
 
       <div className="w-full lg:w-96 bg-white border-t lg:border-t-0 lg:border-l overflow-y-auto max-h-[50vh] lg:max-h-none">
+        {vue === "entrepots" && <EntrepotsPanel />}
+        {vue === "clients" && (
+        <>
         <div className="p-4 border-b flex items-start justify-between gap-2">
           <div>
             <h2 className="font-semibold text-lg">Planification</h2>
@@ -466,6 +494,8 @@ export default function CartePage() {
               </div>
             )}
           </>
+        )}
+        </>
         )}
       </div>
       </div>
@@ -1163,6 +1193,169 @@ function PlanifierSplits({
             </button>
           );
         })()}
+      </div>
+    </div>
+  );
+}
+
+// Vue entrepôts (Yoann 2026-05-01) : panneau sidebar qui liste les
+// dépôts avec leurs stocks pour planifier les tournées en fonction du
+// stock disponible. Subscribe direct Firestore.
+function EntrepotsPanel() {
+  type EntrepotMini = {
+    id: string;
+    nom: string;
+    ville: string;
+    adresse: string;
+    role: "fournisseur" | "stock" | "ephemere";
+    isPrimary: boolean;
+    archived: boolean;
+    stockCartons: number;
+    stockVelosMontes: number;
+    capaciteMax: number | null;
+    groupeClient?: string | null;
+  };
+  const [entrepots, setEntrepots] = useState<EntrepotMini[]>([]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, onSnapshot } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const unsub = onSnapshot(collection(db, "entrepots"), (snap) => {
+        if (!alive) return;
+        const rows: EntrepotMini[] = [];
+        for (const d of snap.docs) {
+          const data = d.data();
+          rows.push({
+            id: d.id,
+            nom: String(data.nom || ""),
+            ville: String(data.ville || ""),
+            adresse: String(data.adresse || ""),
+            role: data.role === "fournisseur" || data.role === "ephemere" ? data.role : "stock",
+            isPrimary: !!data.isPrimary,
+            archived: !!data.dateArchivage,
+            stockCartons: Number(data.stockCartons || 0),
+            stockVelosMontes: Number(data.stockVelosMontes || 0),
+            capaciteMax: typeof data.capaciteMax === "number" ? data.capaciteMax : null,
+            groupeClient: typeof data.groupeClient === "string" ? data.groupeClient : null,
+          });
+        }
+        rows.sort((a, b) => {
+          if (a.archived !== b.archived) return a.archived ? 1 : -1;
+          if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+          return a.nom.localeCompare(b.nom);
+        });
+        setEntrepots(rows);
+      });
+      return () => unsub();
+    })();
+    return () => { alive = false; };
+  }, []);
+  const stockTracked = entrepots.filter((e) => e.role !== "fournisseur" && !e.archived);
+  const totalCartons = stockTracked.reduce((s, e) => s + e.stockCartons, 0);
+  const totalMontes = stockTracked.reduce((s, e) => s + e.stockVelosMontes, 0);
+  const totalDispo = totalCartons + totalMontes;
+  return (
+    <div>
+      <div className="p-4 border-b">
+        <h2 className="font-semibold text-lg">🏬 Entrepôts</h2>
+        <p className="text-sm text-gray-500 mt-1">
+          Stock disponible par dépôt pour planifier les tournées.
+        </p>
+      </div>
+      <div className="p-3 border-b bg-gray-50">
+        <div className="grid grid-cols-3 gap-2">
+          <div className="bg-white border rounded p-2 text-center">
+            <div className="text-[10px] uppercase text-gray-500 font-semibold">Cartons</div>
+            <div className="text-lg font-bold text-orange-700">{totalCartons}</div>
+          </div>
+          <div className="bg-white border rounded p-2 text-center">
+            <div className="text-[10px] uppercase text-gray-500 font-semibold">Montés</div>
+            <div className="text-lg font-bold text-emerald-700">{totalMontes}</div>
+          </div>
+          <div className="bg-white border rounded p-2 text-center">
+            <div className="text-[10px] uppercase text-gray-500 font-semibold">Total dispo</div>
+            <div className="text-lg font-bold text-gray-900">{totalDispo}</div>
+          </div>
+        </div>
+      </div>
+      <div className="divide-y">
+        {entrepots.map((e) => {
+          const isFournisseur = e.role === "fournisseur";
+          const isEphemere = e.role === "ephemere";
+          const total = e.stockCartons + e.stockVelosMontes;
+          const occPct = e.capaciteMax && e.capaciteMax > 0
+            ? Math.round((total / e.capaciteMax) * 100)
+            : null;
+          return (
+            <div
+              key={e.id}
+              className={`p-3 ${
+                e.archived ? "opacity-50"
+                : e.isPrimary ? "bg-blue-50/30"
+                : isEphemere ? "bg-purple-50/30"
+                : ""
+              }`}
+            >
+              <div className="flex items-start justify-between gap-2 mb-1">
+                <div className="min-w-0">
+                  <div className="font-semibold text-sm flex items-center gap-1">
+                    {e.isPrimary ? "🏭" : isEphemere ? "🟣" : "📦"} {e.nom}
+                    {e.archived && (
+                      <span className="text-[9px] px-1 py-0.5 bg-gray-200 text-gray-600 rounded">archivé</span>
+                    )}
+                  </div>
+                  <div className="text-[11px] text-gray-500 truncate">
+                    {e.adresse}, {e.ville}
+                  </div>
+                  {isEphemere && e.groupeClient && (
+                    <div className="text-[10px] text-purple-700 font-medium">
+                      👥 Groupe : {e.groupeClient}
+                    </div>
+                  )}
+                </div>
+              </div>
+              {isFournisseur ? (
+                <div className="text-[11px] text-gray-500 italic">
+                  Stock géré chez le fournisseur, pas tracé.
+                </div>
+              ) : (
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <div className="bg-orange-50 border border-orange-200 rounded p-1.5 text-center">
+                    <div className="text-[9px] uppercase text-orange-700 font-semibold">Cartons</div>
+                    <div className="text-base font-bold text-orange-900">{e.stockCartons}</div>
+                  </div>
+                  <div className="bg-emerald-50 border border-emerald-200 rounded p-1.5 text-center">
+                    <div className="text-[9px] uppercase text-emerald-700 font-semibold">Montés</div>
+                    <div className="text-base font-bold text-emerald-900">{e.stockVelosMontes}</div>
+                  </div>
+                </div>
+              )}
+              {occPct != null && (
+                <div className="mt-1.5">
+                  <div className="text-[10px] text-gray-500 mb-0.5">
+                    Occupation : {occPct}% ({total}/{e.capaciteMax})
+                  </div>
+                  <div className="w-full h-1 bg-gray-200 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full ${occPct > 90 ? "bg-red-500" : occPct > 70 ? "bg-orange-500" : "bg-emerald-500"}`}
+                      style={{ width: `${Math.min(100, occPct)}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {entrepots.length === 0 && (
+          <div className="p-6 text-center text-sm text-gray-400 italic">
+            Aucun entrepôt configuré.
+          </div>
+        )}
+      </div>
+      <div className="p-3 border-t bg-gray-50 text-[11px] text-gray-500">
+        💡 Pour gérer les stocks et passer commande à Tiffany, va sur la page
+        <a href="/entrepots" className="text-blue-600 hover:underline ml-1">Entrepôts</a>.
       </div>
     </div>
   );
