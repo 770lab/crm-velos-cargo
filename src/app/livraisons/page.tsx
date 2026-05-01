@@ -3292,6 +3292,16 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                       >
                         📋 FNUCI
                       </button>
+                      {/* Envoi BL à Franck (Yoann 2026-05-01) : déplacé du
+                          terrain vers cette page admin. C'est Naomi (compta)
+                          qui clique après préparation des BL — pas auto. */}
+                      {l.clientId && tournee.tourneeId && (
+                        <SendBlFranckBtn
+                          tourneeId={tournee.tourneeId}
+                          clientId={l.clientId}
+                          clientName={l.client.entreprise || "?"}
+                        />
+                      )}
                     </div>
                   )}
                   {tournee.tourneeId && (() => {
@@ -5450,6 +5460,66 @@ function computeSegments(livraisons: LivraisonRow[]): { distKm: number; trajetMi
 
 // Modale « Brief équipe » : génère un texte narratif à copier-coller dans
 // WhatsApp / mail pour briefer les équipes la veille au soir.
+// Bouton "Envoyer BL à Franck" — placé sur chaque livraison du modal
+// admin Livraisons (Yoann 2026-05-01). Workflow : Naomi (compta) prépare
+// les BL et clique pour envoyer à Franck pour impression. Plus sur le
+// terrain (chauffeur ne doit pas déclencher l envoi).
+function SendBlFranckBtn({
+  tourneeId,
+  clientId,
+  clientName,
+}: {
+  tourneeId: string;
+  clientId: string;
+  clientName: string;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [done, setDone] = useState<{ numeroBL: string; velosCount: number } | null>(null);
+
+  const send = async () => {
+    if (!confirm(`Envoyer le BL de ${clientName} à Franck@axdis.fr pour impression ?`)) return;
+    setBusy(true);
+    try {
+      const { httpsCallable, getFunctions } = await import("firebase/functions");
+      const { firebaseApp } = await import("@/lib/firebase");
+      const fn = httpsCallable<
+        { tourneeId: string; clientId: string },
+        { ok: true; messageId: string; sentTo: string; numeroBL: string; velosCount: number; clientName: string }
+      >(getFunctions(firebaseApp, "europe-west1"), "sendBlToFranck");
+      const r = await fn({ tourneeId, clientId });
+      setDone({ numeroBL: r.data.numeroBL, velosCount: r.data.velosCount });
+    } catch (e) {
+      alert("Erreur : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  if (done) {
+    return (
+      <span
+        className="px-2 py-0.5 text-[11px] rounded border bg-emerald-100 border-emerald-400 text-emerald-800"
+        title={`BL ${done.numeroBL} · ${done.velosCount} vélos · envoyé à Franck@axdis.fr`}
+      >
+        ✓ BL envoyé
+      </span>
+    );
+  }
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        send();
+      }}
+      disabled={busy}
+      className="px-2 py-0.5 text-[11px] rounded border bg-white border-purple-300 text-purple-700 hover:bg-purple-50 disabled:opacity-60"
+      title="Envoyer le BL à Franck@axdis.fr pour impression (réservé Naomi/admin — workflow compta)"
+    >
+      {busy ? "⏳ Envoi…" : "📤 BL à Franck"}
+    </button>
+  );
+}
+
 // Modal liste FNUCI d'un client (Yoann 2026-05-01). Affiche tous les
 // vélos du client présents dans la progression de la tournée avec leur
 // FNUCI et l'état des 4 étapes (prép / charg / livr / mont). Permet

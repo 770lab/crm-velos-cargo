@@ -952,16 +952,11 @@ function Inner({ mode }: { mode: ScanMode }) {
                   >
                     📄 Imprimer le bon de livraison (A4)
                   </a>
-                  {/* Envoi du BL à Franck (axdis logistique) — manuel, sur clic
-                      explicite (30-04 10h, demande Yoann). N'est dispo qu'en
-                      mode focus client (un BL par client, pas un global). */}
-                  {focusClientId && (
-                    <SendBlToFranckButton
-                      tourneeId={tourneeId}
-                      clientId={focusClientId}
-                      clientName={focusClient?.entreprise || "ce client"}
-                    />
-                  )}
+                  {/* Bouton "Envoyer BL à Franck" déplacé sur la page admin
+                      Livraisons (Yoann 2026-05-01) : c'est Naomi (compta) qui
+                      déclenche l'envoi après avoir préparé les BL, pas le
+                      terrain. Le bouton terrain a été retiré pour éviter les
+                      envois prématurés. */}
                 </div>
               );
             })()}
