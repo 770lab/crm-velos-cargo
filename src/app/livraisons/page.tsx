@@ -458,6 +458,56 @@ export default function LivraisonsPage() {
     setOpenTournee(filteredTournees.find((t) => key(t) === target) || tournees.find((t) => key(t) === target) || null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tournees]);
+  // Sessions atelier (Yoann 2026-05-01) : chargées au niveau LivraisonsPage
+  // pour les afficher sur le calendrier + dans le bandeau monteur.
+  type SessionAtelierMini = {
+    id: string;
+    date: string;
+    entrepotId: string;
+    entrepotNom: string;
+    monteurIds: string[];
+    monteurNoms: string[];
+    chefId?: string | null;
+    chefNom?: string | null;
+    quantitePrevue?: number | null;
+    statut: "planifiee" | "en_cours" | "terminee" | "annulee";
+  };
+  const [sessionsAtelier, setSessionsAtelier] = useState<SessionAtelierMini[]>([]);
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "sessionsMontageAtelier"), (snap) => {
+      const rows: SessionAtelierMini[] = [];
+      for (const d of snap.docs) {
+        const data = d.data();
+        rows.push({
+          id: d.id,
+          date: String(data.date || ""),
+          entrepotId: String(data.entrepotId || ""),
+          entrepotNom: String(data.entrepotNom || "?"),
+          monteurIds: Array.isArray(data.monteurIds) ? data.monteurIds : [],
+          monteurNoms: Array.isArray(data.monteurNoms) ? data.monteurNoms : [],
+          chefId: typeof data.chefId === "string" ? data.chefId : null,
+          chefNom: typeof data.chefNom === "string" ? data.chefNom : null,
+          quantitePrevue: typeof data.quantitePrevue === "number" ? data.quantitePrevue : null,
+          statut: ["en_cours", "terminee", "annulee"].includes(data.statut)
+            ? data.statut
+            : "planifiee",
+        });
+      }
+      setSessionsAtelier(rows);
+    });
+    return () => unsub();
+  }, []);
+  const sessionsByDate = useMemo(() => {
+    const m = new Map<string, SessionAtelierMini[]>();
+    for (const s of sessionsAtelier) {
+      if (s.statut === "annulee") continue;
+      if (!s.date) continue;
+      if (!m.has(s.date)) m.set(s.date, []);
+      m.get(s.date)!.push(s);
+    }
+    return m;
+  }, [sessionsAtelier]);
+
   const tourneesByDate = useMemo(() => {
     const map = new Map<string, Tournee[]>();
     for (const t of chauffeurFilteredTournees) {
@@ -680,7 +730,7 @@ export default function LivraisonsPage() {
         />
       )}
       {view === "mois" && (
-        <MonthView refDate={refDate} tourneesByDate={tourneesByDate} onOpen={setOpenTournee} />
+        <MonthView refDate={refDate} tourneesByDate={tourneesByDate} sessionsByDate={sessionsByDate} onOpen={setOpenTournee} />
       )}
       {view === "liste" && (
         <ListView tournees={tournees} onOpen={setOpenTournee} />
@@ -1075,10 +1125,12 @@ function WeekView({
 function MonthView({
   refDate,
   tourneesByDate,
+  sessionsByDate,
   onOpen,
 }: {
   refDate: Date;
   tourneesByDate: Map<string, Tournee[]>;
+  sessionsByDate?: Map<string, Array<{ id: string; entrepotNom: string; statut: string; quantitePrevue?: number | null; monteurNoms: string[] }>>;
   onOpen: (t: Tournee) => void;
 }) {
   const first = new Date(refDate.getFullYear(), refDate.getMonth(), 1);
@@ -1121,6 +1173,21 @@ function MonthView({
               {list.length > 3 && (
                 <div className="text-[10px] text-gray-500">+{list.length - 3} autres</div>
               )}
+              {/* Sessions atelier (Yoann 2026-05-01) : affichées comme
+                  cartes orange dans la cellule jour. */}
+              {sessionsByDate?.get(iso)?.map((s) => (
+                <div
+                  key={s.id}
+                  className="bg-amber-50 border border-amber-300 rounded px-1.5 py-1 text-[9px] leading-tight"
+                  title={`Atelier ${s.entrepotNom} · ${s.monteurNoms.length} monteurs : ${s.monteurNoms.join(", ")}`}
+                >
+                  <div className="font-semibold text-amber-900">🔧 Atelier {s.entrepotNom}</div>
+                  <div className="text-amber-700 opacity-80">
+                    {s.monteurNoms.length} monteur{s.monteurNoms.length > 1 ? "s" : ""}
+                    {s.quantitePrevue ? ` · ${s.quantitePrevue}v` : ""}
+                  </div>
+                </div>
+              ))}
             </div>
           );
         })}

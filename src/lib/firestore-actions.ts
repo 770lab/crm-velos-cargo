@@ -5452,16 +5452,19 @@ export async function runFirestoreGet(
         }
       }
 
-      // Filtre tournées effectives (≥1 vélo livré).
-      // Yoann 2026-05-01 : on RELAXE le filtre — accepte aussi les tournées
-      // dont au moins 1 livraison non-annulée existe. Sinon les tournées
-      // en cours (livraisons "planifiee" qui sont passées en "livree" plus
-      // tard) ne comptent pas pour la pointeuse, alors que les monteurs ont
-      // bel et bien travaillé. On compte donc dès qu'au moins une livraison
-      // non annulée a été assignée à des monteurs.
-      const tourneesActives = Object.values(tourneesById).filter(
-        (t) => t.monteurIds.length > 0 || t.chefIds.length > 0 || t.chauffeurId,
-      );
+      // Filtre tournées effectives pour la pointeuse :
+      // - Tournée doit être PASSÉE (date <= aujourd'hui) — sinon on
+      //   compte des jours futurs où le monteur est juste pré-affilié.
+      // - ET (≥1 vélo livré OU au moins 1 affectation équipe) — pour
+      //   tolérer les tournées en cours dont les scans sont incomplets.
+      // Yoann 2026-05-01 17h45 : bug "8 jours" venait du fait qu'on
+      // comptait les pré-affiliations futures ; corrigé.
+      const todayISO = new Date().toISOString().slice(0, 10);
+      const tourneesActives = Object.values(tourneesById).filter((t) => {
+        if (t.date > todayISO) return false; // futur = pas encore travaillé
+        const aDeAffectations = t.monteurIds.length > 0 || t.chefIds.length > 0 || t.chauffeurId;
+        return t.nbVelosLivres > 0 || aDeAffectations;
+      });
 
       // Aggrégation par membre
       type MemAgg = { joursSet: Set<string>; velosPrimes: number };
