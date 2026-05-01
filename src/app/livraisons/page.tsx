@@ -4441,44 +4441,70 @@ function EquipeAssignBlock({
               }
               const teams = Array.from(teamsByChef.values());
               if (teams.length === 0) return null;
+              // Calcul masse salariale prévisionnelle par team :
+              // somme des salaires journaliers des monteurs sélectionnés de
+              // chaque team. Yoann 2026-05-01.
+              const fmtEur = (n: number) => `${Math.round(n)} €`;
+              const totalSelectedAcrossAllTeams = monteurs
+                .filter((m) => monteurIds.includes(m.id))
+                .reduce((s, m) => s + (m.salaireJournalier || 0), 0);
               return (
-                <div className="mb-2 flex flex-wrap gap-1.5 items-center">
-                  <span className="text-[11px] text-gray-500">Sélection rapide par équipe :</span>
-                  {teams.map(({ chef, monteurs: teamMonteurs }) => {
-                    const allSelected = teamMonteurs.every((m) => monteurIds.includes(m.id));
-                    const someSelected = teamMonteurs.some((m) => monteurIds.includes(m.id));
-                    const teamIds = teamMonteurs.map((m) => m.id);
-                    return (
-                      <button
-                        key={chef.id}
-                        type="button"
-                        onClick={() => {
-                          setMonteurIds((prev) => {
-                            let next: string[];
-                            if (allSelected) {
-                              // Décocher toute la team
-                              next = prev.filter((id) => !teamIds.includes(id));
-                            } else {
-                              // Cocher toute la team (en plus des autres déjà cochés)
-                              next = Array.from(new Set([...prev, ...teamIds]));
-                            }
-                            onMonteurCountChange?.(Math.max(1, next.length));
-                            return next;
-                          });
-                        }}
-                        className={`text-[11px] px-2 py-1 rounded-full border ${
-                          allSelected
-                            ? "bg-blue-600 text-white border-blue-600"
-                            : someSelected
-                              ? "bg-blue-100 text-blue-800 border-blue-300"
-                              : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50"
-                        }`}
-                        title={`Team ${chef.nom} : ${teamMonteurs.map((m) => m.nom).join(", ")}`}
-                      >
-                        {allSelected ? "✓" : someSelected ? "◐" : "+"} Team {chef.nom} ({teamMonteurs.length})
-                      </button>
-                    );
-                  })}
+                <div className="mb-2">
+                  <div className="flex flex-wrap gap-1.5 items-center">
+                    <span className="text-[11px] text-gray-500">Sélection rapide par équipe :</span>
+                    {teams.map(({ chef, monteurs: teamMonteurs }) => {
+                      const allSelected = teamMonteurs.every((m) => monteurIds.includes(m.id));
+                      const someSelected = teamMonteurs.some((m) => monteurIds.includes(m.id));
+                      const teamIds = teamMonteurs.map((m) => m.id);
+                      // Coût total team si TOUS les monteurs sélectionnés
+                      const teamFullCost = teamMonteurs.reduce((s, m) => s + (m.salaireJournalier || 0), 0);
+                      // Coût actuel = somme des salaires des monteurs déjà cochés de cette team
+                      const teamCurrentCost = teamMonteurs
+                        .filter((m) => monteurIds.includes(m.id))
+                        .reduce((s, m) => s + (m.salaireJournalier || 0), 0);
+                      return (
+                        <button
+                          key={chef.id}
+                          type="button"
+                          onClick={() => {
+                            setMonteurIds((prev) => {
+                              let next: string[];
+                              if (allSelected) {
+                                next = prev.filter((id) => !teamIds.includes(id));
+                              } else {
+                                next = Array.from(new Set([...prev, ...teamIds]));
+                              }
+                              onMonteurCountChange?.(Math.max(1, next.length));
+                              return next;
+                            });
+                          }}
+                          className={`text-[11px] px-2 py-1 rounded-full border ${
+                            allSelected
+                              ? "bg-blue-600 text-white border-blue-600"
+                              : someSelected
+                                ? "bg-blue-100 text-blue-800 border-blue-300"
+                                : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50"
+                          }`}
+                          title={`Team ${chef.nom} : ${teamMonteurs.map((m) => `${m.nom} (${m.salaireJournalier || 0}€/j)`).join(", ")}\n\nCoût total team complète : ${fmtEur(teamFullCost)}/j`}
+                        >
+                          {allSelected ? "✓" : someSelected ? "◐" : "+"} Team {chef.nom} ({teamMonteurs.length})
+                          <span className={`ml-1 ${allSelected ? "opacity-90" : "opacity-70"}`}>
+                            {someSelected
+                              ? `· ${fmtEur(teamCurrentCost)}${!allSelected ? `/${fmtEur(teamFullCost)}` : ""}/j`
+                              : `· ${fmtEur(teamFullCost)}/j`}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {/* Bandeau total équipe terrain sélectionnée. Inclut tous les
+                      monteurs cochés (team + indépendants). */}
+                  {monteurIds.length > 0 && (
+                    <div className="mt-1.5 text-[11px] text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-2 py-1 inline-block">
+                      💶 Coût monteurs sélectionnés : <strong>{fmtEur(totalSelectedAcrossAllTeams)}/j</strong>
+                      <span className="opacity-70"> ({monteurIds.length} monteur{monteurIds.length > 1 ? "s" : ""})</span>
+                    </div>
+                  )}
                 </div>
               );
             })()}
