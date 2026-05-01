@@ -193,6 +193,11 @@ interface EquipeMember {
    *  2026-05-01). Permet de grouper monteurs par chef sur la page Équipe
    *  + d'auto-affecter toute la team d'un chef en 1 clic sur une tournée. */
   chefId?: string | null;
+  /** Pour les chefs d'équipe : true si le chef est aussi un monteur
+   *  polyvalent (Yoann 2026-05-01). Permet de le sélectionner comme
+   *  monteur sur une tournée en plus de son rôle de chef. Salaire compté
+   *  une seule fois (sur le rôle principal chef). */
+  aussiMonteur?: boolean;
 }
 
 type CamionType = "gros" | "moyen" | "petit" | "retrait";

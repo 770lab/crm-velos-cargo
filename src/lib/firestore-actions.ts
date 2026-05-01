@@ -2132,6 +2132,8 @@ export async function runFirestoreAction(
         primeVelo: body.primeVelo ?? null,
         // chefId : pour les monteurs uniquement (Yoann 2026-05-01).
         chefId: body.role === "monteur" ? (body.chefId || null) : null,
+        // aussiMonteur : pour les chefs polyvalents (Yoann 2026-05-01).
+        aussiMonteur: body.role === "chef" ? (body.aussiMonteur === true) : false,
         updatedAt: ts(),
       };
       if (id) {

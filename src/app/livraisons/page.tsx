@@ -4253,7 +4253,12 @@ function EquipeAssignBlock({
 
   const chauffeurs = equipe.filter((m) => m.role === "chauffeur" && m.actif !== false);
   const chefs = equipe.filter((m) => m.role === "chef" && m.actif !== false);
-  const monteurs = equipe.filter((m) => m.role === "monteur" && m.actif !== false);
+  // Liste monteurs : monteurs déclarés + chefs polyvalents (aussiMonteur=true)
+  // Yoann 2026-05-01 : un chef peut aussi être monteur sans dupliquer son
+  // compte. Salaire compté une seule fois (sur le rôle chef principal).
+  const monteurs = equipe.filter(
+    (m) => m.actif !== false && (m.role === "monteur" || (m.role === "chef" && m.aussiMonteur === true)),
+  );
   const preparateurs = equipe.filter((m) => m.role === "preparateur" && m.actif !== false);
 
   const hasEquipe = equipe.length > 0;
@@ -4512,6 +4517,7 @@ function EquipeAssignBlock({
               {monteurs.map((m) => {
                 const on = monteurIds.includes(m.id);
                 const chef = m.chefId ? chefs.find((c) => c.id === m.chefId) : null;
+                const isChefPolyvalent = m.role === "chef" && m.aussiMonteur;
                 return (
                   <button
                     key={m.id}
@@ -4520,12 +4526,21 @@ function EquipeAssignBlock({
                     className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
                       on
                         ? "bg-emerald-600 text-white border-emerald-600"
-                        : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                        : isChefPolyvalent
+                          ? "bg-purple-50 border-purple-300 text-purple-800 hover:bg-purple-100"
+                          : "border-gray-300 text-gray-700 hover:bg-gray-50"
                     }`}
-                    title={chef ? `Team ${chef.nom}` : "Monteur indépendant"}
+                    title={
+                      isChefPolyvalent
+                        ? `${m.nom} — Chef polyvalent (peut aussi monter sur place)`
+                        : chef
+                          ? `Team ${chef.nom}`
+                          : "Monteur indépendant"
+                    }
                   >
                     {on ? "✓ " : ""}
                     {m.nom}
+                    {isChefPolyvalent && <span className={`ml-1 text-[10px] ${on ? "opacity-80" : "opacity-60"}`}>· chef</span>}
                     {chef && <span className={`ml-1 text-[10px] ${on ? "opacity-80" : "opacity-50"}`}>· {chef.nom}</span>}
                   </button>
                 );

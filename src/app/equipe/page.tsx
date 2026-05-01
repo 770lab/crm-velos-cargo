@@ -248,6 +248,8 @@ function MembreModal({
   // Chef parent (Yoann 2026-05-01) : un monteur appartient à un chef d'équipe
   // qui l'a amené. Permet auto-affectation team complète sur tournée.
   const [chefId, setChefId] = useState(member?.chefId || "");
+  // Toggle polyvalence chef → monteur (Yoann 2026-05-01).
+  const [aussiMonteur, setAussiMonteur] = useState(member?.aussiMonteur === true);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPinForm, setShowPinForm] = useState(false);
@@ -294,6 +296,8 @@ function MembreModal({
         primeVelo: pv ? Number(pv) : null,
         // chefId pertinent uniquement pour les monteurs ; null sinon.
         chefId: role === "monteur" ? (chefId || null) : null,
+        // aussiMonteur pertinent uniquement pour les chefs.
+        aussiMonteur: role === "chef" ? aussiMonteur : false,
       };
       if (isArchived) payload.actif = true;
       const r = await gasPost("upsertMembre", payload);
@@ -483,6 +487,24 @@ function MembreModal({
                 ? "Prime monteur : split entre les monteurs de la tournée (si 2 monteurs sur 10 vélos, chacun touche prime × 5)."
                 : "Tous les vélos de la tournée comptent pour la prime."}
             </p>
+            {role === "chef" && (
+              <label className="flex items-start gap-2 text-sm cursor-pointer pt-1">
+                <input
+                  type="checkbox"
+                  checked={aussiMonteur}
+                  onChange={(e) => setAussiMonteur(e.target.checked)}
+                  className="mt-0.5"
+                />
+                <span>
+                  <strong>🔧 Aussi monteur</strong> — chef polyvalent qui peut monter sur place
+                  <div className="text-[10px] text-gray-500 mt-0.5">
+                    Coché : ce chef apparaît aussi dans la liste des monteurs
+                    sélectionnables sur une tournée. Salaire compté une seule
+                    fois (sur le rôle principal chef).
+                  </div>
+                </span>
+              </label>
+            )}
             {role === "monteur" && (
               <div>
                 <label className="block text-xs text-gray-500 mb-1">

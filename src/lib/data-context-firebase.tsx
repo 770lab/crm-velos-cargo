@@ -217,6 +217,7 @@ function equipeFromDoc(id: string, d: DocumentData): EquipeMember {
     salaireJournalier: d.salaireJournalier ?? null,
     primeVelo: d.primeVelo ?? null,
     chefId: typeof d.chefId === "string" ? d.chefId : null,
+    aussiMonteur: d.aussiMonteur === true,
   };
 }
 
