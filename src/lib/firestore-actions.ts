@@ -3333,6 +3333,10 @@ export async function runFirestoreAction(
       const tourneeRef = tourneeNumero != null
         ? `VELO CARGO - TOURNEE ${tourneeNumero}`
         : `VELO CARGO - ${tourneeId}`;
+      // dateDoc obligatoire (Yoann 2026-05-01) : sans ça, le bon est
+      // invisible côté Finances qui filtre par dateDoc. On utilise la
+      // date passée si fournie, sinon today.
+      const dateDoc = getString(body, "dateDoc") || new Date().toISOString().slice(0, 10);
       await setDoc(doc(db, "bonsEnlevement", id), {
         tourneeId,
         tourneeNumero,
@@ -3341,6 +3345,7 @@ export async function runFirestoreAction(
         numeroDoc,
         quantite,
         driveUrl,
+        dateDoc,
         receivedAt: new Date().toISOString(),
         manual: true,
         createdAt: ts(),
