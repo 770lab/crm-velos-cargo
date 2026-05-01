@@ -1821,6 +1821,11 @@ function TourneeModal({
   const [galleryOpen, setGalleryOpen] = useState(false);
 
   useEffect(() => {
+    // Reset systématique : sans ça, en passant d'une tournée avec tourneeId
+    // valide à une autre où la livraison a tourneeId=null (cas Yoann 2026-05-01,
+    // ANADOLU reportée), la progression précédente "bleed" et affiche
+    // 13/13 ✓ alors que la tournée en cours n'a rien de comptable.
+    setProgression(null);
     if (!tournee.tourneeId) return;
     let alive = true;
     gasGet("getTourneeProgression", { tourneeId: tournee.tourneeId }).then((r) => {
