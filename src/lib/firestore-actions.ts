@@ -5384,6 +5384,24 @@ export async function runFirestoreGet(
       const livSnap = await getDocs(collection(db, "livraisons"));
       // Group par tourneeId : { tourneeId, datePrevue (YYYY-MM-DD), nbVelosLivres,
       // chauffeurId, chefIds[], monteurIds[], preparateurIds[] }
+      // Refactor 2026-05-01 17h55 (Yoann) : on agrège PAR LIVRAISON et PAR
+      // DATE (pas par tournée globale). Sinon des livraisons futures du
+      // même tourneeId remontaient des affectations dans la pointeuse
+      // (anciens monteurIds renommés "3", "6"... étaient comptés).
+      type LivraisonAgg = {
+        livraisonId: string;
+        tourneeId: string;
+        date: string;
+        nbVelosLivres: number;
+        statut: string;
+        chauffeurId: string | null;
+        chefIds: string[];
+        monteurIds: string[];
+        preparateurIds: string[];
+      };
+      const livraisonsAgg: LivraisonAgg[] = [];
+      // Conservé pour rétro-compat type signature mais n'est plus utilisé
+      // dans la nouvelle logique d'agrégation.
       type TourneeAgg = {
         tourneeId: string;
         date: string;
@@ -5400,6 +5418,7 @@ export async function runFirestoreGet(
         const t = x as { toDate?: () => Date };
         return t?.toDate ? t.toDate().toISOString() : null;
       };
+      const todayISO = new Date().toISOString().slice(0, 10);
       for (const d of livSnap.docs) {
         const l = d.data() as {
           tourneeId?: string;
@@ -5412,59 +5431,53 @@ export async function runFirestoreGet(
           monteurIds?: string[];
           preparateurIds?: string[];
         };
-        const tid = l.tourneeId || "";
-        if (!tid) continue;
         const dpIso = isoOf(l.datePrevue);
         if (!dpIso || !inRange(dpIso)) continue;
-
-        let agg = tourneesById[tid];
-        if (!agg) {
-          agg = tourneesById[tid] = {
-            tourneeId: tid,
-            date: dpIso.slice(0, 10),
-            nbVelosLivres: 0,
-            chauffeurId: l.chauffeurId || null,
-            chefIds: [],
-            monteurIds: [],
-            preparateurIds: [],
-          };
-        }
-        // MERGE des affectations entre toutes les livraisons d'une tournée
-        // (Yoann 2026-05-01 : sinon les monteurs ajoutés sur des livraisons
-        // ultérieures de la même tournée étaient ignorés). Une tournée a
-        // normalement la même équipe sur toutes ses livraisons, mais en
-        // pratique les saves successifs peuvent créer des divergences.
-        if (l.chauffeurId && !agg.chauffeurId) agg.chauffeurId = l.chauffeurId;
-        if (l.chefEquipeId && !agg.chefIds.includes(l.chefEquipeId)) {
-          agg.chefIds.push(l.chefEquipeId);
-        }
-        for (const id of l.chefEquipeIds || []) {
-          if (id && !agg.chefIds.includes(id)) agg.chefIds.push(id);
-        }
-        for (const id of l.monteurIds || []) {
-          if (id && !agg.monteurIds.includes(id)) agg.monteurIds.push(id);
-        }
-        for (const id of l.preparateurIds || []) {
-          if (id && !agg.preparateurIds.includes(id)) agg.preparateurIds.push(id);
-        }
-        if ((l.statut || "") === "livree") {
-          agg.nbVelosLivres += typeof l.nbVelos === "number" ? l.nbVelos : 0;
-        }
+        const date = dpIso.slice(0, 10);
+        // Skip livraisons futures : on ne paie pas pour des jours pas encore
+        // travaillés (Yoann 2026-05-01 — bug "3 jours pour Jashan" venait
+        // de pré-affiliations en MAI futures comptées).
+        if (date > todayISO) continue;
+        const statut = l.statut || "";
+        if (statut === "annulee") continue;
+        // Au moins un membre doit être affecté ET (livraison livrée OU date
+        // <= today) pour que la livraison compte comme "jour travaillé".
+        const monteurIds = Array.isArray(l.monteurIds) ? l.monteurIds.filter((x) => !!x) : [];
+        const chefIdsCombines = [
+          ...(l.chefEquipeId ? [l.chefEquipeId] : []),
+          ...(Array.isArray(l.chefEquipeIds) ? l.chefEquipeIds : []),
+        ].filter((v, i, a) => v && a.indexOf(v) === i) as string[];
+        const preparateurIds = Array.isArray(l.preparateurIds) ? l.preparateurIds.filter((x) => !!x) : [];
+        if (
+          monteurIds.length === 0 &&
+          chefIdsCombines.length === 0 &&
+          !l.chauffeurId &&
+          preparateurIds.length === 0
+        ) continue;
+        livraisonsAgg.push({
+          livraisonId: d.id,
+          tourneeId: l.tourneeId || "",
+          date,
+          nbVelosLivres: statut === "livree" ? Number(l.nbVelos || 0) : 0,
+          statut,
+          chauffeurId: l.chauffeurId || null,
+          chefIds: chefIdsCombines,
+          monteurIds,
+          preparateurIds,
+        });
       }
-
-      // Filtre tournées effectives pour la pointeuse :
-      // - Tournée doit être PASSÉE (date <= aujourd'hui) — sinon on
-      //   compte des jours futurs où le monteur est juste pré-affilié.
-      // - ET (≥1 vélo livré OU au moins 1 affectation équipe) — pour
-      //   tolérer les tournées en cours dont les scans sont incomplets.
-      // Yoann 2026-05-01 17h45 : bug "8 jours" venait du fait qu'on
-      // comptait les pré-affiliations futures ; corrigé.
-      const todayISO = new Date().toISOString().slice(0, 10);
-      const tourneesActives = Object.values(tourneesById).filter((t) => {
-        if (t.date > todayISO) return false; // futur = pas encore travaillé
-        const aDeAffectations = t.monteurIds.length > 0 || t.chefIds.length > 0 || t.chauffeurId;
-        return t.nbVelosLivres > 0 || aDeAffectations;
-      });
+      // Compat : reconstituer tourneesActives par tournée (gardée pour
+      // les éventuels usages externes — l'agrégation par membre se fait
+      // désormais directement à partir de livraisonsAgg).
+      const tourneesActives = livraisonsAgg.map((l) => ({
+        tourneeId: l.tourneeId,
+        date: l.date,
+        nbVelosLivres: l.nbVelosLivres,
+        chauffeurId: l.chauffeurId,
+        chefIds: l.chefIds,
+        monteurIds: l.monteurIds,
+        preparateurIds: l.preparateurIds,
+      }));
 
       // Aggrégation par membre
       type MemAgg = { joursSet: Set<string>; velosPrimes: number };

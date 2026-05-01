@@ -428,17 +428,14 @@ function TransformPanel({
   const [showModal, setShowModal] = useState(false);
   return (
     <>
-      <div className="flex items-center justify-between gap-2 bg-blue-50 border border-blue-200 rounded-lg p-2">
-        <div className="text-xs text-blue-900">
-          <strong>🔧 Transformer cartons → vélos montés</strong>
-          <div className="text-[10px] text-blue-700 opacity-80">
-            -N cartons + +N vélos montés en 1 clic.
-          </div>
+      <div className="flex items-center justify-between gap-2 bg-blue-50 border border-blue-200 rounded p-1.5">
+        <div className="text-[11px] text-blue-900 truncate">
+          🔧 <strong>Transformer cartons → montés</strong>
         </div>
         <button
           onClick={() => setShowModal(true)}
           disabled={stockCartons <= 0}
-          className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold disabled:opacity-50"
+          className="px-2 py-0.5 text-[11px] bg-blue-600 text-white rounded hover:bg-blue-700 font-semibold disabled:opacity-50 shrink-0"
           title={stockCartons <= 0 ? "Aucun carton à transformer" : "Saisir N vélos montés depuis les cartons"}
         >
           → Monter
@@ -649,22 +646,24 @@ function StockPanel({
 
   return (
     <>
-      <div className={`rounded-lg border p-3 ${colorClasses}`}>
-        <div className="text-[11px] uppercase tracking-wide opacity-70 font-semibold">
-          {label}
+      <div className={`rounded-lg border p-2 ${colorClasses}`}>
+        <div className="flex items-baseline justify-between gap-2">
+          <div className="text-[10px] uppercase tracking-wide opacity-70 font-semibold">
+            {label}
+          </div>
+          <div className="text-xl font-bold text-gray-900">{fmt(value)}</div>
         </div>
-        <div className="text-3xl font-bold mt-0.5 text-gray-900">{fmt(value)}</div>
         {editable && (
-          <div className="mt-2 flex gap-1">
+          <div className="mt-1 flex gap-1">
             <button
               onClick={() => setShowModal(true)}
-              className="flex-1 px-2 py-1 bg-white border rounded text-xs hover:bg-gray-50 font-medium"
+              className="flex-1 px-1.5 py-0.5 bg-white border rounded text-[10px] hover:bg-gray-50 font-medium"
             >
               + Entrée
             </button>
             <button
               onClick={() => setShowHistory((v) => !v)}
-              className="px-2 py-1 bg-white border rounded text-xs hover:bg-gray-50"
+              className="px-1.5 py-0.5 bg-white border rounded text-[10px] hover:bg-gray-50"
               title="Voir l'historique"
             >
               {showHistory ? "▲" : "▼"} {mouvements.length}
