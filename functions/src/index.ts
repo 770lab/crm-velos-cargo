@@ -2085,3 +2085,121 @@ export const sendCommandeCamion = onCall<SendCommandeCamionPayload>(
     }
   },
 );
+
+// ─────────────────────────────────────────────────────────────────────────
+// onLivraisonStatutLivree (Yoann 2026-05-01) — décrément stock entrepôt
+// quand une livraison rattachée à un entrepôt source passe en "livree".
+//
+// Boucle stock :
+//   1) onBonEnlevementWritten incrémente stockCartons à la réception AXDIS
+//   2) Transformations cartons → vélos montés via TransformPanel (manuel)
+//   3) Création tournée depuis SuggererTourneePanel → livraison.entrepotOrigineId
+//      + livraison.modeMontage posés
+//   4) Quand statut = "livree" : on décrémente le stock approprié
+//      - mode "client"            → stockCartons
+//      - mode "atelier"           → stockVelosMontes
+//      - mode "client_redistribue" → stockVelosMontes (livré chez un client
+//                                     éphémère qui redistribue)
+//
+// Idempotence : flag livraison.stockEntrepotDecremented = true + champ
+// stockEntrepotDecrementedAt — on ne décrémente jamais 2 fois la même
+// livraison (même si quelqu un repasse "livree" → "planifiee" → "livree").
+// ─────────────────────────────────────────────────────────────────────────
+export const onLivraisonStatutLivree = onDocumentWritten(
+  "livraisons/{livraisonId}",
+  async (event) => {
+    const before = event.data?.before?.data();
+    const after = event.data?.after?.data();
+    if (!after) return; // delete
+
+    const livraisonId = event.params.livraisonId;
+    const statutBefore = String(before?.statut || "");
+    const statutAfter = String(after.statut || "");
+    const entrepotOrigineId = after.entrepotOrigineId
+      ? String(after.entrepotOrigineId)
+      : null;
+    const modeMontage = after.modeMontage ? String(after.modeMontage) : null;
+    const nbVelos = Number(after.nbVelos) || 0;
+    const alreadyDone = after.stockEntrepotDecremented === true;
+
+    // Conditions :
+    // - on passe à "livree" (transition, pas un re-write idempotent)
+    // - entrepôt source connu
+    // - mode montage connu
+    // - nbVelos > 0
+    // - pas déjà décrémenté
+    if (statutAfter !== "livree") return;
+    if (statutBefore === "livree") return; // déjà traité par un précédent fire
+    if (!entrepotOrigineId) {
+      logger.info("[livraison-trigger] pas d entrepôt source — skip décrément", { livraisonId });
+      return;
+    }
+    if (!modeMontage) {
+      logger.warn("[livraison-trigger] pas de modeMontage — skip décrément", { livraisonId });
+      return;
+    }
+    if (nbVelos <= 0) {
+      logger.warn("[livraison-trigger] nbVelos<=0 — skip décrément", { livraisonId });
+      return;
+    }
+    if (alreadyDone) {
+      logger.info("[livraison-trigger] déjà décrémenté — skip", { livraisonId });
+      return;
+    }
+
+    const champStock = modeMontage === "client" ? "stockCartons" : "stockVelosMontes";
+    const typeMouvement = modeMontage === "client" ? "carton" : "velo_monte";
+
+    try {
+      // Marqueur idempotence d abord (avant le décrément) — si l update
+      // entrepôt échoue on évite la double décrémentation au prochain replay.
+      await db.collection("livraisons").doc(livraisonId).set(
+        {
+          stockEntrepotDecremented: true,
+          stockEntrepotDecrementedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      const today = new Date().toISOString().slice(0, 10);
+      await db
+        .collection("entrepots")
+        .doc(entrepotOrigineId)
+        .collection("mouvements")
+        .add({
+          type: typeMouvement,
+          quantite: -nbVelos,
+          date: today,
+          source: `livraison-${livraisonId}`,
+          notes: `Livraison ${after.tourneeNumero ?? "?"} → ${after.clientSnapshot?.entreprise ?? "?"}`,
+          livraisonId,
+          tourneeId: after.tourneeId || null,
+          modeMontage,
+          createdAt: FieldValue.serverTimestamp(),
+          autoCreated: true,
+        });
+
+      await db.collection("entrepots").doc(entrepotOrigineId).set(
+        {
+          [champStock]: FieldValue.increment(-nbVelos),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+
+      logger.info("[livraison-trigger] stock décrémenté", {
+        livraisonId,
+        entrepotOrigineId,
+        champ: champStock,
+        nbVelos,
+        modeMontage,
+      });
+    } catch (e) {
+      logger.error("[livraison-trigger] décrément stock KO", {
+        livraisonId,
+        entrepotOrigineId,
+        e,
+      });
+    }
+  },
+);
