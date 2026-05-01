@@ -4478,16 +4478,34 @@ function tourneeRefAxdis(numero: number | null | undefined, fallbackTourneeId: s
 
 function buildAxdisCommandeMail(tournee: Tournee): { subject: string; body: string; url: string } {
   const ref = tourneeRefAxdis(tournee.numero ?? null, tournee.tourneeId);
-  const subject = `Commande ${ref}`;
+  // Cas retrait dédié à un client : on enrichit le subject + body avec le
+  // nom du client (Yoann 2026-05-01 : "TOURNEE 19" tout seul prête à
+  // confusion pour Tiffany — elle ne sait pas qui c'est). La référence
+  // technique reste inchangée pour matching trigger.
+  const isRetrait = tournee.mode === "retrait";
+  const livActives = tournee.livraisons.filter((l) => l.statut !== "annulee");
+  const clientUnique = livActives.length === 1 ? (livActives[0].client?.entreprise || null) : null;
+  const contextLabel = isRetrait
+    ? clientUnique
+      ? `RETRAIT ${clientUnique.toUpperCase()}`
+      : "RETRAIT"
+    : null;
+  const subject = contextLabel
+    ? `Commande ${ref} - ${contextLabel}`
+    : `Commande ${ref}`;
   const body = [
     `Bonjour Tiffany,`,
     ``,
-    `Merci de préparer la commande pour la tournée de demain :`,
+    isRetrait && clientUnique
+      ? `Merci de préparer la commande pour le RETRAIT chez ${clientUnique} :`
+      : isRetrait
+        ? `Merci de préparer la commande pour le RETRAIT de demain :`
+        : `Merci de préparer la commande pour la tournée de demain :`,
     ``,
     `  → ${tournee.totalVelos} vélos`,
     ``,
     `Référence à reporter sur le bon de commande :`,
-    ref,
+    ref + (contextLabel ? ` (${contextLabel})` : ""),
     ``,
     `Merci,`,
     `Yoann`,

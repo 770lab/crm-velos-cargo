@@ -2130,6 +2130,8 @@ export async function runFirestoreAction(
         notes: body.notes || null,
         salaireJournalier: body.salaireJournalier ?? null,
         primeVelo: body.primeVelo ?? null,
+        // chefId : pour les monteurs uniquement (Yoann 2026-05-01).
+        chefId: body.role === "monteur" ? (body.chefId || null) : null,
         updatedAt: ts(),
       };
       if (id) {

@@ -189,6 +189,10 @@ interface EquipeMember {
   /** EUR par vélo (0-5). Pour chauffeurs/chefs : tous les vélos de la tournée.
    *  Pour monteurs : split entre les monteurs de l'équipe sur la tournée. */
   primeVelo?: number | null;
+  /** Pour les monteurs : ID du chef d'équipe qui les a amenés (Yoann
+   *  2026-05-01). Permet de grouper monteurs par chef sur la page Équipe
+   *  + d'auto-affecter toute la team d'un chef en 1 clic sur une tournée. */
+  chefId?: string | null;
 }
 
 type CamionType = "gros" | "moyen" | "petit" | "retrait";

@@ -216,6 +216,7 @@ function equipeFromDoc(id: string, d: DocumentData): EquipeMember {
     hasCode: true, // tous ont un PIN après seed
     salaireJournalier: d.salaireJournalier ?? null,
     primeVelo: d.primeVelo ?? null,
+    chefId: typeof d.chefId === "string" ? d.chefId : null,
   };
 }
 

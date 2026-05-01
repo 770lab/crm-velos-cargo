@@ -203,6 +203,7 @@ export default function EquipePage() {
         <MembreModal
           member={editing}
           creatingRole={creatingRole}
+          chefsList={equipe.filter((m) => m.role === "chef" && m.actif !== false)}
           onClose={() => {
             setEditing(null);
             setCreatingRole(null);
@@ -222,11 +223,13 @@ export default function EquipePage() {
 function MembreModal({
   member,
   creatingRole,
+  chefsList,
   onClose,
   onSaved,
 }: {
   member: EquipeMember | null;
   creatingRole: EquipeRole | null;
+  chefsList: EquipeMember[];
   onClose: () => void;
   onSaved: () => void;
 }) {
@@ -242,6 +245,9 @@ function MembreModal({
   const [primeVelo, setPrimeVelo] = useState(
     member?.primeVelo != null ? String(member.primeVelo) : "",
   );
+  // Chef parent (Yoann 2026-05-01) : un monteur appartient à un chef d'équipe
+  // qui l'a amené. Permet auto-affectation team complète sur tournée.
+  const [chefId, setChefId] = useState(member?.chefId || "");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPinForm, setShowPinForm] = useState(false);
@@ -286,6 +292,8 @@ function MembreModal({
         notes: notes.trim() || null,
         salaireJournalier: sj ? Number(sj) : null,
         primeVelo: pv ? Number(pv) : null,
+        // chefId pertinent uniquement pour les monteurs ; null sinon.
+        chefId: role === "monteur" ? (chefId || null) : null,
       };
       if (isArchived) payload.actif = true;
       const r = await gasPost("upsertMembre", payload);
@@ -475,6 +483,27 @@ function MembreModal({
                 ? "Prime monteur : split entre les monteurs de la tournée (si 2 monteurs sur 10 vélos, chacun touche prime × 5)."
                 : "Tous les vélos de la tournée comptent pour la prime."}
             </p>
+            {role === "monteur" && (
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">
+                  👷 Chef d&apos;équipe parent <span className="text-gray-400 font-normal">(qui a amené ce monteur)</span>
+                </label>
+                <select
+                  value={chefId}
+                  onChange={(e) => setChefId(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
+                >
+                  <option value="">— aucun (monteur indépendant)</option>
+                  {chefsList.map((c) => (
+                    <option key={c.id} value={c.id}>{c.nom}</option>
+                  ))}
+                </select>
+                <p className="text-[11px] text-gray-400 leading-snug mt-1">
+                  Permet de regrouper les monteurs par chef et d&apos;auto-affecter
+                  toute son équipe sur une tournée en 1 clic (à venir).
+                </p>
+              </div>
+            )}
           </div>
 
           {isEdit && !isArchived && (
