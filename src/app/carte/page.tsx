@@ -11,7 +11,7 @@ import AddClientModal from "@/components/add-client-modal";
 // Yoann 2026-05-01 : suggestion depuis /carte (voir clients alentours
 // pendant la planif). Le panneau encapsule le bouton + les 2 modals
 // (suggestion 1 tournée + planificateur journée).
-import { SuggererTourneePanel } from "@/app/entrepots/page";
+import { SuggererTourneePanel, SuggererTourneeModal } from "@/app/entrepots/page";
 
 const MapView = dynamic(() => import("@/components/map-view"), { ssr: false });
 
@@ -85,6 +85,9 @@ export default function CartePage() {
   };
   const [entrepotsList, setEntrepotsList] = useState<EntrepotMapPoint[]>([]);
   const [selectedEntrepotId, setSelectedEntrepotId] = useState<string | null>(null);
+  // Yoann 2026-05-01 : modal Suggérer ouvert depuis click entrepôt (map ou
+  // encart "+proche") — bypasse la sidebar pour aller direct à la planif.
+  const [quickSuggestEntrepot, setQuickSuggestEntrepot] = useState<EntrepotMapPoint | null>(null);
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -260,6 +263,38 @@ export default function CartePage() {
   }, [mode, maxDistance, selected, handleSelectClient]);
 
   const selectedClient = clients.find((c) => c.id === selected);
+
+  // Yoann 2026-05-01 : entrepôt le + proche du client cliqué (Haversine vol
+  // d oiseau, suffisant pour la sélection — Maps Directions n améliore pas
+  // l ordre relatif des entrepôts de manière significative). Filtre :
+  // non-fournisseur, non-archivé, avec stock > 0 dans au moins 1 mode.
+  const entrepotLePlusProche = useMemo(() => {
+    if (!selectedClient || !selectedClient.lat || !selectedClient.lng) return null;
+    const candidats = entrepotsList.filter(
+      (e) =>
+        e.role !== "fournisseur" &&
+        !e.archived &&
+        e.lat != null &&
+        e.lng != null &&
+        e.stockCartons + e.stockVelosMontes > 0,
+    );
+    if (candidats.length === 0) return null;
+    const haversine = (a1: number, a2: number, b1: number, b2: number) => {
+      const R = 6371;
+      const dLat = ((b1 - a1) * Math.PI) / 180;
+      const dLng = ((b2 - a2) * Math.PI) / 180;
+      const lat1 = (a1 * Math.PI) / 180;
+      const lat2 = (b1 * Math.PI) / 180;
+      const x = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+      return R * 2 * Math.atan2(Math.sqrt(x), Math.sqrt(1 - x));
+    };
+    let best: { e: EntrepotMapPoint; dist: number } | null = null;
+    for (const e of candidats) {
+      const d = haversine(selectedClient.lat!, selectedClient.lng!, e.lat as number, e.lng as number);
+      if (!best || d < best.dist) best = { e, dist: d };
+    }
+    return best;
+  }, [selectedClient, entrepotsList]);
   const allTourneeIds = new Set<string>();
   if (tournee?.splits) {
     tournee.splits.forEach((sp) => sp.stops.forEach((s) => allTourneeIds.add(s.id)));
@@ -345,8 +380,17 @@ export default function CartePage() {
           hideClients={vue === "entrepots"} /* clients visibles en mode "clients" et "hybride" */
           selectedEntrepotId={selectedEntrepotId}
           onSelectEntrepot={(id) => {
+            // Yoann 2026-05-01 : click marker entrepôt sur la map → ouvre
+            // directement le modal Suggérer (au lieu de juste basculer la
+            // vue sidebar). Plus rapide pour planifier une tournée.
             setSelectedEntrepotId(id);
-            setVue("entrepots");
+            const ep = entrepotsList.find((x) => x.id === id);
+            if (ep && ep.role !== "fournisseur" && !ep.archived && ep.stockCartons + ep.stockVelosMontes > 0) {
+              setQuickSuggestEntrepot(ep);
+            } else {
+              // Fournisseur / archivé / vide → ancien comportement (sidebar)
+              setVue("entrepots");
+            }
           }}
         />
       </div>
@@ -530,6 +574,31 @@ export default function CartePage() {
 
             {selected && selectedClient && tournee && !tournee.error && !loading && (
               <div className="p-4 space-y-4">
+                {/* Yoann 2026-05-01 : entrepôt le + proche du client cliqué.
+                    Click → ouvre direct le modal Suggérer pour cet entrepôt. */}
+                {entrepotLePlusProche && (
+                  <div className="bg-blue-50 border border-blue-300 rounded-lg p-3">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-xs text-blue-900 min-w-0">
+                        🏬 <strong>Entrepôt le + proche</strong>
+                        <div className="text-sm font-bold text-blue-900 mt-0.5 truncate">
+                          {entrepotLePlusProche.e.nom}
+                          <span className="ml-1 text-[11px] font-normal text-blue-700">
+                            · {Math.round(entrepotLePlusProche.dist * 10) / 10} km · {entrepotLePlusProche.e.stockCartons + entrepotLePlusProche.e.stockVelosMontes} v dispo
+                          </span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={() => setQuickSuggestEntrepot(entrepotLePlusProche.e)}
+                        className="px-2 py-1 text-[11px] bg-indigo-600 text-white rounded hover:bg-indigo-700 font-semibold shrink-0"
+                        title="Suggérer une tournée depuis cet entrepôt (le client cliqué fait probablement partie de la sélection)"
+                      >
+                        🤖 Suggérer
+                      </button>
+                    </div>
+                  </div>
+                )}
+
                 <ClientHeader client={selectedClient} tournee={tournee} />
 
                 {tournee.nbCamions > 1 && (
@@ -594,6 +663,18 @@ export default function CartePage() {
             refresh("clients");
             refresh("carte");
           }}
+        />
+      )}
+      {/* Yoann 2026-05-01 : modal Suggérer rendu au niveau parent pour pouvoir
+          être déclenché depuis (a) click marker entrepôt, (b) bouton encart
+          "+proche" sur client sélectionné. */}
+      {quickSuggestEntrepot && (
+        <SuggererTourneeModal
+          entrepotId={quickSuggestEntrepot.id}
+          entrepotNom={quickSuggestEntrepot.nom}
+          stockCartons={quickSuggestEntrepot.stockCartons}
+          stockVelosMontes={quickSuggestEntrepot.stockVelosMontes}
+          onClose={() => setQuickSuggestEntrepot(null)}
         />
       )}
     </div>

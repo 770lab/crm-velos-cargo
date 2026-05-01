@@ -2141,7 +2141,9 @@ type SuggestionResult = {
   candidatsHorsTournee?: Array<{ id: string; entreprise: string; ville: string; distance: number; velosRestants: number }>;
 };
 
-function SuggererTourneeModal({
+// Yoann 2026-05-01 : exporté pour réutilisation depuis /carte (click client →
+// suggestion automatique depuis l entrepôt le + proche).
+export function SuggererTourneeModal({
   entrepotId,
   entrepotNom,
   stockCartons,
