@@ -573,11 +573,21 @@ function EntrepotModal({
           </div>
           {role === "ephemere" && (
             <div className="bg-purple-50 border border-purple-200 rounded p-2 space-y-2">
-              <div className="text-[11px] text-purple-800">
-                💡 Entrepôt temporaire monté chez un client tête de groupe
+              <div className="text-[11px] text-purple-800 leading-relaxed">
+                💡 <strong>Mini-AXDIS chez le client tête de groupe</strong>
                 (ex : Firat Food Roissy → tous les magasins du groupe).
-                Sert de point de départ alternatif. À archiver quand le
-                stock est vidé et la chaîne livrée.
+                Workflow identique à AXDIS :
+                <ol className="list-decimal pl-4 mt-1 space-y-0.5">
+                  <li>Camion complet livré ici (cartons)</li>
+                  <li>Préparateur Yoann sur place → assignation FNUCI</li>
+                  <li>Monteurs Yoann sur place <strong>une seule fois</strong> pour tous les montages</li>
+                  <li>Le client redistribue lui-même avec son camion vers ses magasins</li>
+                  <li>Chef d&apos;équipe Yoann suit pour BL signature + traçabilité COFRAC</li>
+                </ol>
+                <div className="mt-1">
+                  Avantage : monteurs ne se déplacent qu&apos;une fois, chauffeur Yoann pas mobilisé sur la distribution.
+                </div>
+                <div className="mt-1">À archiver une fois la chaîne entièrement livrée.</div>
               </div>
               <div>
                 <label className="text-xs text-gray-600">Nom du groupe / chaîne</label>
