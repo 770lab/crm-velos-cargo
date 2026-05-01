@@ -183,6 +183,14 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Paiements équipe (Yoann 2026-05-01) : grand livre traçabilité
+    // comptable. Salaires payés, avances, primes par membre.
+    // Lecture admin/superadmin (RH sensible), écriture admin.
+    match /paiementsEquipe/{id} {
+      allow read: if isAdmin();
+      allow write: if isAdmin();
+    }
+
     // Tout le reste est refusé par défaut.
     match /{document=**} {
       allow read, write: if false;

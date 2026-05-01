@@ -5222,22 +5222,43 @@ export async function runFirestoreGet(
             date: dpIso.slice(0, 10),
             nbVelosLivres: 0,
             chauffeurId: l.chauffeurId || null,
-            chefIds: [
-              ...(l.chefEquipeId ? [l.chefEquipeId] : []),
-              ...(l.chefEquipeIds || []),
-            ].filter((v, i, a) => v && a.indexOf(v) === i),
-            monteurIds: [...new Set(l.monteurIds || [])],
-            preparateurIds: [...new Set(l.preparateurIds || [])],
+            chefIds: [],
+            monteurIds: [],
+            preparateurIds: [],
           };
+        }
+        // MERGE des affectations entre toutes les livraisons d'une tournée
+        // (Yoann 2026-05-01 : sinon les monteurs ajoutés sur des livraisons
+        // ultérieures de la même tournée étaient ignorés). Une tournée a
+        // normalement la même équipe sur toutes ses livraisons, mais en
+        // pratique les saves successifs peuvent créer des divergences.
+        if (l.chauffeurId && !agg.chauffeurId) agg.chauffeurId = l.chauffeurId;
+        if (l.chefEquipeId && !agg.chefIds.includes(l.chefEquipeId)) {
+          agg.chefIds.push(l.chefEquipeId);
+        }
+        for (const id of l.chefEquipeIds || []) {
+          if (id && !agg.chefIds.includes(id)) agg.chefIds.push(id);
+        }
+        for (const id of l.monteurIds || []) {
+          if (id && !agg.monteurIds.includes(id)) agg.monteurIds.push(id);
+        }
+        for (const id of l.preparateurIds || []) {
+          if (id && !agg.preparateurIds.includes(id)) agg.preparateurIds.push(id);
         }
         if ((l.statut || "") === "livree") {
           agg.nbVelosLivres += typeof l.nbVelos === "number" ? l.nbVelos : 0;
         }
       }
 
-      // Filtre tournées effectives (≥1 vélo livré)
+      // Filtre tournées effectives (≥1 vélo livré).
+      // Yoann 2026-05-01 : on RELAXE le filtre — accepte aussi les tournées
+      // dont au moins 1 livraison non-annulée existe. Sinon les tournées
+      // en cours (livraisons "planifiee" qui sont passées en "livree" plus
+      // tard) ne comptent pas pour la pointeuse, alors que les monteurs ont
+      // bel et bien travaillé. On compte donc dès qu'au moins une livraison
+      // non annulée a été assignée à des monteurs.
       const tourneesActives = Object.values(tourneesById).filter(
-        (t) => t.nbVelosLivres > 0,
+        (t) => t.monteurIds.length > 0 || t.chefIds.length > 0 || t.chauffeurId,
       );
 
       // Aggrégation par membre
