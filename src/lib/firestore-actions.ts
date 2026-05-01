@@ -4004,19 +4004,97 @@ export async function runFirestoreAction(
         .filter((c) => c.distance <= maxDistance && c.velosRestants > 0)
         .sort((a, b) => a.distance - b.distance);
 
-      // Heuristique : on remplit le camion en partant des clients les plus
-      // proches (nearest neighbor), tant qu'il reste de la capacité.
-      const stops: Array<Candidate & { nbVelos: number }> = [];
+      // VRP heuristique (Yoann 2026-05-01) — Phase 2 :
+      // Avant : tri par distance à l entrepôt + remplissage capacité ; OK pour
+      // l empilement camion mais l ORDRE de visite était mauvais (zigzag).
+      // Maintenant :
+      //  1) Sélection capacité : on prend les clients dont la somme nbVelos
+      //     remplit la capacité, en priorisant les plus proches (idem)
+      //  2) Routing : nearest-neighbor multi-stop entrepôt → s1 → s2 → ...
+      //     (chaque suivant = le plus proche du courant, pas de l entrepôt)
+      //  3) 2-opt swap unique : améliore l ordre en cassant les croisements
+      // Routing Google Maps Distance Matrix : étape suivante (TODO),
+      // pour l instant on reste sur Haversine (vol d oiseau).
+      type Stop = Candidate & { nbVelos: number };
+
+      // Phase 1 : sélection capacité (tri par distance à l entrepôt)
+      const selected: Stop[] = [];
       let resteCamion = capaciteEffective;
       for (const c of candidats) {
         if (resteCamion <= 0) break;
         const nb = Math.min(c.velosRestants, resteCamion);
         if (nb <= 0) continue;
-        stops.push({ ...c, nbVelos: nb });
+        selected.push({ ...c, nbVelos: nb });
         resteCamion -= nb;
       }
 
+      // Phase 2 : nearest-neighbor multi-stop depuis l entrepôt
+      const ordered: Stop[] = [];
+      const remaining = [...selected];
+      let curLat = eLat;
+      let curLng = eLng;
+      while (remaining.length > 0) {
+        let bestIdx = 0;
+        let bestDist = Infinity;
+        for (let i = 0; i < remaining.length; i++) {
+          const r = remaining[i];
+          const d = haversineKmFs(curLat, curLng, r.lat, r.lng);
+          if (d < bestDist) {
+            bestDist = d;
+            bestIdx = i;
+          }
+        }
+        const next = remaining.splice(bestIdx, 1)[0];
+        ordered.push({ ...next, distance: Math.round(bestDist * 10) / 10 });
+        curLat = next.lat;
+        curLng = next.lng;
+      }
+
+      // Phase 3 : 2-opt simple (1 passe). Pour chaque paire (i, j) on regarde
+      // si reverse(i..j) raccourcit la tournée totale (distance entrepôt
+      // aller-retour incluse). Stop dès qu une amélioration est trouvée pour
+      // garder le coût O(n²) acceptable.
+      const tourLen = (arr: Stop[]) => {
+        if (arr.length === 0) return 0;
+        let total = haversineKmFs(eLat, eLng, arr[0].lat, arr[0].lng);
+        for (let i = 1; i < arr.length; i++) {
+          total += haversineKmFs(arr[i - 1].lat, arr[i - 1].lng, arr[i].lat, arr[i].lng);
+        }
+        total += haversineKmFs(arr[arr.length - 1].lat, arr[arr.length - 1].lng, eLat, eLng);
+        return total;
+      };
+      let improved = true;
+      let iter = 0;
+      while (improved && iter < 4) {
+        improved = false;
+        iter++;
+        const baseLen = tourLen(ordered);
+        for (let i = 0; i < ordered.length - 1; i++) {
+          for (let j = i + 1; j < ordered.length; j++) {
+            const candidate = [
+              ...ordered.slice(0, i),
+              ...ordered.slice(i, j + 1).reverse(),
+              ...ordered.slice(j + 1),
+            ];
+            if (tourLen(candidate) < baseLen - 0.01) {
+              ordered.splice(0, ordered.length, ...candidate);
+              improved = true;
+              break;
+            }
+          }
+          if (improved) break;
+        }
+      }
+
+      // Recalcule distances entre stops successifs après 2-opt
+      const stops: Stop[] = ordered.map((s, i) => {
+        const prevLat = i === 0 ? eLat : ordered[i - 1].lat;
+        const prevLng = i === 0 ? eLng : ordered[i - 1].lng;
+        return { ...s, distance: Math.round(haversineKmFs(prevLat, prevLng, s.lat, s.lng) * 10) / 10 };
+      });
+
       const totalVelosTournee = stops.reduce((s, x) => s + x.nbVelos, 0);
+      const distanceTotaleKm = Math.round(tourLen(stops) * 10) / 10;
       return {
         ok: true,
         entrepot: {
@@ -4035,6 +4113,7 @@ export async function runFirestoreAction(
         capaciteEffective,
         totalVelos: totalVelosTournee,
         nbStops: stops.length,
+        distanceTotaleKm,
         stops: stops.map((s) => ({
           id: s.id,
           entreprise: s.entreprise,
@@ -4042,7 +4121,7 @@ export async function runFirestoreAction(
           lat: s.lat,
           lng: s.lng,
           nbVelos: s.nbVelos,
-          distance: Math.round(s.distance * 10) / 10,
+          distance: s.distance,
           velosRestantsApres: s.velosRestants - s.nbVelos,
         })),
         candidatsHorsTournee: candidats

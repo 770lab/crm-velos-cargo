@@ -2111,6 +2111,7 @@ type SuggestionResult = {
   capaciteEffective?: number;
   totalVelos?: number;
   nbStops?: number;
+  distanceTotaleKm?: number;
   stops?: SuggestionStop[];
   candidatsHorsTournee?: Array<{ id: string; entreprise: string; ville: string; distance: number; velosRestants: number }>;
 };
@@ -2274,6 +2275,9 @@ function SuggererTourneeModal({
                 <div className="bg-emerald-50 border border-emerald-300 rounded p-3 mb-3">
                   <div className="text-sm font-bold text-emerald-900">
                     ✓ Tournée optimale : {result.nbStops} arrêts · {result.totalVelos} vélos
+                    {typeof result.distanceTotaleKm === "number" && (
+                      <span className="ml-2 text-emerald-700">· 🛣 {result.distanceTotaleKm} km total</span>
+                    )}
                   </div>
                   <div className="text-xs text-emerald-800 mt-1">
                     Capacité camion {mode} ({modeMontage}) : {result.capaciteCamion} v ·
@@ -2354,8 +2358,8 @@ function SuggererTourneeModal({
                   </div>
                 )}
                 <div className="mt-2 text-[11px] text-gray-500 italic">
-                  💡 Heuristique distance Haversine (vol d&apos;oiseau).
-                  Routing Google Maps Directions à venir.
+                  💡 Distance vol d&apos;oiseau (Haversine) + nearest-neighbor + 2-opt.
+                  Distances réelles via Google Maps Directions à venir.
                 </div>
               </>
             ) : (
