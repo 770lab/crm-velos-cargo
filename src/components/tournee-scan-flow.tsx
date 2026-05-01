@@ -732,10 +732,13 @@ function Inner({ mode }: { mode: ScanMode }) {
                 Maintenant : PhotoGeminiCapture partout, scan direct du
                 BicyCode physique du vélo, Gemini lit le FNUCI. Cohérence
                 totale, plus de bugs cartonToken / mapping faux. */}
-            {/* Toggle scannette / photo Gemini, uniquement en prep.
-                Chargement et livraison restent sur PhotoGeminiCapture
-                (le chauffeur prend la photo CEE du FNUCI sur le vélo). */}
-            {mode === "preparation" && !allDone && (
+            {/* Toggle scannette / photo Gemini, dispo sur les 3 étapes
+                (prep / chargement / livraison). Yoann 2026-05-01 : si la
+                scannette se valide à la prep, les chauffeurs auront aussi
+                la leur, donc on garde le choix toujours dispo le temps
+                de valider en terrain. Photo CEE persistée uniquement en
+                mode photo au chargement (cf. uploadChargementPhotoBestEffort). */}
+            {!allDone && (
               <div className="bg-white rounded-xl shadow p-3 mb-3 flex items-center justify-between gap-3">
                 <div className="text-xs text-gray-700">
                   <div className="font-semibold text-sm">
@@ -743,8 +746,8 @@ function Inner({ mode }: { mode: ScanMode }) {
                   </div>
                   <div className="text-gray-500">
                     {scannetteMode
-                      ? "Bipe le code-barre du carton avec la scannette."
-                      : "Prends en photo le sticker BicyCode du carton."}
+                      ? "Bipe le code-barre / QR avec la scannette."
+                      : "Prends en photo le sticker BicyCode du vélo."}
                   </div>
                 </div>
                 <button
@@ -757,11 +760,12 @@ function Inner({ mode }: { mode: ScanMode }) {
               </div>
             )}
 
-            {mode === "preparation" && scannetteMode ? (
+            {scannetteMode ? (
               <div className="bg-white rounded-xl shadow p-4 mb-3">
                 <ScannetteCapture
                   tourneeId={tourneeId}
                   userId={userId}
+                  etape={cfg.unmarkEtape}
                   onAfter={loadProgression}
                   forceClientId={focusClientId || undefined}
                   bypassOrderLock={bypassOrderLock}

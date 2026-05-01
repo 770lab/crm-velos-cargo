@@ -58,20 +58,58 @@ export type ScannetteClientOption = {
   done: number;
 };
 
+export type ScannetteEtape = "preparation" | "chargement" | "livraisonScan";
+
+const ETAPE_CONFIG: Record<
+  ScannetteEtape,
+  {
+    title: string;
+    helperText: string;
+    action: "markVeloPrepare" | "markVeloCharge" | "markVeloLivreScan";
+    pastTense: string;
+  }
+> = {
+  preparation: {
+    title: "Mode scannette — Préparation",
+    helperText: "Bipe le code-barre du carton. Chaque scan affecte le FNUCI au client courant.",
+    action: "markVeloPrepare",
+    pastTense: "préparé",
+  },
+  chargement: {
+    title: "Mode scannette — Chargement",
+    helperText: "Bipe le code-barre du carton au chargement camion. Le serveur vérifie le FNUCI déjà en base.",
+    action: "markVeloCharge",
+    pastTense: "chargé",
+  },
+  livraisonScan: {
+    title: "Mode scannette — Livraison",
+    helperText: "Bipe le QR du vélo (ou code-barre carton si encore présent) à la livraison chez le client.",
+    action: "markVeloLivreScan",
+    pastTense: "livré",
+  },
+};
+
 export default function ScannetteCapture({
   tourneeId,
   userId,
+  etape = "preparation",
   onAfter,
   forceClientId,
   bypassOrderLock = false,
 }: {
   tourneeId: string;
   userId: string | null;
+  /** Étape courante. Détermine l'action serveur appelée et le wording UI.
+   * Default "preparation" pour rétro-compat. */
+  etape?: ScannetteEtape;
   onAfter?: () => void;
-  /** Client ciblé pour assigner les FNUCI scannés. Obligatoire en prep. */
+  /** Client ciblé pour assigner les FNUCI scannés. OBLIGATOIRE en prep
+   * (assignFnuciToClient avant markVeloPrepare). Optionnel aux étapes
+   * suivantes (le FNUCI est déjà en base, le serveur résout le client). */
   forceClientId?: string;
   bypassOrderLock?: boolean;
 }) {
+  const cfg = ETAPE_CONFIG[etape];
   const inputRef = useRef<HTMLInputElement | null>(null);
   const bufferRef = useRef<string>("");
   const [feedback, setFeedback] = useState<FeedbackEntry[]>([]);
@@ -99,32 +137,38 @@ export default function ScannetteCapture({
         pushFeedback(fn || "(vide)", false, `Format invalide (attendu BC + 8 chars)`);
         return;
       }
-      if (!forceClientId) {
+      // Le client sélectionné n'est obligatoire qu'en prep (pour
+      // assignFnuciToClient). Aux étapes suivantes le serveur résout le
+      // client via le FNUCI déjà en base.
+      if (etape === "preparation" && !forceClientId) {
         beep(false);
         pushFeedback(fn, false, "Pas de client sélectionné — ouvre la prep depuis un client");
         return;
       }
       setBusy(true);
       try {
-        const a = (await gasPost("assignFnuciToClient", {
-          fnuci: fn,
-          clientId: forceClientId,
-        })) as {
-          ok?: boolean;
-          error?: string;
-          alreadySameClient?: boolean;
-          existingClientName?: string | null;
-        };
-        if (a.error && !a.alreadySameClient) {
-          beep(false);
-          pushFeedback(
-            fn,
-            false,
-            a.existingClientName ? `Déjà chez ${a.existingClientName}` : a.error,
-          );
-          return;
+        // Étape prep : assignFnuciToClient AVANT le markVeloPrepare.
+        if (etape === "preparation" && forceClientId) {
+          const a = (await gasPost("assignFnuciToClient", {
+            fnuci: fn,
+            clientId: forceClientId,
+          })) as {
+            ok?: boolean;
+            error?: string;
+            alreadySameClient?: boolean;
+            existingClientName?: string | null;
+          };
+          if (a.error && !a.alreadySameClient) {
+            beep(false);
+            pushFeedback(
+              fn,
+              false,
+              a.existingClientName ? `Déjà chez ${a.existingClientName}` : a.error,
+            );
+            return;
+          }
         }
-        const m = (await gasPost("markVeloPrepare", {
+        const m = (await gasPost(cfg.action, {
           fnuci: fn,
           tourneeId,
           userId: userId || "",
@@ -139,7 +183,11 @@ export default function ScannetteCapture({
         if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
           navigator.vibrate(40);
         }
-        pushFeedback(fn, true, `✓ ${m.clientName ? "préparé · " + m.clientName : "préparé"}`);
+        pushFeedback(
+          fn,
+          true,
+          `✓ ${m.clientName ? `${cfg.pastTense} · ${m.clientName}` : cfg.pastTense}`,
+        );
         setLastValidatedAt(Date.now());
         if (onAfter) onAfter();
       } catch (e) {
@@ -149,7 +197,7 @@ export default function ScannetteCapture({
         setBusy(false);
       }
     },
-    [forceClientId, tourneeId, userId, bypassOrderLock, onAfter, pushFeedback],
+    [etape, cfg.action, cfg.pastTense, forceClientId, tourneeId, userId, bypassOrderLock, onAfter, pushFeedback],
   );
 
   // Listener keydown global : la scannette en mode HID Bluetooth tape les
@@ -200,14 +248,9 @@ export default function ScannetteCapture({
     <div className="space-y-3">
       <div className="bg-emerald-50 border-2 border-emerald-400 rounded-xl p-3 text-center">
         <div className="text-[11px] uppercase tracking-wider text-emerald-700 font-bold">
-          📡 Mode scannette actif
+          📡 {cfg.title}
         </div>
-        <div className="text-sm text-emerald-900 mt-1">
-          Bipe les stickers BicyCode des vélos l&apos;un après l&apos;autre.
-          {forceClientId
-            ? " Chaque scan affecte le FNUCI au client courant."
-            : " ⚠ Aucun client sélectionné — la prep ciblera le 1er slot vide."}
-        </div>
+        <div className="text-sm text-emerald-900 mt-1">{cfg.helperText}</div>
         <div className="mt-2 flex justify-center gap-3 text-xs">
           <span className="text-emerald-800 font-semibold">{okCount} validés</span>
           {errCount > 0 && <span className="text-red-700 font-semibold">{errCount} erreurs</span>}
