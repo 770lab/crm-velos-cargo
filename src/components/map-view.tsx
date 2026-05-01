@@ -32,12 +32,29 @@ interface TourneeStop {
   nbVelos: number;
 }
 
+interface EntrepotPoint {
+  id: string;
+  nom: string;
+  ville: string;
+  lat: number;
+  lng: number;
+  role: "fournisseur" | "stock" | "ephemere";
+  isPrimary: boolean;
+  archived: boolean;
+  stockCartons: number;
+  stockVelosMontes: number;
+}
+
 interface MapViewProps {
   clients: ClientPoint[];
   selectedId: string | null;
   tourneeIds: Set<string>;
   tournee: TourneeStop[];
   onSelectClient: (id: string) => void;
+  entrepots?: EntrepotPoint[];
+  hideClients?: boolean;
+  selectedEntrepotId?: string | null;
+  onSelectEntrepot?: (id: string) => void;
 }
 
 function getColor(client: ClientPoint, selectedId: string | null, tourneeIds: Set<string>) {
@@ -77,6 +94,10 @@ export default function MapView({
   tourneeIds,
   tournee,
   onSelectClient,
+  entrepots = [],
+  hideClients = false,
+  selectedEntrepotId = null,
+  onSelectEntrepot,
 }: MapViewProps) {
   const routeLine: [number, number][] = tournee.map((t) => [t.lat, t.lng]);
 
@@ -103,7 +124,60 @@ export default function MapView({
         />
       )}
 
-      {clients.map((c) => {
+      {/* Markers entrepôts (Yoann 2026-05-01). Affichés en plus des
+          clients ; en mode "vue entrepôts" hideClients=true ne masque
+          que les clients (les entrepôts restent toujours visibles). */}
+      {entrepots
+        .filter((e) => !e.archived && Number.isFinite(e.lat) && Number.isFinite(e.lng))
+        .map((e) => {
+          const isSelected = e.id === selectedEntrepotId;
+          const totalDispo = e.stockCartons + e.stockVelosMontes;
+          const fillColor = e.role === "fournisseur"
+            ? "#3b82f6"
+            : e.role === "ephemere"
+              ? "#a855f7"
+              : "#16a34a";
+          return (
+            <CircleMarker
+              key={`ent-${e.id}`}
+              center={[e.lat, e.lng]}
+              radius={isSelected ? 14 : 11}
+              pathOptions={{
+                fillColor,
+                color: isSelected ? "#1d4ed8" : "#fff",
+                weight: isSelected ? 3 : 2,
+                fillOpacity: 0.95,
+              }}
+              eventHandlers={{
+                click: () => onSelectEntrepot?.(e.id),
+              }}
+            >
+              <Popup>
+                <div className="text-sm">
+                  <div className="font-bold">
+                    {e.role === "fournisseur" ? "🏭 " : e.role === "ephemere" ? "🟣 " : "📦 "}
+                    {e.nom}
+                  </div>
+                  <div className="text-gray-600">{e.ville}</div>
+                  {e.role === "fournisseur" ? (
+                    <div className="text-xs text-gray-500 mt-1 italic">
+                      Stock géré chez le fournisseur
+                    </div>
+                  ) : (
+                    <div className="mt-1 text-xs">
+                      <span className="text-orange-700">{e.stockCartons} cartons</span>
+                      {" · "}
+                      <span className="text-emerald-700">{e.stockVelosMontes} montés</span>
+                      <span className="text-gray-500"> = {totalDispo} dispo</span>
+                    </div>
+                  )}
+                </div>
+              </Popup>
+            </CircleMarker>
+          );
+        })}
+
+      {!hideClients && clients.map((c) => {
         const reste = c.nbVelos - c.velosLivres - c.velosPlanifies;
         const partielPlanifie = c.velosPlanifies > 0 && reste > 0;
         const isSelected = c.id === selectedId;

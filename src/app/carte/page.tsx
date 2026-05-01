@@ -63,6 +63,62 @@ export default function CartePage() {
   // "entrepots" = nouvelle vue avec les dépôts + leur stock pour planifier
   // les tournées en fonction du stock disponible.
   const [vue, setVue] = useState<"clients" | "entrepots">("clients");
+  // Entrepôts (Yoann 2026-05-01) : chargés une fois depuis Firestore et
+  // passés à la fois au MapView (markers) et à l'EntrepotsPanel.
+  type EntrepotMapPoint = {
+    id: string;
+    nom: string;
+    ville: string;
+    adresse: string;
+    role: "fournisseur" | "stock" | "ephemere";
+    isPrimary: boolean;
+    archived: boolean;
+    stockCartons: number;
+    stockVelosMontes: number;
+    capaciteMax: number | null;
+    groupeClient?: string | null;
+    lat: number | null;
+    lng: number | null;
+  };
+  const [entrepotsList, setEntrepotsList] = useState<EntrepotMapPoint[]>([]);
+  const [selectedEntrepotId, setSelectedEntrepotId] = useState<string | null>(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, onSnapshot } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const unsub = onSnapshot(collection(db, "entrepots"), (snap) => {
+        if (!alive) return;
+        const rows: EntrepotMapPoint[] = [];
+        for (const d of snap.docs) {
+          const data = d.data();
+          rows.push({
+            id: d.id,
+            nom: String(data.nom || ""),
+            ville: String(data.ville || ""),
+            adresse: String(data.adresse || ""),
+            role: data.role === "fournisseur" || data.role === "ephemere" ? data.role : "stock",
+            isPrimary: !!data.isPrimary,
+            archived: !!data.dateArchivage,
+            stockCartons: Number(data.stockCartons || 0),
+            stockVelosMontes: Number(data.stockVelosMontes || 0),
+            capaciteMax: typeof data.capaciteMax === "number" ? data.capaciteMax : null,
+            groupeClient: typeof data.groupeClient === "string" ? data.groupeClient : null,
+            lat: typeof data.lat === "number" ? data.lat : null,
+            lng: typeof data.lng === "number" ? data.lng : null,
+          });
+        }
+        rows.sort((a, b) => {
+          if (a.archived !== b.archived) return a.archived ? 1 : -1;
+          if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+          return a.nom.localeCompare(b.nom);
+        });
+        setEntrepotsList(rows);
+      });
+      return () => unsub();
+    })();
+    return () => { alive = false; };
+  }, []);
   // ID du camion spécifique sélectionné (pour passer la vraie capacité à
   // suggestTournee). null = bouton "type" générique sans camion précis.
   const [selectedCamionId, setSelectedCamionId] = useState<string | null>(null);
@@ -260,6 +316,26 @@ export default function CartePage() {
           tourneeIds={allTourneeIds}
           tournee={firstSplitStops}
           onSelectClient={handleSelectClient}
+          entrepots={entrepotsList
+            .filter((e) => e.lat != null && e.lng != null)
+            .map((e) => ({
+              id: e.id,
+              nom: e.nom,
+              ville: e.ville,
+              lat: e.lat as number,
+              lng: e.lng as number,
+              role: e.role,
+              isPrimary: e.isPrimary,
+              archived: e.archived,
+              stockCartons: e.stockCartons,
+              stockVelosMontes: e.stockVelosMontes,
+            }))}
+          hideClients={vue === "entrepots"}
+          selectedEntrepotId={selectedEntrepotId}
+          onSelectEntrepot={(id) => {
+            setSelectedEntrepotId(id);
+            setVue("entrepots");
+          }}
         />
       </div>
 
