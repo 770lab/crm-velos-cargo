@@ -1115,7 +1115,11 @@ export const testGemini = onCall<Record<string, never>>(
 // Secret requis : GOOGLE_MAPS_API_KEY (à set via `firebase functions:secrets:set`).
 
 type RoutingPoint = { lat?: number; lng?: number };
-type RoutingPayload = { points?: RoutingPoint[] };
+// Mode "matrix" (Yoann 2026-05-01) : pour le VRP de suggestTourneeFromEntrepot,
+// on a besoin d'une matrice NxN (toutes paires) plutôt que segments successifs.
+// 1 seul appel Distance Matrix avec origins=destinations=points → matrice
+// complète. Limite Google : 25×25 par requête (suffit largement, on a ~10 stops).
+type RoutingPayload = { points?: RoutingPoint[]; matrix?: boolean };
 type RoutingSegment = {
   distKm: number;
   trajetMin: number;
@@ -1151,6 +1155,77 @@ export const getRouting = onCall<RoutingPayload>(
     let apiCalls = 0;
     let cachedCount = 0;
     const now = Date.now();
+
+    // Mode matrix (Yoann 2026-05-01) : retourne une matrice NxN au lieu des
+    // segments successifs. Utilisé par le VRP de suggestTourneeFromEntrepot.
+    if (request.data?.matrix === true) {
+      const N = points.length;
+      if (N > 25) {
+        return {
+          ok: false,
+          error: `Matrix limitée à 25 points (reçu ${N}) — Google Maps Distance Matrix max 25x25`,
+          segments: [],
+        };
+      }
+      const distMatrix: number[][] = Array.from({ length: N }, () => new Array(N).fill(0));
+      const durMatrix: number[][] = Array.from({ length: N }, () => new Array(N).fill(0));
+
+      const origins = points.map((p) => `${p.lat},${p.lng}`).join("|");
+      const dests = origins;
+      const url =
+        `https://maps.googleapis.com/maps/api/distancematrix/json` +
+        `?origins=${origins}&destinations=${dests}` +
+        `&mode=driving&units=metric&language=fr&key=${apiKey}`;
+
+      try {
+        const resp = await fetch(url);
+        const data = (await resp.json()) as {
+          status?: string;
+          rows?: Array<{
+            elements?: Array<{
+              status?: string;
+              distance?: { value?: number };
+              duration?: { value?: number };
+            }>;
+          }>;
+          error_message?: string;
+        };
+        apiCalls = 1;
+        if (data.status !== "OK" || !data.rows) {
+          return {
+            ok: false,
+            error: `API status ${data.status}${data.error_message ? " : " + data.error_message : ""}`,
+            segments: [],
+          };
+        }
+        for (let i = 0; i < N; i++) {
+          const row = data.rows[i]?.elements || [];
+          for (let j = 0; j < N; j++) {
+            const el = row[j];
+            if (i === j) {
+              distMatrix[i][j] = 0;
+              durMatrix[i][j] = 0;
+              continue;
+            }
+            if (el?.status === "OK" && el.distance?.value != null && el.duration?.value != null) {
+              distMatrix[i][j] = Math.round(el.distance.value / 100) / 10;
+              durMatrix[i][j] = Math.round(el.duration.value / 60);
+            } else {
+              // Fallback sentinel : valeur très grande → ne sera jamais choisie
+              distMatrix[i][j] = 99999;
+              durMatrix[i][j] = 99999;
+            }
+          }
+        }
+        return { ok: true, distMatrix, durMatrix, apiCalls };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+          segments: [],
+        };
+      }
+    }
 
     for (let i = 0; i < points.length - 1; i++) {
       const p1 = points[i];

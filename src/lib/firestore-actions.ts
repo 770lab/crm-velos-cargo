@@ -3872,6 +3872,10 @@ export async function runFirestoreAction(
         | "client"
         | "atelier"
         | "client_redistribue";
+      // Yoann 2026-05-01 : si true → 1 appel Distance Matrix Maps réel après
+      // sélection capacité ; le VRP nearest-neighbor + 2-opt utilise alors la
+      // vraie matrice routière au lieu de Haversine vol d oiseau.
+      const useMaps = body.useMaps === true;
       if (!entrepotId) return { error: "entrepotId requis" };
 
       // Capacité camion : différente selon mode montage (Yoann 2026-05-01).
@@ -4028,39 +4032,69 @@ export async function runFirestoreAction(
         resteCamion -= nb;
       }
 
-      // Phase 2 : nearest-neighbor multi-stop depuis l entrepôt
-      const ordered: Stop[] = [];
-      const remaining = [...selected];
-      let curLat = eLat;
-      let curLng = eLng;
-      while (remaining.length > 0) {
-        let bestIdx = 0;
-        let bestDist = Infinity;
-        for (let i = 0; i < remaining.length; i++) {
-          const r = remaining[i];
-          const d = haversineKmFs(curLat, curLng, r.lat, r.lng);
-          if (d < bestDist) {
-            bestDist = d;
-            bestIdx = i;
+      // Phase 2 : matrice de distances. Si useMaps=true → 1 appel Distance
+      // Matrix Google avec [entrepot, ...selected] (matrice (N+1)x(N+1)).
+      // Sinon → matrice Haversine calculée localement (gratuit, instantané).
+      const N1 = selected.length + 1; // index 0 = entrepôt, 1..N = stops
+      let distM: number[][] = Array.from({ length: N1 }, () => new Array(N1).fill(0));
+      let durM: number[][] | null = null;
+      let routingSource: "haversine" | "maps" = "haversine";
+      let routingError: string | null = null;
+
+      if (useMaps && selected.length >= 1) {
+        try {
+          const pts = [{ lat: eLat, lng: eLng }, ...selected.map((s) => ({ lat: s.lat, lng: s.lng }))];
+          const callable = httpsCallable<
+            { points: Array<{ lat: number; lng: number }>; matrix: boolean },
+            { ok?: boolean; error?: string; distMatrix?: number[][]; durMatrix?: number[][]; apiCalls?: number }
+          >(functions, "getRouting");
+          const r = await callable({ points: pts, matrix: true });
+          if (r.data?.ok && r.data.distMatrix && r.data.durMatrix) {
+            distM = r.data.distMatrix;
+            durM = r.data.durMatrix;
+            routingSource = "maps";
+          } else {
+            routingError = r.data?.error || "Maps Distance Matrix indisponible";
+          }
+        } catch (e) {
+          routingError = e instanceof Error ? e.message : String(e);
+        }
+      }
+      if (routingSource === "haversine") {
+        // Construit la matrice Haversine
+        const allPts = [{ lat: eLat, lng: eLng }, ...selected.map((s) => ({ lat: s.lat, lng: s.lng }))];
+        for (let i = 0; i < N1; i++) {
+          for (let j = 0; j < N1; j++) {
+            distM[i][j] = i === j ? 0 : haversineKmFs(allPts[i].lat, allPts[i].lng, allPts[j].lat, allPts[j].lng);
           }
         }
-        const next = remaining.splice(bestIdx, 1)[0];
-        ordered.push({ ...next, distance: Math.round(bestDist * 10) / 10 });
-        curLat = next.lat;
-        curLng = next.lng;
       }
 
-      // Phase 3 : 2-opt simple (1 passe). Pour chaque paire (i, j) on regarde
-      // si reverse(i..j) raccourcit la tournée totale (distance entrepôt
-      // aller-retour incluse). Stop dès qu une amélioration est trouvée pour
-      // garder le coût O(n²) acceptable.
-      const tourLen = (arr: Stop[]) => {
-        if (arr.length === 0) return 0;
-        let total = haversineKmFs(eLat, eLng, arr[0].lat, arr[0].lng);
-        for (let i = 1; i < arr.length; i++) {
-          total += haversineKmFs(arr[i - 1].lat, arr[i - 1].lng, arr[i].lat, arr[i].lng);
+      // Phase 3 : nearest-neighbor depuis index 0 (entrepôt) avec la matrice
+      const indicesRestants: number[] = selected.map((_, idx) => idx + 1); // 1..N
+      const ordreIdx: number[] = []; // chemin en indices matrice
+      let cur = 0;
+      while (indicesRestants.length > 0) {
+        let bestK = 0;
+        let bestD = Infinity;
+        for (let k = 0; k < indicesRestants.length; k++) {
+          const idx = indicesRestants[k];
+          if (distM[cur][idx] < bestD) {
+            bestD = distM[cur][idx];
+            bestK = k;
+          }
         }
-        total += haversineKmFs(arr[arr.length - 1].lat, arr[arr.length - 1].lng, eLat, eLng);
+        const next = indicesRestants.splice(bestK, 1)[0];
+        ordreIdx.push(next);
+        cur = next;
+      }
+
+      // Phase 4 : 2-opt sur ordreIdx avec la matrice
+      const tourLenIdx = (arr: number[]) => {
+        if (arr.length === 0) return 0;
+        let total = distM[0][arr[0]];
+        for (let i = 1; i < arr.length; i++) total += distM[arr[i - 1]][arr[i]];
+        total += distM[arr[arr.length - 1]][0];
         return total;
       };
       let improved = true;
@@ -4068,33 +4102,44 @@ export async function runFirestoreAction(
       while (improved && iter < 4) {
         improved = false;
         iter++;
-        const baseLen = tourLen(ordered);
-        for (let i = 0; i < ordered.length - 1; i++) {
-          for (let j = i + 1; j < ordered.length; j++) {
+        const baseLen = tourLenIdx(ordreIdx);
+        for (let i = 0; i < ordreIdx.length - 1 && !improved; i++) {
+          for (let j = i + 1; j < ordreIdx.length; j++) {
             const candidate = [
-              ...ordered.slice(0, i),
-              ...ordered.slice(i, j + 1).reverse(),
-              ...ordered.slice(j + 1),
+              ...ordreIdx.slice(0, i),
+              ...ordreIdx.slice(i, j + 1).reverse(),
+              ...ordreIdx.slice(j + 1),
             ];
-            if (tourLen(candidate) < baseLen - 0.01) {
-              ordered.splice(0, ordered.length, ...candidate);
+            if (tourLenIdx(candidate) < baseLen - 0.01) {
+              ordreIdx.splice(0, ordreIdx.length, ...candidate);
               improved = true;
               break;
             }
           }
-          if (improved) break;
         }
       }
 
-      // Recalcule distances entre stops successifs après 2-opt
-      const stops: Stop[] = ordered.map((s, i) => {
-        const prevLat = i === 0 ? eLat : ordered[i - 1].lat;
-        const prevLng = i === 0 ? eLng : ordered[i - 1].lng;
-        return { ...s, distance: Math.round(haversineKmFs(prevLat, prevLng, s.lat, s.lng) * 10) / 10 };
+      // Construit la liste finale de stops avec distances et durées segment
+      const stops: Stop[] = ordreIdx.map((idx, i) => {
+        const stop = selected[idx - 1];
+        const prevIdx = i === 0 ? 0 : ordreIdx[i - 1];
+        return {
+          ...stop,
+          distance: Math.round(distM[prevIdx][idx] * 10) / 10,
+        };
       });
 
       const totalVelosTournee = stops.reduce((s, x) => s + x.nbVelos, 0);
-      const distanceTotaleKm = Math.round(tourLen(stops) * 10) / 10;
+      const distanceTotaleKm = Math.round(tourLenIdx(ordreIdx) * 10) / 10;
+      const dureeTotaleMin = durM
+        ? (() => {
+            if (ordreIdx.length === 0) return 0;
+            let total = durM[0][ordreIdx[0]];
+            for (let i = 1; i < ordreIdx.length; i++) total += durM[ordreIdx[i - 1]][ordreIdx[i]];
+            total += durM[ordreIdx[ordreIdx.length - 1]][0];
+            return total;
+          })()
+        : null;
       return {
         ok: true,
         entrepot: {
@@ -4114,6 +4159,9 @@ export async function runFirestoreAction(
         totalVelos: totalVelosTournee,
         nbStops: stops.length,
         distanceTotaleKm,
+        dureeTotaleMin,
+        routingSource,
+        routingError,
         stops: stops.map((s) => ({
           id: s.id,
           entreprise: s.entreprise,

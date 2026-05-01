@@ -2112,6 +2112,9 @@ type SuggestionResult = {
   totalVelos?: number;
   nbStops?: number;
   distanceTotaleKm?: number;
+  dureeTotaleMin?: number | null;
+  routingSource?: "haversine" | "maps";
+  routingError?: string | null;
   stops?: SuggestionStop[];
   candidatsHorsTournee?: Array<{ id: string; entreprise: string; ville: string; distance: number; velosRestants: number }>;
 };
@@ -2134,6 +2137,7 @@ function SuggererTourneeModal({
     stockVelosMontes > 0 ? "atelier" : "client",
   );
   const [maxDistance, setMaxDistance] = useState(50);
+  const [useMaps, setUseMaps] = useState(false);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<SuggestionResult | null>(null);
   // Création tournée (Yoann 2026-05-01) : date par défaut = aujourd'hui Paris.
@@ -2154,6 +2158,7 @@ function SuggererTourneeModal({
         mode,
         modeMontage,
         maxDistance,
+        useMaps,
       })) as SuggestionResult;
       setResult(r);
     } catch (e) {
@@ -2255,6 +2260,23 @@ function SuggererTourneeModal({
           </div>
         </div>
 
+        <label className="flex items-start gap-2 mb-3 px-1 cursor-pointer">
+          <input
+            type="checkbox"
+            checked={useMaps}
+            onChange={(e) => setUseMaps(e.target.checked)}
+            className="mt-0.5"
+          />
+          <span className="text-[11px] text-gray-700">
+            🗺 <strong>Routing Google Maps réel</strong> (distance route + durée trajet)
+            <br />
+            <span className="text-gray-500">
+              Sinon : vol d&apos;oiseau Haversine (gratuit, instantané, ±20 % moins précis).
+              Coût Maps : ~1 appel par suggestion (Distance Matrix).
+            </span>
+          </span>
+        </label>
+
         <button
           onClick={run}
           disabled={busy || stockSelectMontage <= 0}
@@ -2276,12 +2298,20 @@ function SuggererTourneeModal({
                   <div className="text-sm font-bold text-emerald-900">
                     ✓ Tournée optimale : {result.nbStops} arrêts · {result.totalVelos} vélos
                     {typeof result.distanceTotaleKm === "number" && (
-                      <span className="ml-2 text-emerald-700">· 🛣 {result.distanceTotaleKm} km total</span>
+                      <span className="ml-2 text-emerald-700">· 🛣 {result.distanceTotaleKm} km</span>
+                    )}
+                    {typeof result.dureeTotaleMin === "number" && result.dureeTotaleMin > 0 && (
+                      <span className="ml-2 text-emerald-700">· ⏱ {Math.floor(result.dureeTotaleMin / 60)}h{String(result.dureeTotaleMin % 60).padStart(2, "0")}</span>
                     )}
                   </div>
                   <div className="text-xs text-emerald-800 mt-1">
-                    Capacité camion {mode} ({modeMontage}) : {result.capaciteCamion} v ·
-                    Capacité effective (limitée par stock) : <strong>{result.capaciteEffective} v</strong>
+                    Capacité {mode} ({modeMontage}) : {result.capaciteCamion} v · Effective : <strong>{result.capaciteEffective} v</strong>
+                    {result.routingSource === "maps" && (
+                      <span className="ml-2 text-blue-700">🗺 routing Maps réel</span>
+                    )}
+                    {result.routingSource === "haversine" && useMaps && result.routingError && (
+                      <span className="ml-2 text-amber-700">⚠️ Maps KO ({result.routingError}) — fallback Haversine</span>
+                    )}
                   </div>
                 </div>
                 <div className="border rounded-lg overflow-hidden">
@@ -2358,8 +2388,7 @@ function SuggererTourneeModal({
                   </div>
                 )}
                 <div className="mt-2 text-[11px] text-gray-500 italic">
-                  💡 Distance vol d&apos;oiseau (Haversine) + nearest-neighbor + 2-opt.
-                  Distances réelles via Google Maps Directions à venir.
+                  💡 nearest-neighbor + 2-opt sur matrice {result.routingSource === "maps" ? "Google Maps Distance Matrix (route réelle)" : "Haversine (vol d'oiseau)"}.
                 </div>
               </>
             ) : (
