@@ -321,6 +321,12 @@ export default function EntrepotsPage() {
                   />
                 </div>
                 {isAdmin && (
+                  <TransformPanel
+                    entrepotId={e.id}
+                    stockCartons={e.stockCartons}
+                  />
+                )}
+                {isAdmin && (
                   <CommandeCamionPanel
                     entrepotId={e.id}
                     entrepotNom={e.nom}
@@ -402,6 +408,192 @@ type Mouvement = {
   createdAt?: Timestamp;
   createdByNom?: string;
 };
+
+// Bouton de transformation cartons -> vélos montés (Yoann 2026-05-01).
+// Le stock arrive toujours en cartons. Quand l atelier monte N vélos,
+// le bouton fait la balance auto : -N cartons + +N montés en une seule
+// transaction, avec 2 mouvements traçables (source="transformation-atelier").
+function TransformPanel({
+  entrepotId,
+  stockCartons,
+}: {
+  entrepotId: string;
+  stockCartons: number;
+}) {
+  const [showModal, setShowModal] = useState(false);
+  return (
+    <>
+      <div className="flex items-center justify-between gap-2 bg-blue-50 border border-blue-200 rounded-lg p-2">
+        <div className="text-xs text-blue-900">
+          <strong>🔧 Transformer cartons → vélos montés</strong>
+          <div className="text-[10px] text-blue-700 opacity-80">
+            -N cartons + +N vélos montés en 1 clic.
+          </div>
+        </div>
+        <button
+          onClick={() => setShowModal(true)}
+          disabled={stockCartons <= 0}
+          className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 font-semibold disabled:opacity-50"
+          title={stockCartons <= 0 ? "Aucun carton à transformer" : "Saisir N vélos montés depuis les cartons"}
+        >
+          → Monter
+        </button>
+      </div>
+      {showModal && (
+        <TransformModal
+          entrepotId={entrepotId}
+          stockCartons={stockCartons}
+          onClose={() => setShowModal(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function TransformModal({
+  entrepotId,
+  stockCartons,
+  onClose,
+}: {
+  entrepotId: string;
+  stockCartons: number;
+  onClose: () => void;
+}) {
+  const [quantite, setQuantite] = useState("");
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    const n = parseInt(quantite.replace(",", "."), 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      alert("Quantité invalide");
+      return;
+    }
+    if (n > stockCartons) {
+      alert(`Tu n'as que ${stockCartons} cartons en stock.`);
+      return;
+    }
+    setBusy(true);
+    try {
+      const { collection, addDoc, doc, setDoc, serverTimestamp } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const sharedSource = `transformation-atelier-${Date.now()}`;
+      const baseNotes = notes.trim() || `Atelier monte ${n} vélos`;
+      // 1. Mouvement -N cartons
+      await addDoc(collection(db, "entrepots", entrepotId, "mouvements"), {
+        type: "carton",
+        quantite: -n,
+        date,
+        source: sharedSource,
+        notes: `${baseNotes} (cartons -> montés)`,
+        createdAt: serverTimestamp(),
+        autoCreated: false,
+      });
+      // 2. Mouvement +N montés
+      await addDoc(collection(db, "entrepots", entrepotId, "mouvements"), {
+        type: "monte",
+        quantite: n,
+        date,
+        source: sharedSource,
+        notes: `${baseNotes} (cartons -> montés)`,
+        createdAt: serverTimestamp(),
+        autoCreated: false,
+      });
+      // 3. Update stockCartons + stockVelosMontes en 1 transaction côté client
+      const { getDoc } = await import("firebase/firestore");
+      const eRef = doc(db, "entrepots", entrepotId);
+      const cur = (await getDoc(eRef)).data() as Record<string, unknown>;
+      const newCartons = Math.max(0, Number(cur?.stockCartons || 0) - n);
+      const newMontes = Math.max(0, Number(cur?.stockVelosMontes || 0) + n);
+      await setDoc(
+        eRef,
+        {
+          stockCartons: newCartons,
+          stockVelosMontes: newMontes,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true },
+      );
+      onClose();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4"
+      onClick={onClose}
+    >
+      <div className="bg-white rounded-2xl p-5 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <h2 className="text-lg font-semibold">🔧 Transformer cartons → montés</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+        <div className="space-y-3">
+          <div className="bg-orange-50 border border-orange-200 rounded p-2 text-[11px]">
+            <strong>Stock cartons disponible : {stockCartons}</strong>
+            <br />
+            <span className="opacity-80">
+              Le bouton fera : -N cartons + +N vélos montés (balance automatique).
+              2 mouvements seront créés en source &laquo; transformation-atelier &raquo;.
+            </span>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Date</label>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">
+              Quantité de vélos montés
+              <span className="text-gray-400"> (max {stockCartons})</span>
+            </label>
+            <input
+              type="number"
+              value={quantite}
+              onChange={(e) => setQuantite(e.target.value)}
+              max={stockCartons}
+              min={1}
+              placeholder="Ex: 50"
+              className="w-full px-2 py-1.5 border rounded text-sm"
+              autoFocus
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Notes (optionnel)</label>
+            <input
+              type="text"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder='Ex: "Session matin avec 4 monteurs"'
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            />
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">
+            Annuler
+          </button>
+          <button
+            onClick={submit}
+            disabled={busy}
+            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 font-semibold"
+          >
+            {busy ? "..." : `🔧 Monter ${quantite || "N"} vélos`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function StockPanel({
   entrepotId,
