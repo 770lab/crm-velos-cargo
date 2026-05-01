@@ -2040,6 +2040,13 @@ function SuggererTourneeModal({
   const [maxDistance, setMaxDistance] = useState(50);
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<SuggestionResult | null>(null);
+  // Création tournée (Yoann 2026-05-01) : date par défaut = aujourd'hui Paris.
+  const [datePrevue, setDatePrevue] = useState(() => {
+    const d = new Date();
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  });
+  const [creating, setCreating] = useState(false);
+  const [createdInfo, setCreatedInfo] = useState<{ tourneeId: string; livraisonsCount: number } | null>(null);
 
   const run = async () => {
     setBusy(true);
@@ -2061,6 +2068,44 @@ function SuggererTourneeModal({
   };
 
   const stockSelectMontage = modeMontage === "client" ? stockCartons : stockVelosMontes;
+
+  const createTournee = async () => {
+    if (!result?.ok || !result.stops || result.stops.length === 0) return;
+    if (!datePrevue) {
+      alert("Choisis une date prévue");
+      return;
+    }
+    if (!confirm(`Créer la tournée ${result.stops.length} arrêts / ${result.totalVelos} vélos pour le ${datePrevue} ?`)) return;
+    setCreating(true);
+    try {
+      const { gasPost } = await import("@/lib/gas");
+      // mode camion → mode tournée GAS : "client" | "atelier_*" — on garde
+      // simplement le modeMontage choisi (client / atelier / client_redistribue)
+      // côté tournée pour traçabilité, et on passe entrepotOrigineId.
+      const r = (await gasPost("createTournee", {
+        datePrevue,
+        mode: modeMontage,
+        modeMontage,
+        entrepotOrigineId: entrepotId,
+        notes: `Auto-suggérée depuis entrepôt ${entrepotNom} (camion ${mode}, ${maxDistance}km max)`,
+        statut: "planifiee",
+        stops: result.stops.map((s, i) => ({
+          clientId: s.id,
+          nbVelos: s.nbVelos,
+          ordre: i + 1,
+        })),
+      })) as { ok?: boolean; tourneeId?: string; livraisonsCount?: number; error?: string };
+      if (r.error || !r.tourneeId) {
+        alert("Erreur création : " + (r.error || "inconnue"));
+      } else {
+        setCreatedInfo({ tourneeId: r.tourneeId, livraisonsCount: r.livraisonsCount || 0 });
+      }
+    } catch (e) {
+      alert("Erreur : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setCreating(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4" onClick={onClose}>
@@ -2180,11 +2225,42 @@ function SuggererTourneeModal({
                     </ul>
                   </details>
                 )}
-                <div className="mt-3 text-[11px] text-gray-500 italic">
-                  💡 Cette suggestion est une heuristique distance Haversine (vol d&apos;oiseau).
-                  Pour créer la tournée, va sur Carte & Tournées et utilise le bouton
-                  &laquo; Planifier le jour &raquo; depuis le client cible (à venir : création
-                  directe depuis ce résultat).
+                {/* Création tournée — Yoann 2026-05-01 */}
+                {createdInfo ? (
+                  <div className="mt-3 bg-emerald-100 border border-emerald-400 rounded p-3">
+                    <div className="text-sm font-bold text-emerald-900">
+                      ✓ Tournée créée : {createdInfo.livraisonsCount} livraisons planifiées le {datePrevue}
+                    </div>
+                    <a
+                      href="/livraisons"
+                      className="inline-block mt-1 text-xs text-emerald-700 underline hover:text-emerald-900"
+                    >
+                      → Voir dans Livraisons
+                    </a>
+                  </div>
+                ) : (
+                  <div className="mt-3 bg-amber-50 border border-amber-200 rounded p-3 flex items-end gap-2 flex-wrap">
+                    <div className="flex-1 min-w-[150px]">
+                      <label className="text-xs text-gray-600 block">Date prévue</label>
+                      <input
+                        type="date"
+                        value={datePrevue}
+                        onChange={(e) => setDatePrevue(e.target.value)}
+                        className="w-full px-2 py-1.5 border rounded text-sm bg-white"
+                      />
+                    </div>
+                    <button
+                      onClick={createTournee}
+                      disabled={creating}
+                      className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      {creating ? "Création..." : `✓ Créer la tournée (${result.nbStops} stops)`}
+                    </button>
+                  </div>
+                )}
+                <div className="mt-2 text-[11px] text-gray-500 italic">
+                  💡 Heuristique distance Haversine (vol d&apos;oiseau).
+                  Routing Google Maps Directions à venir.
                 </div>
               </>
             ) : (

@@ -838,11 +838,19 @@ export async function runFirestoreAction(
         }
       } catch {}
 
+      // Yoann 2026-05-01 : entrepôt source + mode montage propagés depuis
+      // SuggererTourneePanel (vue Entrepôts) — sans ça, la tournée n'a pas
+      // d'origine et la stats stock entrepôt ne se décrémente pas.
+      const entrepotOrigineId = body.entrepotOrigineId ? String(body.entrepotOrigineId) : null;
+      const modeMontage = body.modeMontage ? String(body.modeMontage) : null;
+
       const tRef = await addDoc(collection(db, "tournees"), {
         datePrevue: body.datePrevue || "",
         mode: body.mode || "",
         notes: body.notes || "",
         statut: body.statut || "planifiee",
+        entrepotOrigineId,
+        modeMontage,
         createdAt: ts(),
       });
 
@@ -914,6 +922,8 @@ export async function runFirestoreAction(
           apporteurLower: apporteurLowerLiv,
           clientSnapshot: clientSnapshotLiv,
           preparateurIds: defaultPreparateurIds.length > 0 ? [...defaultPreparateurIds] : [],
+          entrepotOrigineId,
+          modeMontage,
           statut: "planifiee",
           createdAt: ts(),
         });
