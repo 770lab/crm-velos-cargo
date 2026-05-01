@@ -8,6 +8,10 @@ import { useData } from "@/lib/data-context";
 import MultiDepSelect from "@/components/multi-dep-select";
 import DateLoadPicker, { type DayLoad } from "@/components/date-load-picker";
 import AddClientModal from "@/components/add-client-modal";
+// Yoann 2026-05-01 : suggestion depuis /carte (voir clients alentours
+// pendant la planif). Le panneau encapsule le bouton + les 2 modals
+// (suggestion 1 tournée + planificateur journée).
+import { SuggererTourneePanel } from "@/app/entrepots/page";
 
 const MapView = dynamic(() => import("@/components/map-view"), { ssr: false });
 
@@ -1426,6 +1430,19 @@ function EntrepotsPanel() {
                       style={{ width: `${Math.min(100, occPct)}%` }}
                     />
                   </div>
+                </div>
+              )}
+              {/* Yoann 2026-05-01 : suggestion + planificateur journée
+                  directement depuis la sidebar Carte, pour visualiser les
+                  clients alentours pendant la planif. */}
+              {!isFournisseur && !e.archived && total > 0 && (
+                <div className="mt-2">
+                  <SuggererTourneePanel
+                    entrepotId={e.id}
+                    entrepotNom={e.nom}
+                    stockCartons={e.stockCartons}
+                    stockVelosMontes={e.stockVelosMontes}
+                  />
                 </div>
               )}
             </div>

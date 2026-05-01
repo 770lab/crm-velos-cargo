@@ -2049,7 +2049,9 @@ function SessionAtelierModal({
 // Panel "🤖 Suggérer tournée" sur chaque card entrepôt (Yoann 2026-05-01).
 // Au clic, ouvre un modal qui appelle suggestTourneeFromEntrepot et
 // affiche les clients optimaux à livrer depuis cet entrepôt.
-function SuggererTourneePanel({
+// Exporté pour réutilisation dans /carte sidebar (Yoann 2026-05-01) — il
+// veut suggérer depuis la carte pour voir visuellement les clients alentours.
+export function SuggererTourneePanel({
   entrepotId,
   entrepotNom,
   stockCartons,
