@@ -7,6 +7,7 @@ import { useCurrentUser } from "@/lib/current-user";
 
 import { BASE_PATH } from "@/lib/base-path";
 const PhotoGeminiCapture = dynamic(() => import("@/components/photo-gemini-capture"), { ssr: false });
+const ScannetteCapture = dynamic(() => import("@/components/scannette-capture"), { ssr: false });
 const BlSignedUploader = dynamic(() => import("@/components/bl-signed-uploader"), { ssr: false });
 const QrCartonScanner = dynamic(() => import("@/components/qr-carton-scanner"), { ssr: false });
 
@@ -156,6 +157,27 @@ function Inner({ mode }: { mode: ScanMode }) {
   // où il faut livrer dans le désordre.
   const isAdminRole = currentUser?.role === "admin" || currentUser?.role === "superadmin";
   const [bypassOrderLock, setBypassOrderLock] = useState<boolean>(false);
+
+  // Mode scannette Bluetooth (Inateck BCST-72) à la prep : alternative à
+  // PhotoGeminiCapture pour 100% fiabilité FNUCI (cf. memory crm_velos_cargo
+  // _business_critique). Toggle persisté en localStorage : Yoann switche
+  // selon ce qu'il a sous la main (scannette appairée ou pas).
+  const [scannetteMode, setScannetteMode] = useState<boolean>(false);
+  useEffect(() => {
+    try {
+      const v = localStorage.getItem("scannetteMode");
+      if (v === "1") setScannetteMode(true);
+    } catch {}
+  }, []);
+  const toggleScannetteMode = useCallback(() => {
+    setScannetteMode((prev) => {
+      const next = !prev;
+      try {
+        localStorage.setItem("scannetteMode", next ? "1" : "0");
+      } catch {}
+      return next;
+    });
+  }, []);
 
   const loadProgression = useCallback(async () => {
     if (!tourneeId) return;
@@ -710,7 +732,42 @@ function Inner({ mode }: { mode: ScanMode }) {
                 Maintenant : PhotoGeminiCapture partout, scan direct du
                 BicyCode physique du vélo, Gemini lit le FNUCI. Cohérence
                 totale, plus de bugs cartonToken / mapping faux. */}
-            {(
+            {/* Toggle scannette / photo Gemini, uniquement en prep.
+                Chargement et livraison restent sur PhotoGeminiCapture
+                (le chauffeur prend la photo CEE du FNUCI sur le vélo). */}
+            {mode === "preparation" && !allDone && (
+              <div className="bg-white rounded-xl shadow p-3 mb-3 flex items-center justify-between gap-3">
+                <div className="text-xs text-gray-700">
+                  <div className="font-semibold text-sm">
+                    {scannetteMode ? "📡 Scannette Bluetooth" : "📷 Photo Gemini"}
+                  </div>
+                  <div className="text-gray-500">
+                    {scannetteMode
+                      ? "Bipe le code-barre du carton avec la scannette."
+                      : "Prends en photo le sticker BicyCode du carton."}
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={toggleScannetteMode}
+                  className="shrink-0 text-xs px-3 py-2 rounded-lg bg-gray-900 text-white font-semibold hover:bg-gray-700"
+                >
+                  {scannetteMode ? "→ Mode photo" : "→ Mode scannette"}
+                </button>
+              </div>
+            )}
+
+            {mode === "preparation" && scannetteMode ? (
+              <div className="bg-white rounded-xl shadow p-4 mb-3">
+                <ScannetteCapture
+                  tourneeId={tourneeId}
+                  userId={userId}
+                  onAfter={loadProgression}
+                  forceClientId={focusClientId || undefined}
+                  bypassOrderLock={bypassOrderLock}
+                />
+              </div>
+            ) : (
               <div className="bg-white rounded-xl shadow p-4 mb-3">
                 <PhotoGeminiCapture
                   tourneeId={tourneeId}
