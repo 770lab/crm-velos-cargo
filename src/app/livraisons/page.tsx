@@ -1,6 +1,8 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import { collection, onSnapshot } from "firebase/firestore";
+import { db } from "@/lib/firebase";
 import { gasGet, gasPost } from "@/lib/gas";
 import { useData, type LivraisonRow, type EquipeMember, type ClientPoint, type EquipeRole } from "@/lib/data-context";
 import { useCurrentUser } from "@/lib/current-user";
@@ -3023,7 +3025,15 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           // livraisonIds pour appliquer l'affectation par livraison.
           const hasRealTourneeId = tournee.livraisons.some((l) => l.tourneeId === tournee.tourneeId);
           const livIds = tournee.livraisons.map((l) => l.id);
+          const liv0 = tournee.livraisons[0];
           return (
+          <>
+          <TourneeEntrepotSelect
+            livraisonIds={livIds}
+            initialEntrepotId={liv0?.entrepotOrigineId || null}
+            initialMode={liv0?.modeMontage || null}
+            onSaved={onChanged}
+          />
           <EquipeAssignBlock
             tourneeId={hasRealTourneeId ? tournee.tourneeId : ""}
             livraisonIds={livIds}
@@ -3040,6 +3050,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             onSaved={onChanged}
             onMonteurCountChange={setMonteurs}
           />
+          </>
           );
         })()}
 
@@ -4010,6 +4021,150 @@ function groupByTournee(livraisons: LivraisonRow[]): Tournee[] {
   }
 
   return Array.from(groups.values());
+}
+
+// Sélecteur entrepôt origine + mode montage pour la tournée (Yoann
+// 2026-05-01). Mass-update toutes les livraisons de la tournée car elles
+// partagent forcément le même point de départ.
+type EntrepotMini = {
+  id: string;
+  nom: string;
+  ville: string;
+  role: "fournisseur" | "stock" | "ephemere";
+  isPrimary: boolean;
+  active: boolean;
+  archived: boolean;
+};
+function TourneeEntrepotSelect({
+  livraisonIds,
+  initialEntrepotId,
+  initialMode,
+  onSaved,
+}: {
+  livraisonIds: string[];
+  initialEntrepotId: string | null | undefined;
+  initialMode: "client" | "atelier" | "client_redistribue" | null | undefined;
+  onSaved?: () => void;
+}) {
+  const [entrepots, setEntrepots] = useState<EntrepotMini[]>([]);
+  const [entrepotId, setEntrepotId] = useState<string>(initialEntrepotId || "");
+  const [mode, setMode] = useState<"client" | "atelier" | "client_redistribue">(
+    initialMode || "client",
+  );
+  const [busy, setBusy] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "entrepots"), (snap) => {
+      const rows: EntrepotMini[] = [];
+      for (const d of snap.docs) {
+        const data = d.data();
+        rows.push({
+          id: d.id,
+          nom: String(data.nom || ""),
+          ville: String(data.ville || ""),
+          role: data.role === "fournisseur" || data.role === "ephemere" ? data.role : "stock",
+          isPrimary: !!data.isPrimary,
+          active: data.active !== false,
+          archived: !!data.dateArchivage,
+        });
+      }
+      // Tri : actifs non-archivés d'abord, primary en haut
+      rows.sort((a, b) => {
+        if (a.archived !== b.archived) return a.archived ? 1 : -1;
+        if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+        return a.nom.localeCompare(b.nom);
+      });
+      setEntrepots(rows);
+    });
+    return () => unsub();
+  }, []);
+
+  const dirty =
+    (entrepotId || null) !== (initialEntrepotId || null) ||
+    mode !== (initialMode || "client");
+
+  const save = async () => {
+    if (!livraisonIds.length) return;
+    setBusy(true);
+    try {
+      await Promise.all(
+        livraisonIds.map((id) =>
+          gasPost("updateLivraison", {
+            id,
+            data: {
+              entrepotOrigineId: entrepotId || null,
+              modeMontage: mode,
+            },
+          }),
+        ),
+      );
+      setSavedAt(Date.now());
+      if (onSaved) onSaved();
+    } catch (e) {
+      alert("Échec : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const selected = entrepots.find((e) => e.id === entrepotId);
+
+  return (
+    <div className="bg-white border rounded-lg p-3 mb-4">
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-sm font-medium text-gray-700">
+          🏬 Entrepôt origine + mode montage
+        </span>
+        {savedAt && !dirty && <span className="text-[11px] text-green-600">✓ enregistré</span>}
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Entrepôt départ tournée</label>
+          <select
+            value={entrepotId}
+            onChange={(e) => setEntrepotId(e.target.value)}
+            className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
+          >
+            <option value="">— AXDIS par défaut (héritage)</option>
+            {entrepots.map((e) => (
+              <option key={e.id} value={e.id} disabled={e.archived || !e.active}>
+                {e.isPrimary ? "🏭 " : e.role === "ephemere" ? "🟣 " : "📦 "}
+                {e.nom} ({e.ville})
+                {e.archived ? " — archivé" : !e.active ? " — inactif" : ""}
+              </option>
+            ))}
+          </select>
+          {selected && selected.role === "ephemere" && (
+            <div className="text-[11px] text-purple-700 mt-1">
+              Entrepôt éphémère : préparation + montage sur place, puis client redistribue.
+            </div>
+          )}
+        </div>
+        <div>
+          <label className="block text-xs text-gray-500 mb-1">Mode de montage</label>
+          <select
+            value={mode}
+            onChange={(e) => setMode(e.target.value as "client" | "atelier" | "client_redistribue")}
+            className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
+          >
+            <option value="client">📦 Cartons + montage chez le client (équipe complète)</option>
+            <option value="atelier">🔧 Vélos pré-assemblés atelier (chauffeur seul + chef)</option>
+            <option value="client_redistribue">🟣 Éphémère : client redistribue, chef Yoann à bord</option>
+          </select>
+        </div>
+      </div>
+      <div className="mt-3 flex justify-end">
+        <button
+          onClick={save}
+          disabled={!dirty || busy}
+          className="px-3 py-1.5 text-xs font-medium rounded-lg disabled:opacity-50 bg-blue-600 text-white hover:bg-blue-700"
+        >
+          {busy ? "Enregistrement…" : "Enregistrer"}
+        </button>
+      </div>
+    </div>
+  );
 }
 
 function EquipeAssignBlock({

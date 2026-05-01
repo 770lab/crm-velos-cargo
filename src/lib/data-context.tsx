@@ -137,6 +137,16 @@ interface LivraisonRow {
    *  Cloud Function sendPreparationCsv après envoi SMTP réussi. */
   csvAxdisSentAt?: string | null;
   csvAxdisSentTo?: string | null;
+  /** Entrepôt d'origine de la tournée (Yoann 2026-05-01). Détermine d'où
+   *  partent les vélos chargés. Quand null/undefined → AXDIS par défaut.
+   *  Posé sur TOUTES les livraisons de la tournée (mass update). Sert
+   *  à l'auto-décrément du stock de cet entrepôt à chaque markVeloCharge. */
+  entrepotOrigineId?: string | null;
+  /** Mode de montage : "client" (cartons livrés, montés chez client par
+   *  monteurs Yoann), "atelier" (vélos montés à l'avance puis livrés),
+   *  "client_redistribue" (entrepôt éphémère : client redistribue lui-même
+   *  vers ses magasins, chef Yoann l'accompagne). Par défaut "client". */
+  modeMontage?: "client" | "atelier" | "client_redistribue" | null;
   /** Toggles workflow opérationnel (Yoann 2026-05-01) : checkboxes que
    *  l'opérateur clique manuellement pour traquer son avancement.
    *  - dossierConfirme : bureau a vérifié docs CEE complets, clic explicite
