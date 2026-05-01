@@ -1119,7 +1119,11 @@ type RoutingPoint = { lat?: number; lng?: number };
 // on a besoin d'une matrice NxN (toutes paires) plutôt que segments successifs.
 // 1 seul appel Distance Matrix avec origins=destinations=points → matrice
 // complète. Limite Google : 25×25 par requête (suffit largement, on a ~10 stops).
-type RoutingPayload = { points?: RoutingPoint[]; matrix?: boolean };
+//
+// Mode "directions" (Yoann 2026-05-01 — Phase 1.3) : appelle Directions API
+// avec waypoints pour récupérer overview_polyline.points (encodé Google).
+// Affiché sur la carte Leaflet (vraie route au lieu de ligne droite).
+type RoutingPayload = { points?: RoutingPoint[]; matrix?: boolean; directions?: boolean };
 type RoutingSegment = {
   distKm: number;
   trajetMin: number;
@@ -1155,6 +1159,61 @@ export const getRouting = onCall<RoutingPayload>(
     let apiCalls = 0;
     let cachedCount = 0;
     const now = Date.now();
+
+    // Mode directions (Yoann 2026-05-01 — Phase 1.3) : 1 appel Directions API
+    // avec waypoints → polyline encodée Google pour affichage carte Leaflet.
+    if (request.data?.directions === true) {
+      if (points.length < 2) {
+        return { ok: false, error: "Au moins 2 points requis", polylineEncoded: "" };
+      }
+      const origin = `${points[0].lat},${points[0].lng}`;
+      const destination = `${points[points.length - 1].lat},${points[points.length - 1].lng}`;
+      const waypoints = points.slice(1, -1).map((p) => `${p.lat},${p.lng}`).join("|");
+      const url =
+        `https://maps.googleapis.com/maps/api/directions/json` +
+        `?origin=${origin}&destination=${destination}` +
+        (waypoints ? `&waypoints=${waypoints}` : "") +
+        `&mode=driving&language=fr&key=${apiKey}`;
+      try {
+        const resp = await fetch(url);
+        const data = (await resp.json()) as {
+          status?: string;
+          routes?: Array<{
+            overview_polyline?: { points?: string };
+            legs?: Array<{ distance?: { value?: number }; duration?: { value?: number } }>;
+          }>;
+          error_message?: string;
+        };
+        if (data.status !== "OK" || !data.routes || data.routes.length === 0) {
+          return {
+            ok: false,
+            error: `Directions API status ${data.status}${data.error_message ? " : " + data.error_message : ""}`,
+            polylineEncoded: "",
+          };
+        }
+        const route = data.routes[0];
+        const polylineEncoded = route.overview_polyline?.points || "";
+        let totalDistKm = 0;
+        let totalDurMin = 0;
+        for (const leg of route.legs || []) {
+          if (leg.distance?.value) totalDistKm += leg.distance.value / 1000;
+          if (leg.duration?.value) totalDurMin += leg.duration.value / 60;
+        }
+        return {
+          ok: true,
+          polylineEncoded,
+          distKm: Math.round(totalDistKm * 10) / 10,
+          dureeMin: Math.round(totalDurMin),
+          apiCalls: 1,
+        };
+      } catch (err) {
+        return {
+          ok: false,
+          error: err instanceof Error ? err.message : String(err),
+          polylineEncoded: "",
+        };
+      }
+    }
 
     // Mode matrix (Yoann 2026-05-01) : retourne une matrice NxN au lieu des
     // segments successifs. Utilisé par le VRP de suggestTourneeFromEntrepot.

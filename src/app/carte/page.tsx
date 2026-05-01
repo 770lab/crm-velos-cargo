@@ -302,6 +302,31 @@ export default function CartePage() {
   // Pour la polyline (route map), on prend la 1ère tournée par défaut
   const firstSplitStops = tournee?.splits?.[0]?.stops ?? tournee?.tournee ?? [];
 
+  // Yoann 2026-05-01 — Phase 1.3 : fetch polyline Google Maps Directions
+  // pour afficher la VRAIE route sur la carte (au lieu de la ligne droite
+  // vol d oiseau). Refetch quand firstSplitStops change. Best-effort : si
+  // Maps KO, fallback transparent vers ligne droite.
+  const [routePolyline, setRoutePolyline] = useState<string | null>(null);
+  useEffect(() => {
+    if (!firstSplitStops || firstSplitStops.length < 2) {
+      setRoutePolyline(null);
+      return;
+    }
+    let alive = true;
+    (async () => {
+      try {
+        const r = (await gasPost("getRouting", {
+          points: firstSplitStops.map((s) => ({ lat: s.lat, lng: s.lng })),
+          directions: true,
+        })) as { ok?: boolean; polylineEncoded?: string };
+        if (alive) setRoutePolyline(r.ok && r.polylineEncoded ? r.polylineEncoded : null);
+      } catch {
+        if (alive) setRoutePolyline(null);
+      }
+    })();
+    return () => { alive = false; };
+  }, [firstSplitStops]);
+
   return (
     <div className="flex flex-col h-[calc(100vh-5rem)] lg:h-[calc(100vh-4rem)]">
       {/* Dashboard bandeau */}
@@ -362,6 +387,7 @@ export default function CartePage() {
           selectedId={selected}
           tourneeIds={allTourneeIds}
           tournee={firstSplitStops}
+          routePolylineEncoded={routePolyline}
           onSelectClient={handleSelectClient}
           entrepots={entrepotsList
             .filter((e) => e.lat != null && e.lng != null)

@@ -55,6 +55,39 @@ interface MapViewProps {
   hideClients?: boolean;
   selectedEntrepotId?: string | null;
   onSelectEntrepot?: (id: string) => void;
+  // Yoann 2026-05-01 — Phase 1.3 : si fournie, polyline encodée Google Maps
+  // (Directions API) affichée à la place de la ligne droite vol d oiseau.
+  routePolylineEncoded?: string | null;
+}
+
+// Décodeur polyline Google (algorithme Polyline Algorithm Format).
+// Inline pour éviter une dépendance npm. Cf. developers.google.com/maps/documentation/utilities/polylinealgorithm
+function decodePolyline(encoded: string): [number, number][] {
+  const points: [number, number][] = [];
+  let index = 0;
+  let lat = 0;
+  let lng = 0;
+  while (index < encoded.length) {
+    let b: number;
+    let shift = 0;
+    let result = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    lat += (result & 1) ? ~(result >> 1) : (result >> 1);
+    shift = 0;
+    result = 0;
+    do {
+      b = encoded.charCodeAt(index++) - 63;
+      result |= (b & 0x1f) << shift;
+      shift += 5;
+    } while (b >= 0x20);
+    lng += (result & 1) ? ~(result >> 1) : (result >> 1);
+    points.push([lat / 1e5, lng / 1e5]);
+  }
+  return points;
 }
 
 function getColor(client: ClientPoint, selectedId: string | null, tourneeIds: Set<string>) {
@@ -98,8 +131,12 @@ export default function MapView({
   hideClients = false,
   selectedEntrepotId = null,
   onSelectEntrepot,
+  routePolylineEncoded = null,
 }: MapViewProps) {
-  const routeLine: [number, number][] = tournee.map((t) => [t.lat, t.lng]);
+  // Si polyline Maps fournie → vraie route. Sinon → ligne droite waypoint-to-waypoint.
+  const routeLine: [number, number][] = routePolylineEncoded
+    ? decodePolyline(routePolylineEncoded)
+    : tournee.map((t) => [t.lat, t.lng]);
 
   return (
     <MapContainer
