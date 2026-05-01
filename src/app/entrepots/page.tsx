@@ -749,6 +749,13 @@ function CommandeCamionModal({
       alert("Quantité invalide");
       return;
     }
+    if (q < 50) {
+      alert(
+        "Minimum AXDIS = 5 palettes = 50 vélos.\n\n" +
+          "En dessous Tiffany ne peut pas affréter un camion dédié.",
+      );
+      return;
+    }
     setBusy(true);
     try {
       // 1. Compteur global incrémental.
@@ -786,14 +793,16 @@ function CommandeCamionModal({
         ? `Livraison souhaitée : ${dateLivraisonSouhaitee}\n`
         : "";
       const notesLine = notes.trim() ? `\nNotes : ${notes.trim()}\n` : "";
+      const palettes = Math.ceil(q / 10); // 1 palette ≈ 10 vélos
       const body = encodeURIComponent(
         `Bonjour Tiffany,\n\n` +
-          `Merci de préparer un camion complet de ${q} vélos cargo pour livraison à :\n\n` +
+          `Merci de préparer ${q} vélos cargo (${palettes} palette${palettes > 1 ? "s" : ""}) pour livraison à :\n\n` +
           `${entrepotNom}\n${entrepotAdresse}\n\n` +
           livraisonLine +
           `Référence à reporter sur le bon de commande : ${reference}\n` +
           notesLine +
-          `\nCordialement,\n${user?.nom || "Yoann"}`,
+          `\nSi pas de place disponible pour la quantité demandée, merci de me dire combien tu peux mettre en envoi (minimum 5 palettes = 50 vélos pour rentabiliser le camion).\n\n` +
+          `Cordialement,\n${user?.nom || "Yoann"}`,
       );
       window.open(`mailto:${TIFFANY_EMAIL}?subject=${subject}&body=${body}`, "_blank");
       onClose();
@@ -836,11 +845,17 @@ function CommandeCamionModal({
               type="number"
               value={quantite}
               onChange={(e) => setQuantite(e.target.value)}
+              min={50}
+              step={10}
               className="w-full px-2 py-1.5 border rounded text-sm"
               placeholder="132 (camion PL standard)"
             />
-            <div className="text-[10px] text-gray-500 mt-0.5">
-              132 = 1 camion poids lourd · 528 = 4 PL livraison directe usine
+            <div className="text-[10px] text-gray-500 mt-0.5 leading-tight">
+              <strong>Minimum 5 palettes = 50 vélos</strong> · 132 = 1 PL standard
+              · 528 = 4 PL livraison directe usine.
+              <br />
+              1 palette ≈ 10 vélos. Tiffany peut renvoyer une quantité réduite si
+              pas de place — l&apos;email l&apos;invite à proposer un ajustement.
             </div>
           </div>
           <div>
