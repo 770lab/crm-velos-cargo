@@ -21,6 +21,8 @@ import { useCurrentUser } from "@/lib/current-user";
 // avec boutons +/-). Auto-décrément/incrément à venir avec markVeloCharge
 // + bons d'enlèvement.
 
+type EntrepotRole = "fournisseur" | "stock" | "ephemere";
+
 type Entrepot = {
   id: string;
   slug: string;
@@ -31,14 +33,28 @@ type Entrepot = {
   lat?: number | null;
   lng?: number | null;
   isPrimary: boolean;
-  role: "fournisseur" | "stock";
+  role: EntrepotRole;
   notes?: string;
   stockCartons: number;
   stockVelosMontes: number;
   capaciteMax?: number | null;
   active: boolean;
+  // Champs spécifiques rôle "ephemere" (entrepôt client temporaire) :
+  // entrepôt monté chez un client tête de groupe (ex Firat Food Roissy)
+  // qui sert de point de départ pour livrer toute la chaîne du groupe.
+  // S'archive quand le stock atteint 0 et qu'on a fini les livraisons.
+  groupeClient?: string; // ex: "Firat Food", "L'Africa"
+  clientPrincipalId?: string; // ID Firestore du client tête de groupe
+  dateCreation?: string; // YYYY-MM-DD, posée à la livraison du camion complet
+  dateArchivage?: string | null; // YYYY-MM-DD, posée quand stock vidé
   createdAt?: Timestamp;
   updatedAt?: Timestamp;
+};
+
+const ROLE_LABELS: Record<EntrepotRole, { label: string; badge: string; color: string }> = {
+  fournisseur: { label: "Fournisseur (cartons reçus)", badge: "SOURCE", color: "bg-blue-100 text-blue-800" },
+  stock: { label: "Stock vélos montés (atelier permanent)", badge: "STOCK MONTÉ", color: "bg-emerald-100 text-emerald-800" },
+  ephemere: { label: "Entrepôt éphémère (chez client tête de groupe)", badge: "ÉPHÉMÈRE", color: "bg-purple-100 text-purple-800" },
 };
 
 const fmt = (n: number) => new Intl.NumberFormat("fr-FR").format(n || 0);
@@ -73,17 +89,32 @@ export default function EntrepotsPage() {
           lat: typeof data.lat === "number" ? data.lat : null,
           lng: typeof data.lng === "number" ? data.lng : null,
           isPrimary: !!data.isPrimary,
-          role: data.role === "fournisseur" ? "fournisseur" : "stock",
+          role:
+            data.role === "fournisseur" || data.role === "ephemere"
+              ? data.role
+              : "stock",
           notes: typeof data.notes === "string" ? data.notes : undefined,
           stockCartons: Number(data.stockCartons || 0),
           stockVelosMontes: Number(data.stockVelosMontes || 0),
           capaciteMax: typeof data.capaciteMax === "number" ? data.capaciteMax : null,
           active: data.active !== false,
+          groupeClient: typeof data.groupeClient === "string" ? data.groupeClient : undefined,
+          clientPrincipalId:
+            typeof data.clientPrincipalId === "string" ? data.clientPrincipalId : undefined,
+          dateCreation: typeof data.dateCreation === "string" ? data.dateCreation : undefined,
+          dateArchivage:
+            typeof data.dateArchivage === "string" ? data.dateArchivage : null,
         });
       }
-      // Tri : primary en haut, puis alpha
+      // Tri : archivés tout en bas, puis primary, puis stock permanent,
+      // puis éphémères actifs (en cours), enfin alpha.
+      const roleWeight: Record<EntrepotRole, number> = { fournisseur: 0, stock: 1, ephemere: 2 };
       rows.sort((a, b) => {
+        const aArch = !!a.dateArchivage;
+        const bArch = !!b.dateArchivage;
+        if (aArch !== bArch) return aArch ? 1 : -1;
         if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+        if (roleWeight[a.role] !== roleWeight[b.role]) return roleWeight[a.role] - roleWeight[b.role];
         return a.nom.localeCompare(b.nom);
       });
       setEntrepots(rows);
@@ -112,6 +143,26 @@ export default function EntrepotsPage() {
     }
     if (!confirm(`Supprimer définitivement l'entrepôt « ${e.nom} » ?`)) return;
     await deleteDoc(doc(db, "entrepots", e.id));
+  };
+
+  const archiveEntrepot = async (e: Entrepot) => {
+    const today = new Date().toISOString().slice(0, 10);
+    if (e.stockCartons + e.stockVelosMontes > 0) {
+      if (!confirm(`Stock non vide (${e.stockCartons} cartons + ${e.stockVelosMontes} montés). Archiver quand même ?`)) return;
+    }
+    await setDoc(
+      doc(db, "entrepots", e.id),
+      { dateArchivage: today, active: false, updatedAt: serverTimestamp() },
+      { merge: true },
+    );
+  };
+
+  const unarchiveEntrepot = async (e: Entrepot) => {
+    await setDoc(
+      doc(db, "entrepots", e.id),
+      { dateArchivage: null, active: true, updatedAt: serverTimestamp() },
+      { merge: true },
+    );
   };
 
   const totalCartons = entrepots.reduce((s, e) => s + e.stockCartons, 0);
@@ -163,30 +214,46 @@ export default function EntrepotsPage() {
       {/* Cartes entrepôts */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {entrepots.map((e) => (
-          <div key={e.id} className={`bg-white rounded-xl border-2 p-4 ${e.isPrimary ? "border-blue-300 bg-blue-50/30" : "border-gray-200"}`}>
+          <div key={e.id} className={`bg-white rounded-xl border-2 p-4 ${
+            e.dateArchivage ? "border-gray-200 opacity-60"
+            : e.isPrimary ? "border-blue-300 bg-blue-50/30"
+            : e.role === "ephemere" ? "border-purple-300 bg-purple-50/30"
+            : "border-gray-200"
+          }`}>
             <div className="flex items-start justify-between gap-2 mb-3">
               <div>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <h2 className="text-lg font-bold">{e.nom}</h2>
                   {e.isPrimary && (
                     <span className="text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-800 rounded font-semibold">
-                      SOURCE
+                      {ROLE_LABELS.fournisseur.badge}
                     </span>
                   )}
-                  {e.role === "stock" && (
-                    <span className="text-[10px] px-1.5 py-0.5 bg-emerald-100 text-emerald-800 rounded font-semibold">
-                      STOCK MONTÉ
+                  {!e.isPrimary && (
+                    <span className={`text-[10px] px-1.5 py-0.5 rounded font-semibold ${ROLE_LABELS[e.role].color}`}>
+                      {ROLE_LABELS[e.role].badge}
                     </span>
                   )}
-                  {!e.active && (
+                  {!e.active && !e.dateArchivage && (
                     <span className="text-[10px] px-1.5 py-0.5 bg-gray-200 text-gray-600 rounded font-semibold">
                       INACTIF
+                    </span>
+                  )}
+                  {e.dateArchivage && (
+                    <span className="text-[10px] px-1.5 py-0.5 bg-gray-300 text-gray-700 rounded font-semibold">
+                      ARCHIVÉ {e.dateArchivage}
                     </span>
                   )}
                 </div>
                 <div className="text-xs text-gray-600 mt-1">
                   {e.adresse}, {e.codePostal} {e.ville}
                 </div>
+                {e.role === "ephemere" && (e.groupeClient || e.dateCreation) && (
+                  <div className="text-[11px] text-purple-700 mt-0.5 font-medium">
+                    {e.groupeClient && <>👥 Groupe : {e.groupeClient}</>}
+                    {e.dateCreation && <> · ouvert le {e.dateCreation}</>}
+                  </div>
+                )}
                 {e.notes && <div className="text-[11px] text-gray-500 mt-1 italic">{e.notes}</div>}
               </div>
               {isAdmin && (
@@ -198,11 +265,30 @@ export default function EntrepotsPage() {
                   >
                     ✏️
                   </button>
+                  {/* Archive/réouverture rapide pour les éphémères */}
+                  {e.role === "ephemere" && !e.dateArchivage && (
+                    <button
+                      onClick={() => archiveEntrepot(e)}
+                      className="text-xs px-2 py-1 bg-purple-100 hover:bg-purple-200 text-purple-800 rounded"
+                      title="Archiver l'entrepôt éphémère (à faire quand stock vidé + livraisons groupe terminées)"
+                    >
+                      📦 Archiver
+                    </button>
+                  )}
+                  {e.role === "ephemere" && e.dateArchivage && (
+                    <button
+                      onClick={() => unarchiveEntrepot(e)}
+                      className="text-xs px-2 py-1 bg-gray-100 hover:bg-gray-200 rounded"
+                      title="Rouvrir l'entrepôt éphémère"
+                    >
+                      ↺
+                    </button>
+                  )}
                   {!e.isPrimary && (
                     <button
                       onClick={() => removeEntrepot(e)}
                       className="text-xs px-2 py-1 bg-red-100 hover:bg-red-200 text-red-700 rounded"
-                      title="Supprimer"
+                      title="Supprimer définitivement"
                     >
                       🗑
                     </button>
@@ -356,12 +442,16 @@ function EntrepotModal({
   const [adresse, setAdresse] = useState(entrepot?.adresse || "");
   const [codePostal, setCodePostal] = useState(entrepot?.codePostal || "");
   const [ville, setVille] = useState(entrepot?.ville || "");
-  const [role, setRole] = useState<"fournisseur" | "stock">(entrepot?.role || "stock");
+  const [role, setRole] = useState<EntrepotRole>(entrepot?.role || "stock");
   const [notes, setNotes] = useState(entrepot?.notes || "");
   const [capaciteMax, setCapaciteMax] = useState<string>(
     entrepot?.capaciteMax ? String(entrepot.capaciteMax) : "",
   );
   const [active, setActive] = useState(entrepot?.active !== false);
+  const [groupeClient, setGroupeClient] = useState(entrepot?.groupeClient || "");
+  const [dateCreation, setDateCreation] = useState(
+    entrepot?.dateCreation || new Date().toISOString().slice(0, 10),
+  );
   const [busy, setBusy] = useState(false);
 
   const submit = async () => {
@@ -371,7 +461,7 @@ function EntrepotModal({
     }
     setBusy(true);
     try {
-      const data = {
+      const data: Record<string, unknown> = {
         slug: entrepot?.slug || slugify(nom),
         nom: nom.trim(),
         adresse: adresse.trim(),
@@ -382,15 +472,21 @@ function EntrepotModal({
         capaciteMax: capaciteMax ? parseInt(capaciteMax, 10) : null,
         active,
         updatedAt: serverTimestamp(),
-        ...(isNew
-          ? {
-              isPrimary: false,
-              stockCartons: 0,
-              stockVelosMontes: 0,
-              createdAt: serverTimestamp(),
-            }
-          : {}),
       };
+      if (role === "ephemere") {
+        data.groupeClient = groupeClient.trim() || null;
+        data.dateCreation = dateCreation || null;
+      } else {
+        data.groupeClient = null;
+        data.dateCreation = null;
+      }
+      if (isNew) {
+        data.isPrimary = false;
+        data.stockCartons = 0;
+        data.stockVelosMontes = 0;
+        data.dateArchivage = null;
+        data.createdAt = serverTimestamp();
+      }
       if (isNew) {
         const ref = doc(collection(db, "entrepots"));
         await setDoc(ref, data);
@@ -467,13 +563,43 @@ function EntrepotModal({
             <label className="text-xs text-gray-600">Rôle</label>
             <select
               value={role}
-              onChange={(e) => setRole(e.target.value as "fournisseur" | "stock")}
+              onChange={(e) => setRole(e.target.value as EntrepotRole)}
               className="w-full px-2 py-1.5 border rounded text-sm"
             >
-              <option value="stock">Stock vélos montés (post-atelier)</option>
+              <option value="stock">Stock vélos montés (atelier permanent)</option>
               <option value="fournisseur">Fournisseur (cartons reçus)</option>
+              <option value="ephemere">Éphémère (chez client tête de groupe)</option>
             </select>
           </div>
+          {role === "ephemere" && (
+            <div className="bg-purple-50 border border-purple-200 rounded p-2 space-y-2">
+              <div className="text-[11px] text-purple-800">
+                💡 Entrepôt temporaire monté chez un client tête de groupe
+                (ex : Firat Food Roissy → tous les magasins du groupe).
+                Sert de point de départ alternatif. À archiver quand le
+                stock est vidé et la chaîne livrée.
+              </div>
+              <div>
+                <label className="text-xs text-gray-600">Nom du groupe / chaîne</label>
+                <input
+                  type="text"
+                  value={groupeClient}
+                  onChange={(e) => setGroupeClient(e.target.value)}
+                  placeholder="Ex: Firat Food, L'Africa, …"
+                  className="w-full px-2 py-1.5 border rounded text-sm"
+                />
+              </div>
+              <div>
+                <label className="text-xs text-gray-600">Date d&apos;ouverture (livraison du camion complet)</label>
+                <input
+                  type="date"
+                  value={dateCreation}
+                  onChange={(e) => setDateCreation(e.target.value)}
+                  className="w-full px-2 py-1.5 border rounded text-sm"
+                />
+              </div>
+            </div>
+          )}
           <div>
             <label className="text-xs text-gray-600">Capacité max (vélos, optionnel)</label>
             <input
