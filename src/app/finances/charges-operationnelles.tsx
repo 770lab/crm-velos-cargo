@@ -91,17 +91,30 @@ function monthBoundsISO(dateISO: string): { start: string; end: string } {
 }
 function maxISO(a: string, b: string): string { return a > b ? a : b; }
 function minISO(a: string, b: string): string { return a < b ? a : b; }
-/** Coût d'un frais sur une période donnée, en respectant la fréquence. */
+
+// Référence comptable Yoann 2026-05-01 : un mois standard = 25 jours
+// ouvrés (utilisé partout pour calculer le prix journalier d'un contrat
+// mensuel). Plus stable que d'utiliser le nombre exact de jours ouvrés
+// du mois en question (varie 20-23) — et c'est la convention métier
+// pour une location camion / abonnement.
+const JOURS_OUVRES_MOIS_STANDARD = 25;
+
+/** Coût d'un frais sur une période donnée, en respectant la fréquence.
+ *  Mensuel = montantHT / 25 jours × jours ouvrés intersectés AVEC la
+ *  date de début de la frais (= date de prise du contrat). Un camion
+ *  loué le 29/04 ne coûte rien sur les jours d'avril avant le 29. */
 function fraisProrataOnPeriod(f: Frais, periodFrom: string, periodTo: string): number {
   if (f.frequence !== "mensuel") return f.montantHT;
-  const { start: monthStart, end: monthEnd } = monthBoundsISO(f.date);
-  const monthDays = workingDaysInRange(monthStart, monthEnd);
-  if (monthDays === 0) return 0;
-  const interStart = maxISO(periodFrom, monthStart);
+  const dailyCost = f.montantHT / JOURS_OUVRES_MOIS_STANDARD;
+  const { end: monthEnd } = monthBoundsISO(f.date);
+  // Le contrat démarre à la date de la frais (pas au 1er du mois) et
+  // s'arrête en fin de mois (pour le mois en question — frais récurrente
+  // = nouveau doc le mois suivant).
+  const interStart = maxISO(periodFrom, f.date);
   const interEnd = minISO(periodTo, monthEnd);
   if (interEnd < interStart) return 0;
   const interDays = workingDaysInRange(interStart, interEnd);
-  return (f.montantHT / monthDays) * interDays;
+  return dailyCost * interDays;
 }
 
 type BonRow = {
@@ -513,11 +526,7 @@ export function ChargesOperationnellesSection({
                 const c = CATEGORIES_FRAIS[f.categorie];
                 const isMensuel = f.frequence === "mensuel";
                 const prorata = isMensuel ? fraisProrataOnPeriod(f, from, to) : f.montantHT;
-                const monthBounds = isMensuel ? monthBoundsISO(f.date) : null;
-                const monthDays = monthBounds
-                  ? workingDaysInRange(monthBounds.start, monthBounds.end)
-                  : 0;
-                const dailyRate = monthDays > 0 ? f.montantHT / monthDays : 0;
+                const dailyRate = isMensuel ? f.montantHT / JOURS_OUVRES_MOIS_STANDARD : 0;
                 return (
                   <tr key={f.id} className="hover:bg-gray-50">
                     <td className="px-3 py-1.5 whitespace-nowrap">{f.date}</td>
@@ -551,7 +560,11 @@ export function ChargesOperationnellesSection({
                       })()}
                       {isMensuel && (
                         <div className="text-[10px] text-indigo-700 mt-0.5">
-                          📆 Mensuel · lissé sur {monthDays} jours ouvrés ({fmt(dailyRate)}/jour)
+                          📆 Mensuel · {fmt(f.montantHT)} / {JOURS_OUVRES_MOIS_STANDARD} jours
+                          = <strong>{fmt(dailyRate)}/jour ouvré</strong>
+                          <span className="text-indigo-500 ml-1">
+                            (compté à partir du {f.date})
+                          </span>
                         </div>
                       )}
                     </td>
@@ -712,10 +725,12 @@ function AddFraisModal({ onClose }: { onClose: () => void }) {
               className="mt-0.5"
             />
             <span>
-              <strong>📆 Mensuel</strong> — lisser sur les jours ouvrés du mois
+              <strong>📆 Mensuel</strong> — coût lissé sur 25 jours ouvrés
               <div className="text-[10px] text-gray-500 mt-0.5">
-                Pour location, abonnement, assurance… Le coût sera prorata des
-                jours ouvrés (Lun-Ven) intersection période sélectionnée.
+                Pour location, abonnement, assurance… Référence comptable
+                <strong> 25 jours ouvrés / mois</strong>. Le coût compte à
+                partir de la date saisie (date de prise du contrat) jusqu&apos;à
+                la fin du mois. Ex : 3000 € / 25 = 120 €/jour ouvré.
               </div>
             </span>
           </label>
