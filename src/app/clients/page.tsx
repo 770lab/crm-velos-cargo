@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { gasGet, gasPost, gasUpload } from "@/lib/gas";
 import { useData, type ClientRow } from "@/lib/data-context";
@@ -26,6 +26,10 @@ export default function ClientsPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [editVelos, setEditVelos] = useState<ClientRow | null>(null);
+  // Modal liste FNUCI client (Yoann 2026-05-01) — accès rapide depuis la
+  // page Clients sans avoir à passer par le modal de tournée. Charge les
+  // vélos directement depuis Firestore.
+  const [fnuciClient, setFnuciClient] = useState<{ id: string; entreprise: string } | null>(null);
   const [autoParcellesBusy, setAutoParcellesBusy] = useState(false);
 
   const runAutoParcelles = async () => {
@@ -432,7 +436,15 @@ export default function ClientsPage() {
                   {(() => { const w = liasseWarning(c); return <DocCell ok={c.attestationRecue} lien={c.attestationLien ?? null} clientId={c.id} docType="attestationRecue" onChange={() => refresh("clients")} warning={w.warn} warningTitle={w.title} />; })()}
                 </td>
                 <td className="text-center px-4 py-3">
-                  <LivresDot livres={c.stats.livres} total={c.stats.totalVelos} planifies={c.stats.planifies ?? 0} />
+                  <button
+                    type="button"
+                    onClick={() => setFnuciClient({ id: c.id, entreprise: c.entreprise || "?" })}
+                    className="hover:bg-blue-50 rounded px-1 py-0.5 group"
+                    title="Voir la liste des FNUCI de ce client"
+                  >
+                    <LivresDot livres={c.stats.livres} total={c.stats.totalVelos} planifies={c.stats.planifies ?? 0} />
+                    <span className="ml-1 text-[10px] opacity-30 group-hover:opacity-100">📋</span>
+                  </button>
                 </td>
                 <td className="text-center px-4 py-3">
                   <BlSigneDot signes={c.stats.blSignes ?? 0} totalLivrees={c.stats.totalLivraisonsLivrees ?? 0} />
@@ -519,6 +531,209 @@ export default function ClientsPage() {
           onClose={() => setMailClient(null)}
         />
       )}
+      {fnuciClient && (
+        <FnuciClientModal
+          clientId={fnuciClient.id}
+          entreprise={fnuciClient.entreprise}
+          onClose={() => setFnuciClient(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Modal liste FNUCI vu depuis la page Clients (Yoann 2026-05-01).
+// Charge les vélos directement depuis Firestore (pas via progression
+// tournée). Permet copie CSV pour Tiffany / COFRAC sans naviguer.
+function FnuciClientModal({
+  clientId,
+  entreprise,
+  onClose,
+}: {
+  clientId: string;
+  entreprise: string;
+  onClose: () => void;
+}) {
+  type V = {
+    id: string;
+    fnuci: string | null;
+    datePreparation: string | null;
+    dateChargement: string | null;
+    dateLivraisonScan: string | null;
+    dateMontage: string | null;
+  };
+  const [velos, setVelos] = useState<V[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const { collection, query, where, getDocs } = await import("firebase/firestore");
+        const { db } = await import("@/lib/firebase");
+        const snap = await getDocs(
+          query(collection(db, "velos"), where("clientId", "==", clientId)),
+        );
+        const rows: V[] = [];
+        for (const d of snap.docs) {
+          const v = d.data() as Record<string, unknown>;
+          if (v.annule === true) continue;
+          const isoOrNull = (x: unknown) => {
+            if (!x) return null;
+            const t = x as { toDate?: () => Date };
+            return t?.toDate ? t.toDate().toISOString() : null;
+          };
+          rows.push({
+            id: d.id,
+            fnuci: typeof v.fnuci === "string" ? v.fnuci : null,
+            datePreparation: isoOrNull(v.datePreparation),
+            dateChargement: isoOrNull(v.dateChargement),
+            dateLivraisonScan: isoOrNull(v.dateLivraisonScan),
+            dateMontage: isoOrNull(v.dateMontage),
+          });
+        }
+        // Tri : avec FNUCI d'abord, puis par FNUCI
+        rows.sort((a, b) => {
+          if (!!a.fnuci !== !!b.fnuci) return a.fnuci ? -1 : 1;
+          return (a.fnuci || "").localeCompare(b.fnuci || "");
+        });
+        if (alive) setVelos(rows);
+      } catch (e) {
+        if (alive) setError(e instanceof Error ? e.message : String(e));
+      }
+    })();
+    return () => { alive = false; };
+  }, [clientId]);
+
+  const withFnuci = (velos || []).filter((v) => v.fnuci);
+  const sansFnuci = (velos || []).filter((v) => !v.fnuci);
+  const counts = {
+    total: velos?.length ?? 0,
+    prepare: (velos || []).filter((v) => v.datePreparation).length,
+    charge: (velos || []).filter((v) => v.dateChargement).length,
+    livre: (velos || []).filter((v) => v.dateLivraisonScan).length,
+    monte: (velos || []).filter((v) => v.dateMontage).length,
+  };
+
+  const copyList = async () => {
+    const text = withFnuci.map((v) => v.fnuci).join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      alert(`✓ ${withFnuci.length} FNUCI copiés (1 par ligne)`);
+    } catch {
+      window.prompt("Copie manuelle :", text);
+    }
+  };
+  const copyCsv = async () => {
+    const lines = ["Entreprise;FNUCI"];
+    for (const v of withFnuci) lines.push(`${entreprise};${v.fnuci}`);
+    const text = lines.join("\n");
+    try {
+      await navigator.clipboard.writeText(text);
+      alert(`✓ ${withFnuci.length} FNUCI copiés au presse-papier (CSV)`);
+    } catch {
+      window.prompt("Copie manuelle :", text);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl p-5 w-full max-w-2xl max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex justify-between items-start mb-3">
+          <div>
+            <h2 className="text-lg font-semibold">📋 FNUCI de {entreprise}</h2>
+            {velos && (
+              <div className="text-xs text-gray-500 mt-0.5">
+                {withFnuci.length}/{counts.total} vélos avec FNUCI · Prép {counts.prepare}/{counts.total} · Charg {counts.charge}/{counts.total} · Livr {counts.livre}/{counts.total} · Mont {counts.monte}/{counts.total}
+              </div>
+            )}
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+
+        {error && (
+          <div className="py-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">
+            Erreur chargement : {error}
+          </div>
+        )}
+        {!velos && !error && (
+          <div className="py-6 text-center text-sm text-gray-500 italic">Chargement…</div>
+        )}
+        {velos && (
+          <>
+            <div className="flex gap-2 mb-3">
+              <button
+                onClick={copyList}
+                disabled={withFnuci.length === 0}
+                className="px-3 py-1.5 text-xs bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+              >
+                📋 Copier ({withFnuci.length} FNUCI)
+              </button>
+              <button
+                onClick={copyCsv}
+                disabled={withFnuci.length === 0}
+                className="px-3 py-1.5 text-xs bg-white border border-blue-300 text-blue-700 rounded hover:bg-blue-50 disabled:opacity-50"
+              >
+                📊 Copier en CSV (Entreprise;FNUCI)
+              </button>
+            </div>
+
+            {withFnuci.length > 0 && (
+              <div className="border rounded-lg overflow-hidden mb-3">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50 border-b">
+                    <tr>
+                      <th className="text-left px-3 py-2 font-medium text-gray-600">#</th>
+                      <th className="text-left px-3 py-2 font-medium text-gray-600">FNUCI</th>
+                      <th className="text-center px-2 py-2 font-medium text-gray-600">Prép</th>
+                      <th className="text-center px-2 py-2 font-medium text-gray-600">Charg</th>
+                      <th className="text-center px-2 py-2 font-medium text-gray-600">Livr</th>
+                      <th className="text-center px-2 py-2 font-medium text-gray-600">Mont</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {withFnuci.map((v, i) => (
+                      <tr key={v.id} className="hover:bg-gray-50">
+                        <td className="px-3 py-1.5 text-gray-400">{i + 1}</td>
+                        <td className="px-3 py-1.5 font-mono font-bold">{v.fnuci}</td>
+                        <td className="text-center px-2 py-1.5">{v.datePreparation ? "✓" : "—"}</td>
+                        <td className="text-center px-2 py-1.5">{v.dateChargement ? "✓" : "—"}</td>
+                        <td className="text-center px-2 py-1.5">{v.dateLivraisonScan ? "✓" : "—"}</td>
+                        <td className="text-center px-2 py-1.5">{v.dateMontage ? "✓" : "—"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+
+            {withFnuci.length === 0 && (
+              <div className="bg-gray-50 border border-gray-200 rounded p-3 text-center text-sm text-gray-500 italic">
+                Aucun FNUCI assigné pour ce client.
+              </div>
+            )}
+
+            {sansFnuci.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded p-2 text-[11px] text-amber-800">
+                ⚠ {sansFnuci.length} vélo{sansFnuci.length > 1 ? "s" : ""} sans FNUCI
+                (slot vide). À scanner depuis la prep.
+              </div>
+            )}
+          </>
+        )}
+
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">
+            Fermer
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
