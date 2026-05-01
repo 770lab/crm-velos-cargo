@@ -2061,22 +2061,33 @@ function SuggererTourneePanel({
   stockVelosMontes: number;
 }) {
   const [showModal, setShowModal] = useState(false);
+  const [showJourneeModal, setShowJourneeModal] = useState(false);
   const totalDispo = stockCartons + stockVelosMontes;
   return (
     <>
       <div className="flex items-center justify-between gap-2 bg-indigo-50 border border-indigo-200 rounded p-1.5">
         <div className="text-[11px] text-indigo-900 truncate">
-          🤖 <strong>Suggérer une tournée</strong>
-          <span className="opacity-70 ml-1">· {totalDispo} vélos dispo</span>
+          🤖 <strong>Suggérer</strong>
+          <span className="opacity-70 ml-1">· {totalDispo} v dispo</span>
         </div>
-        <button
-          onClick={() => setShowModal(true)}
-          disabled={totalDispo <= 0}
-          className="px-2 py-0.5 text-[11px] bg-indigo-600 text-white rounded hover:bg-indigo-700 font-semibold disabled:opacity-50 shrink-0"
-          title={totalDispo <= 0 ? "Aucun stock dispo dans cet entrepôt" : "L'IA propose les clients optimaux à livrer depuis cet entrepôt"}
-        >
-          🤖 Suggérer
-        </button>
+        <div className="flex gap-1 shrink-0">
+          <button
+            onClick={() => setShowModal(true)}
+            disabled={totalDispo <= 0}
+            className="px-2 py-0.5 text-[11px] bg-indigo-600 text-white rounded hover:bg-indigo-700 font-semibold disabled:opacity-50"
+            title={totalDispo <= 0 ? "Aucun stock dispo" : "1 tournée optimale depuis cet entrepôt"}
+          >
+            🤖 1 tournée
+          </button>
+          <button
+            onClick={() => setShowJourneeModal(true)}
+            disabled={totalDispo <= 0}
+            className="px-2 py-0.5 text-[11px] bg-purple-600 text-white rounded hover:bg-purple-700 font-semibold disabled:opacity-50"
+            title="Planifie 2-3 tournées dans la journée chauffeur (8h30) pour maximiser les vélos livrés"
+          >
+            📅 Journée
+          </button>
+        </div>
       </div>
       {showModal && (
         <SuggererTourneeModal
@@ -2085,6 +2096,15 @@ function SuggererTourneePanel({
           stockCartons={stockCartons}
           stockVelosMontes={stockVelosMontes}
           onClose={() => setShowModal(false)}
+        />
+      )}
+      {showJourneeModal && (
+        <PlanifierJourneeModal
+          entrepotId={entrepotId}
+          entrepotNom={entrepotNom}
+          stockCartons={stockCartons}
+          stockVelosMontes={stockVelosMontes}
+          onClose={() => setShowJourneeModal(false)}
         />
       )}
     </>
@@ -2401,6 +2421,300 @@ function SuggererTourneeModal({
           <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">
             Fermer
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// PlanifierJourneeModal — Yoann 2026-05-01.
+// Multi-tournées sur 8h30 chauffeur. Maximise vélos livrés/jour en
+// chaînant 2-3 tournées (montés=15min/stop, cartons=12min×N/nbMonteurs).
+type JourneeStop = {
+  id: string;
+  entreprise: string;
+  ville: string;
+  lat: number;
+  lng: number;
+  nbVelos: number;
+  distance: number;
+};
+type JourneeTournee = {
+  index: number;
+  capaciteEffective: number;
+  totalVelos: number;
+  nbStops: number;
+  distanceKm: number;
+  dureeRouteMin: number;
+  dureeArretsMin: number;
+  dureeTotalMin: number;
+  routingSource: "haversine" | "maps";
+  stops: JourneeStop[];
+};
+type JourneeResult = {
+  ok: boolean;
+  error?: string;
+  entrepot?: { id: string; nom: string; stockDispo: number; stockRestantApres: number };
+  mode?: string;
+  modeMontage?: string;
+  capaciteCamion?: number;
+  dureeJourneeMin?: number;
+  dureeJourneeUtilisee?: number;
+  tempsLibreMin?: number;
+  nbTournees?: number;
+  totalVelosJournee?: number;
+  totalKmJournee?: number;
+  monteursParTournee?: number;
+  tournees?: JourneeTournee[];
+};
+
+function PlanifierJourneeModal({
+  entrepotId,
+  entrepotNom,
+  stockCartons,
+  stockVelosMontes,
+  onClose,
+}: {
+  entrepotId: string;
+  entrepotNom: string;
+  stockCartons: number;
+  stockVelosMontes: number;
+  onClose: () => void;
+}) {
+  const [mode, setMode] = useState<"gros" | "moyen" | "petit" | "camionnette">("moyen");
+  const [modeMontage, setModeMontage] = useState<"client" | "atelier" | "client_redistribue">(
+    stockVelosMontes > 0 ? "atelier" : "client",
+  );
+  const [maxDistance, setMaxDistance] = useState(50);
+  const [maxTournees, setMaxTournees] = useState(3);
+  const [dureeJourneeMin, setDureeJourneeMin] = useState(510); // 8h30
+  const [monteursParTournee, setMonteursParTournee] = useState(2);
+  const [useMaps, setUseMaps] = useState(true); // par défaut Maps activé pour cette planif (durées route critiques)
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<JourneeResult | null>(null);
+  const [datePrevue, setDatePrevue] = useState(() => {
+    const d = new Date();
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  });
+  const [creating, setCreating] = useState(false);
+  const [created, setCreated] = useState<{ count: number } | null>(null);
+
+  const stockSelectMontage = modeMontage === "client" ? stockCartons : stockVelosMontes;
+
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    setCreated(null);
+    try {
+      const { gasPost } = await import("@/lib/gas");
+      const r = (await gasPost("planifierJourneeCamion", {
+        entrepotId,
+        mode,
+        modeMontage,
+        maxDistance,
+        maxTournees,
+        dureeJourneeMin,
+        monteursParTournee,
+        useMaps,
+      })) as JourneeResult;
+      setResult(r);
+    } catch (e) {
+      setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const createAll = async () => {
+    if (!result?.ok || !result.tournees || result.tournees.length === 0) return;
+    if (!datePrevue) {
+      alert("Choisis une date prévue");
+      return;
+    }
+    if (!confirm(`Créer les ${result.tournees.length} tournées (${result.totalVelosJournee} vélos) le ${datePrevue} ?`)) return;
+    setCreating(true);
+    try {
+      const { gasPost } = await import("@/lib/gas");
+      const tournees = result.tournees.map((t) => ({
+        datePrevue,
+        mode: modeMontage,
+        modeMontage,
+        entrepotOrigineId: entrepotId,
+        notes: `T${t.index}/${result.tournees!.length} auto-planifiée depuis ${entrepotNom} · ${t.totalVelos}v · ${Math.round(t.dureeTotalMin)}min`,
+        statut: "planifiee",
+        stops: t.stops.map((s, i) => ({ clientId: s.id, nbVelos: s.nbVelos, ordre: i + 1 })),
+      }));
+      const r = (await gasPost("createTournees", {
+        tournees,
+        mode: modeMontage,
+      })) as { count?: number; tournees?: Array<{ tourneeId: string }>; error?: string };
+      if (r.error) {
+        alert("Erreur création : " + r.error);
+      } else {
+        setCreated({ count: r.count || tournees.length });
+      }
+    } catch (e) {
+      alert("Erreur : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const formatMin = (m: number) => `${Math.floor(m / 60)}h${String(Math.round(m % 60)).padStart(2, "0")}`;
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <h2 className="text-lg font-semibold">📅 Planifier la journée camion · {entrepotNom}</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-3 bg-purple-50 border border-purple-200 rounded p-3">
+          <div>
+            <label className="text-xs text-gray-600">Camion</label>
+            <select value={mode} onChange={(e) => setMode(e.target.value as typeof mode)} className="w-full px-2 py-1.5 border rounded text-sm bg-white">
+              <option value="gros">Grand</option>
+              <option value="moyen">Moyen</option>
+              <option value="petit">Petit</option>
+              <option value="camionnette">Camionnette</option>
+            </select>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Mode</label>
+            <select value={modeMontage} onChange={(e) => setModeMontage(e.target.value as typeof modeMontage)} className="w-full px-2 py-1.5 border rounded text-sm bg-white">
+              <option value="client">📦 Cartons</option>
+              <option value="atelier">🔧 Montés</option>
+              <option value="client_redistribue">🟣 Éphémère</option>
+            </select>
+            <div className="text-[10px] text-gray-500 mt-0.5">Stock : {stockSelectMontage}</div>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Max tournées</label>
+            <input type="number" value={maxTournees} onChange={(e) => setMaxTournees(Number(e.target.value))} min={1} max={5} className="w-full px-2 py-1.5 border rounded text-sm" />
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Journée (min)</label>
+            <input type="number" value={dureeJourneeMin} onChange={(e) => setDureeJourneeMin(Number(e.target.value))} min={120} max={720} step={30} className="w-full px-2 py-1.5 border rounded text-sm" />
+            <div className="text-[10px] text-gray-500 mt-0.5">{formatMin(dureeJourneeMin)}</div>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Distance max (km)</label>
+            <input type="number" value={maxDistance} onChange={(e) => setMaxDistance(Number(e.target.value))} min={5} max={200} step={5} className="w-full px-2 py-1.5 border rounded text-sm" />
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Monteurs/tournée</label>
+            <input type="number" value={monteursParTournee} onChange={(e) => setMonteursParTournee(Number(e.target.value))} min={1} max={10} className="w-full px-2 py-1.5 border rounded text-sm" />
+            <div className="text-[10px] text-gray-500 mt-0.5">{modeMontage === "client" ? "(impacte temps arrêt)" : "(infos seulement)"}</div>
+          </div>
+          <div className="col-span-2">
+            <label className="flex items-start gap-2 text-[11px] text-gray-700 cursor-pointer mt-3">
+              <input type="checkbox" checked={useMaps} onChange={(e) => setUseMaps(e.target.checked)} className="mt-0.5" />
+              <span>
+                🗺 <strong>Routing Maps réel</strong> (durées route précises — recommandé pour la planif journée)
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <button onClick={run} disabled={busy || stockSelectMontage <= 0} className="w-full px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 font-semibold">
+          {busy ? "🤖 Calcul..." : `📅 Planifier la journée (max ${maxTournees} tournées)`}
+        </button>
+
+        {result && (
+          <div className="mt-4">
+            {result.error ? (
+              <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800">❌ {result.error}</div>
+            ) : result.ok && result.tournees && result.tournees.length > 0 ? (
+              <>
+                <div className="bg-emerald-50 border border-emerald-300 rounded p-3 mb-3">
+                  <div className="text-base font-bold text-emerald-900">
+                    ✓ {result.nbTournees} tournée{(result.nbTournees ?? 0) > 1 ? "s" : ""} · {result.totalVelosJournee} vélos / jour
+                  </div>
+                  <div className="text-xs text-emerald-800 mt-1 grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div>🛣 {result.totalKmJournee} km total</div>
+                    <div>⏱ {formatMin(result.dureeJourneeUtilisee || 0)} utilisé</div>
+                    <div className="text-emerald-600">💤 {formatMin(result.tempsLibreMin || 0)} libre</div>
+                    <div>📦 {result.entrepot?.stockRestantApres ?? "?"} reste en stock</div>
+                  </div>
+                </div>
+
+                {result.tournees.map((t) => (
+                  <div key={t.index} className="border rounded-lg mb-3 overflow-hidden">
+                    <div className="bg-purple-100 border-b border-purple-300 px-3 py-2 text-sm flex items-center justify-between gap-2">
+                      <div className="font-bold text-purple-900">Tournée {t.index}</div>
+                      <div className="text-xs text-purple-800 flex gap-3 flex-wrap justify-end">
+                        <span><strong>{t.totalVelos}</strong>v / {t.capaciteEffective}</span>
+                        <span>📍 {t.nbStops} stops</span>
+                        <span>🛣 {t.distanceKm} km</span>
+                        <span title="Durée trajet route">🚗 {formatMin(t.dureeRouteMin)}</span>
+                        <span title="Durée totale arrêts">🛑 {formatMin(t.dureeArretsMin)}</span>
+                        <span title="Durée totale tournée"><strong>⏱ {formatMin(t.dureeTotalMin)}</strong></span>
+                        {t.routingSource === "maps" && <span className="text-blue-700">🗺</span>}
+                      </div>
+                    </div>
+                    <table className="w-full text-xs">
+                      <thead className="bg-gray-50 border-b text-gray-600">
+                        <tr>
+                          <th className="text-left px-3 py-1.5 font-medium">#</th>
+                          <th className="text-left px-3 py-1.5 font-medium">Client</th>
+                          <th className="text-left px-3 py-1.5 font-medium">Ville</th>
+                          <th className="text-right px-3 py-1.5 font-medium">Vélos</th>
+                          <th className="text-right px-3 py-1.5 font-medium">Distance</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y">
+                        {t.stops.map((s, i) => (
+                          <tr key={s.id} className="hover:bg-gray-50">
+                            <td className="px-3 py-1 text-gray-400">{i + 1}</td>
+                            <td className="px-3 py-1 font-medium">{s.entreprise}</td>
+                            <td className="px-3 py-1 text-gray-600">{s.ville}</td>
+                            <td className="px-3 py-1 text-right font-semibold text-emerald-700">{s.nbVelos}</td>
+                            <td className="px-3 py-1 text-right text-gray-600">{s.distance} km</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ))}
+
+                {/* Création batch */}
+                {created ? (
+                  <div className="bg-emerald-100 border border-emerald-400 rounded p-3 mt-3">
+                    <div className="text-sm font-bold text-emerald-900">
+                      ✓ {created.count} tournée{created.count > 1 ? "s" : ""} créée{created.count > 1 ? "s" : ""} le {datePrevue}
+                    </div>
+                    <a href="/livraisons" className="inline-block mt-1 text-xs text-emerald-700 underline hover:text-emerald-900">
+                      → Voir dans Livraisons
+                    </a>
+                  </div>
+                ) : (
+                  <div className="bg-amber-50 border border-amber-200 rounded p-3 flex items-end gap-2 flex-wrap mt-3">
+                    <div className="flex-1 min-w-[140px]">
+                      <label className="text-xs text-gray-600 block">Date prévue</label>
+                      <input type="date" value={datePrevue} onChange={(e) => setDatePrevue(e.target.value)} className="w-full px-2 py-1.5 border rounded text-sm bg-white" />
+                    </div>
+                    <button
+                      onClick={createAll}
+                      disabled={creating}
+                      className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm font-semibold hover:bg-emerald-700 disabled:opacity-50"
+                    >
+                      {creating ? "Création..." : `✓ Créer les ${result.nbTournees} tournées`}
+                    </button>
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="bg-amber-50 border border-amber-200 rounded p-3 text-sm text-amber-800">
+                ⚠️ Aucune tournée ne tient dans la journée avec ces paramètres.
+                Augmente la durée de journée OU baisse le mode camion / mode montage.
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Fermer</button>
         </div>
       </div>
     </div>

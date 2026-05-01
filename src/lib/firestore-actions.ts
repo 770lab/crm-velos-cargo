@@ -4185,6 +4185,242 @@ export async function runFirestoreAction(
       };
     }
 
+    case "planifierJourneeCamion": {
+      // Yoann 2026-05-01 — planificateur multi-tournées : chaîne jusqu à
+      // 3 tournées dans la journée chauffeur (8h30 par défaut). Maximise
+      // le nb total de vélos livrés en jouant sur :
+      //  - Routing Maps Distance Matrix réel (durées route précises)
+      //  - Temps d arrêt par mode :
+      //    * montés : 15 min/stop (déchargement seul)
+      //    * cartons : (12 × nbVélos) / monteursParTournee min/stop
+      //  - Recharge entrepôt entre tournées (10 min temps mort)
+      // Stoppe quand la journée déborde OU le stock est épuisé.
+      const epId = String(body.entrepotId || "");
+      const camionMode = String(body.mode || "moyen");
+      const mModeMontage = String(body.modeMontage || "client") as
+        | "client"
+        | "atelier"
+        | "client_redistribue";
+      const mUseMaps = body.useMaps === true;
+      const mMaxDistance = Number(body.maxDistance || 50);
+      const mMaxTournees = Math.min(5, Math.max(1, Number(body.maxTournees || 3)));
+      const dureeJourneeMin = Number(body.dureeJourneeMin || 510); // 8h30
+      const tempsRechargeMin = Number(body.tempsRechargeMin || 10);
+      const tempsArretMontesMin = Number(body.tempsArretMontesMin || 15);
+      const monteursParTournee = Math.max(1, Number(body.monteursParTournee || 2));
+      const minPerVeloPerMonteur = Number(body.minPerVeloPerMonteur || 12);
+      if (!epId) return { error: "entrepotId requis" };
+
+      const CAPACITES_CARTONS_M: Record<string, number> = { gros: 132, moyen: 54, camionnette: 20, petit: 20 };
+      const CAPACITES_MONTES_M: Record<string, number> = { gros: 40, moyen: 30, camionnette: 20, petit: 20 };
+      const capTable = mModeMontage === "client" ? CAPACITES_CARTONS_M : CAPACITES_MONTES_M;
+      const capCamion = capTable[camionMode] ?? 30;
+
+      const eDoc = await getDoc(doc(db, "entrepots", epId));
+      if (!eDoc.exists()) return { error: "Entrepôt introuvable" };
+      const eData = eDoc.data() as {
+        nom?: string; ville?: string; adresse?: string;
+        lat?: number; lng?: number;
+        stockCartons?: number; stockVelosMontes?: number; role?: string;
+      };
+      if (typeof eData.lat !== "number" || typeof eData.lng !== "number") {
+        return { error: "Entrepôt sans coordonnées GPS" };
+      }
+      const epLat = eData.lat;
+      const epLng = eData.lng;
+      let stockDispoTotal = eData.role === "fournisseur"
+        ? 99999
+        : mModeMontage === "client"
+          ? Number(eData.stockCartons || 0)
+          : Number(eData.stockVelosMontes || 0);
+      if (stockDispoTotal <= 0) {
+        return {
+          error: `Stock insuffisant à ${eData.nom} (${stockDispoTotal} dispo en ${mModeMontage})`,
+        };
+      }
+
+      // Charge tous les clients livrables une fois pour toutes
+      const clSnap = await getDocs(collection(db, "clients"));
+      type CandStorm = { id: string; entreprise: string; ville: string; lat: number; lng: number; velosRestants: number };
+      const allCands: CandStorm[] = [];
+      const planifiesParClient2 = new Map<string, number>();
+      const lvSnap = await getDocs(collection(db, "livraisons"));
+      for (const d of lvSnap.docs) {
+        const o = d.data() as { statut?: string; clientId?: string; nbVelos?: number };
+        if (String(o.statut || "").toLowerCase() !== "planifiee") continue;
+        const cid = String(o.clientId || "");
+        if (!cid) continue;
+        planifiesParClient2.set(cid, (planifiesParClient2.get(cid) || 0) + (Number(o.nbVelos) || 0));
+      }
+      for (const d of clSnap.docs) {
+        const o = d.data() as { entreprise?: string; ville?: string; latitude?: number; longitude?: number; nbVelosCommandes?: number; stats?: { livres?: number } };
+        const lat = typeof o.latitude === "number" ? o.latitude : NaN;
+        const lng = typeof o.longitude === "number" ? o.longitude : NaN;
+        if (!isFinite(lat) || !isFinite(lng)) continue;
+        const reste = Math.max(0, Number(o.nbVelosCommandes || 0) - Number(o.stats?.livres || 0) - (planifiesParClient2.get(d.id) || 0));
+        if (reste <= 0) continue;
+        const dist = haversineKmFs(epLat, epLng, lat, lng);
+        if (dist > mMaxDistance) continue;
+        allCands.push({ id: d.id, entreprise: String(o.entreprise || ""), ville: String(o.ville || ""), lat, lng, velosRestants: reste });
+      }
+      allCands.sort((a, b) => haversineKmFs(epLat, epLng, a.lat, a.lng) - haversineKmFs(epLat, epLng, b.lat, b.lng));
+
+      const tournees: Array<{
+        index: number;
+        capaciteEffective: number;
+        totalVelos: number;
+        nbStops: number;
+        distanceKm: number;
+        dureeRouteMin: number;
+        dureeArretsMin: number;
+        dureeTotalMin: number;
+        routingSource: "haversine" | "maps";
+        stops: Array<{ id: string; entreprise: string; ville: string; lat: number; lng: number; nbVelos: number; distance: number }>;
+      }> = [];
+
+      let dureeJourneeUtilisee = 0;
+      let stockRestant = stockDispoTotal;
+      const servis = new Set<string>(); // clientId déjà inclus dans une tournée
+
+      for (let tnum = 1; tnum <= mMaxTournees; tnum++) {
+        if (stockRestant <= 0) break;
+        const dispoCands = allCands.filter((c) => !servis.has(c.id) && c.velosRestants > 0);
+        if (dispoCands.length === 0) break;
+
+        // Sélection capacité = min(cap camion, stock restant)
+        const capEff = Math.min(capCamion, stockRestant);
+        const sel: CandStorm[] = [];
+        let resteCam = capEff;
+        for (const c of dispoCands) {
+          if (resteCam <= 0) break;
+          const nb = Math.min(c.velosRestants, resteCam);
+          if (nb <= 0) continue;
+          sel.push({ ...c, velosRestants: nb });
+          resteCam -= nb;
+        }
+        if (sel.length === 0) break;
+
+        // Matrice (Maps si demandé, sinon Haversine)
+        const N1 = sel.length + 1;
+        let dM: number[][] = Array.from({ length: N1 }, () => new Array(N1).fill(0));
+        let durM2: number[][] | null = null;
+        let rSrc: "haversine" | "maps" = "haversine";
+        if (mUseMaps && sel.length >= 1 && sel.length <= 24) {
+          try {
+            const callable = httpsCallable<
+              { points: Array<{ lat: number; lng: number }>; matrix: boolean },
+              { ok?: boolean; distMatrix?: number[][]; durMatrix?: number[][] }
+            >(functions, "getRouting");
+            const r = await callable({
+              points: [{ lat: epLat, lng: epLng }, ...sel.map((s) => ({ lat: s.lat, lng: s.lng }))],
+              matrix: true,
+            });
+            if (r.data?.ok && r.data.distMatrix && r.data.durMatrix) {
+              dM = r.data.distMatrix;
+              durM2 = r.data.durMatrix;
+              rSrc = "maps";
+            }
+          } catch {}
+        }
+        if (rSrc === "haversine") {
+          const allPts = [{ lat: epLat, lng: epLng }, ...sel.map((s) => ({ lat: s.lat, lng: s.lng }))];
+          for (let i = 0; i < N1; i++) {
+            for (let j = 0; j < N1; j++) {
+              dM[i][j] = i === j ? 0 : haversineKmFs(allPts[i].lat, allPts[i].lng, allPts[j].lat, allPts[j].lng);
+            }
+          }
+        }
+
+        // NN + 2-opt
+        const indices: number[] = sel.map((_, i) => i + 1);
+        const ord: number[] = [];
+        let curIdx = 0;
+        while (indices.length > 0) {
+          let bk = 0; let bd = Infinity;
+          for (let k = 0; k < indices.length; k++) {
+            if (dM[curIdx][indices[k]] < bd) { bd = dM[curIdx][indices[k]]; bk = k; }
+          }
+          const nx = indices.splice(bk, 1)[0];
+          ord.push(nx); curIdx = nx;
+        }
+        const tourL = (a: number[]) => { if (!a.length) return 0; let t = dM[0][a[0]]; for (let i = 1; i < a.length; i++) t += dM[a[i - 1]][a[i]]; t += dM[a[a.length - 1]][0]; return t; };
+        let imp = true; let it = 0;
+        while (imp && it < 4) {
+          imp = false; it++;
+          const base = tourL(ord);
+          for (let i = 0; i < ord.length - 1 && !imp; i++) {
+            for (let j = i + 1; j < ord.length; j++) {
+              const cd = [...ord.slice(0, i), ...ord.slice(i, j + 1).reverse(), ...ord.slice(j + 1)];
+              if (tourL(cd) < base - 0.01) { ord.splice(0, ord.length, ...cd); imp = true; break; }
+            }
+          }
+        }
+
+        // Durée totale = route + arrêts (+ recharge si tnum > 1)
+        const distKm = Math.round(tourL(ord) * 10) / 10;
+        let dureeRoute = 0;
+        if (durM2) {
+          dureeRoute = durM2[0][ord[0]] || 0;
+          for (let i = 1; i < ord.length; i++) dureeRoute += durM2[ord[i - 1]][ord[i]] || 0;
+          if (ord.length > 0) dureeRoute += durM2[ord[ord.length - 1]][0] || 0;
+        } else {
+          // Fallback Haversine → estimation 35 km/h moyenne urbaine
+          dureeRoute = Math.round((distKm / 35) * 60);
+        }
+        const totalVelosT = sel.reduce((s, x) => s + x.velosRestants, 0);
+        const dureeArrets = mModeMontage === "client"
+          ? Math.round((minPerVeloPerMonteur * totalVelosT) / monteursParTournee)
+          : tempsArretMontesMin * sel.length;
+        const dureeRecharge = tnum === 1 ? 0 : tempsRechargeMin;
+        const dureeT = dureeRoute + dureeArrets + dureeRecharge;
+
+        if (dureeJourneeUtilisee + dureeT > dureeJourneeMin) break;
+
+        const stopsOut = ord.map((idx, i) => {
+          const st = sel[idx - 1];
+          const prev = i === 0 ? 0 : ord[i - 1];
+          return { id: st.id, entreprise: st.entreprise, ville: st.ville, lat: st.lat, lng: st.lng, nbVelos: st.velosRestants, distance: Math.round(dM[prev][idx] * 10) / 10 };
+        });
+
+        tournees.push({
+          index: tnum,
+          capaciteEffective: capEff,
+          totalVelos: totalVelosT,
+          nbStops: sel.length,
+          distanceKm: distKm,
+          dureeRouteMin: dureeRoute,
+          dureeArretsMin: dureeArrets,
+          dureeTotalMin: dureeT,
+          routingSource: rSrc,
+          stops: stopsOut,
+        });
+
+        for (const s of sel) servis.add(s.id);
+        stockRestant -= totalVelosT;
+        dureeJourneeUtilisee += dureeT;
+      }
+
+      const totalVelosJournee = tournees.reduce((s, t) => s + t.totalVelos, 0);
+      const totalKmJournee = Math.round(tournees.reduce((s, t) => s + t.distanceKm, 0) * 10) / 10;
+      const tempsLibreMin = Math.max(0, dureeJourneeMin - dureeJourneeUtilisee);
+
+      return {
+        ok: true,
+        entrepot: { id: epId, nom: eData.nom || "?", stockDispo: stockDispoTotal, stockRestantApres: stockRestant },
+        mode: camionMode,
+        modeMontage: mModeMontage,
+        capaciteCamion: capCamion,
+        dureeJourneeMin,
+        dureeJourneeUtilisee,
+        tempsLibreMin,
+        nbTournees: tournees.length,
+        totalVelosJournee,
+        totalKmJournee,
+        monteursParTournee,
+        tournees,
+      };
+    }
+
     default:
       return { ok: false, error: `Action Firestore non implémentée: ${action}` };
   }
