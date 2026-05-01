@@ -308,6 +308,8 @@ export default function FinancesPage() {
                       <th className="text-right px-3 py-2 font-medium">Salaire</th>
                       <th className="text-right px-3 py-2 font-medium">Prime</th>
                       <th className="text-right px-4 py-2 font-medium">Total</th>
+                      <th className="text-right px-3 py-2 font-medium">Payé</th>
+                      <th className="text-right px-4 py-2 font-medium">Solde</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y">
@@ -315,25 +317,12 @@ export default function FinancesPage() {
                       const list = byRole[r] || [];
                       if (list.length === 0) return [];
                       return list.map((m) => (
-                        <tr key={m.id} className="hover:bg-gray-50">
-                          <td className="px-4 py-2 font-medium text-gray-900">{m.nom}</td>
-                          <td className="px-4 py-2">
-                            <span className={`text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded ${ROLE_COLOR[m.role]}`}>
-                              {ROLE_LABEL[m.role]}
-                            </span>
-                          </td>
-                          <td className="px-3 py-2 text-right">{m.jours || "—"}</td>
-                          <td className="px-3 py-2 text-right">{m.velosPrimes || "—"}</td>
-                          <td className="px-3 py-2 text-right text-xs text-gray-500">
-                            {m.salaireJournalier ? fmt(m.salaireJournalier) : "—"}
-                          </td>
-                          <td className="px-3 py-2 text-right text-xs text-gray-500">
-                            {m.primeVelo ? fmt(m.primeVelo) : "—"}
-                          </td>
-                          <td className="px-3 py-2 text-right text-blue-700">{m.coutSalaire ? fmt(m.coutSalaire) : "—"}</td>
-                          <td className="px-3 py-2 text-right text-amber-700">{m.coutPrime ? fmt(m.coutPrime) : "—"}</td>
-                          <td className="px-4 py-2 text-right font-semibold text-emerald-700">{fmt(m.coutTotal)}</td>
-                        </tr>
+                        <MemberRowWithPaiement
+                          key={m.id}
+                          member={m}
+                          from={from}
+                          to={to}
+                        />
                       ));
                     })}
                   </tbody>
@@ -343,12 +332,18 @@ export default function FinancesPage() {
                       <td className="px-3 py-2 text-right text-blue-700">{fmt(data.totals?.coutSalaires || 0)}</td>
                       <td className="px-3 py-2 text-right text-amber-700">{fmt(data.totals?.coutPrimes || 0)}</td>
                       <td className="px-4 py-2 text-right text-emerald-700">{fmt(data.totals?.coutTotal || 0)}</td>
+                      <td className="px-3 py-2" />
+                      <td className="px-4 py-2" />
                     </tr>
                   </tfoot>
                 </table>
               </div>
             )}
           </div>
+
+          {/* === Grand livre paiements (Yoann 2026-05-01) ===
+              Traçabilité comptable des salaires/avances/primes payés. */}
+          <GrandLivreSection from={from} to={to} />
 
           <p className="text-[11px] text-gray-400 mt-4 leading-snug">
             Salaires terrain = 1 jour de paye par tournée à laquelle le membre est affecté. Prime monteur = split entre les
@@ -468,5 +463,421 @@ function MonteurPointeuseRow({ m, from, to }: { m: MemberRow; from: string; to: 
         </tr>
       )}
     </>
+  );
+}
+
+// MemberRowWithPaiement (Yoann 2026-05-01) : ligne pointeuse avec
+// agrégation paiements de la période + bouton "Marquer payé".
+function MemberRowWithPaiement({
+  member,
+  from,
+  to,
+}: {
+  member: MemberRow;
+  from: string;
+  to: string;
+}) {
+  const [paiements, setPaiements] = useState<{ id: string; montant: number; date: string; type: string; notes?: string }[]>([]);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, query, where, onSnapshot } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const q = query(
+        collection(db, "paiementsEquipe"),
+        where("memberId", "==", member.id),
+        where("date", ">=", from),
+        where("date", "<=", to),
+      );
+      const unsub = onSnapshot(q, (snap) => {
+        if (!alive) return;
+        const rows: typeof paiements = [];
+        for (const d of snap.docs) {
+          const data = d.data();
+          rows.push({
+            id: d.id,
+            montant: Number(data.montant || 0),
+            date: String(data.date || ""),
+            type: String(data.type || "salaire"),
+            notes: typeof data.notes === "string" ? data.notes : undefined,
+          });
+        }
+        setPaiements(rows);
+      });
+      return () => unsub();
+    })();
+    return () => { alive = false; };
+  }, [member.id, from, to]);
+
+  const totalPaye = paiements.reduce((s, p) => s + p.montant, 0);
+  const solde = member.coutTotal - totalPaye;
+  const fullPayee = solde <= 0 && member.coutTotal > 0;
+
+  const markPaid = async () => {
+    if (busy) return;
+    if (member.coutTotal <= 0) return;
+    if (!confirm(`Marquer ${member.nom} payé ${fmt(solde)} pour la période ${from} -> ${to} ?`)) return;
+    setBusy(true);
+    try {
+      const { collection, addDoc, serverTimestamp } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      await addDoc(collection(db, "paiementsEquipe"), {
+        memberId: member.id,
+        memberNom: member.nom,
+        memberRole: member.role,
+        montant: solde,
+        type: "salaire",
+        date: new Date().toISOString().slice(0, 10),
+        periodeFrom: from,
+        periodeTo: to,
+        notes: `Paiement de la période ${from} -> ${to}`,
+        createdAt: serverTimestamp(),
+      });
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <tr className="hover:bg-gray-50">
+      <td className="px-4 py-2 font-medium text-gray-900">{member.nom}</td>
+      <td className="px-4 py-2">
+        <span className={`text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded ${ROLE_COLOR[member.role]}`}>
+          {ROLE_LABEL[member.role]}
+        </span>
+      </td>
+      <td className="px-3 py-2 text-right">{member.jours || "—"}</td>
+      <td className="px-3 py-2 text-right">{member.velosPrimes || "—"}</td>
+      <td className="px-3 py-2 text-right text-xs text-gray-500">
+        {member.salaireJournalier ? fmt(member.salaireJournalier) : "—"}
+      </td>
+      <td className="px-3 py-2 text-right text-xs text-gray-500">
+        {member.primeVelo ? fmt(member.primeVelo) : "—"}
+      </td>
+      <td className="px-3 py-2 text-right text-blue-700">{member.coutSalaire ? fmt(member.coutSalaire) : "—"}</td>
+      <td className="px-3 py-2 text-right text-amber-700">{member.coutPrime ? fmt(member.coutPrime) : "—"}</td>
+      <td className="px-4 py-2 text-right font-semibold text-emerald-700">{fmt(member.coutTotal)}</td>
+      <td className="px-3 py-2 text-right text-emerald-600 text-xs">
+        {totalPaye > 0 ? fmt(totalPaye) : "—"}
+      </td>
+      <td className="px-4 py-2 text-right">
+        {fullPayee ? (
+          <span className="text-[10px] px-1.5 py-0.5 bg-emerald-100 text-emerald-800 rounded font-semibold">
+            ✓ Payé
+          </span>
+        ) : member.coutTotal > 0 ? (
+          <button
+            onClick={markPaid}
+            disabled={busy}
+            className="text-[11px] px-2 py-0.5 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50"
+            title={`Solde dû : ${fmt(solde)}`}
+          >
+            💰 Payer {fmt(solde)}
+          </button>
+        ) : (
+          <span className="text-gray-300">—</span>
+        )}
+      </td>
+    </tr>
+  );
+}
+
+// GrandLivreSection (Yoann 2026-05-01) : liste de tous les paiements
+// effectués sur la période, avec ajout manuel d'avance / prime / autre.
+type PaiementRow = {
+  id: string;
+  memberId: string;
+  memberNom: string;
+  memberRole?: string;
+  montant: number;
+  type: string;
+  date: string;
+  notes?: string;
+};
+function GrandLivreSection({ from, to }: { from: string; to: string }) {
+  const [paiements, setPaiements] = useState<PaiementRow[]>([]);
+  const [showAdd, setShowAdd] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, query, where, onSnapshot, orderBy } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const q = query(
+        collection(db, "paiementsEquipe"),
+        where("date", ">=", from),
+        where("date", "<=", to),
+        orderBy("date", "desc"),
+      );
+      const unsub = onSnapshot(q, (snap) => {
+        if (!alive) return;
+        const rows: PaiementRow[] = [];
+        for (const d of snap.docs) {
+          const data = d.data();
+          rows.push({
+            id: d.id,
+            memberId: String(data.memberId || ""),
+            memberNom: String(data.memberNom || ""),
+            memberRole: typeof data.memberRole === "string" ? data.memberRole : undefined,
+            montant: Number(data.montant || 0),
+            type: String(data.type || "salaire"),
+            date: String(data.date || ""),
+            notes: typeof data.notes === "string" ? data.notes : undefined,
+          });
+        }
+        setPaiements(rows);
+      });
+      return () => unsub();
+    })();
+    return () => { alive = false; };
+  }, [from, to]);
+
+  const totalPaye = paiements.reduce((s, p) => s + p.montant, 0);
+  const totalSalaires = paiements.filter((p) => p.type === "salaire").reduce((s, p) => s + p.montant, 0);
+  const totalAvances = paiements.filter((p) => p.type === "avance").reduce((s, p) => s + p.montant, 0);
+  const totalPrimes = paiements.filter((p) => p.type === "prime").reduce((s, p) => s + p.montant, 0);
+
+  const removePaiement = async (id: string) => {
+    if (!confirm("Supprimer ce paiement ?")) return;
+    const { doc, deleteDoc } = await import("firebase/firestore");
+    const { db } = await import("@/lib/firebase");
+    await deleteDoc(doc(db, "paiementsEquipe", id));
+  };
+
+  return (
+    <div className="mt-6 bg-white rounded-xl border overflow-hidden">
+      <div className="px-4 py-3 border-b bg-purple-50 flex items-center justify-between gap-2">
+        <div>
+          <h2 className="font-semibold text-sm">📒 Grand livre — Paiements équipe</h2>
+          <p className="text-[11px] text-gray-500 mt-0.5">
+            Traçabilité comptable des salaires, avances et primes versés sur la période.
+          </p>
+        </div>
+        <button
+          onClick={() => setShowAdd(true)}
+          className="px-3 py-1.5 text-xs bg-purple-600 text-white rounded-lg hover:bg-purple-700 font-medium"
+        >
+          + Avance / prime / autre
+        </button>
+      </div>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 p-3 bg-gray-50 border-b">
+        <div className="text-center">
+          <div className="text-[10px] uppercase text-gray-500 font-semibold">Total payé</div>
+          <div className="text-lg font-bold text-emerald-700">{fmt(totalPaye)}</div>
+        </div>
+        <div className="text-center">
+          <div className="text-[10px] uppercase text-gray-500 font-semibold">Salaires</div>
+          <div className="text-lg font-bold text-blue-700">{fmt(totalSalaires)}</div>
+        </div>
+        <div className="text-center">
+          <div className="text-[10px] uppercase text-gray-500 font-semibold">Avances</div>
+          <div className="text-lg font-bold text-orange-700">{fmt(totalAvances)}</div>
+        </div>
+        <div className="text-center">
+          <div className="text-[10px] uppercase text-gray-500 font-semibold">Primes</div>
+          <div className="text-lg font-bold text-amber-700">{fmt(totalPrimes)}</div>
+        </div>
+      </div>
+      {paiements.length === 0 ? (
+        <div className="p-6 text-center text-sm text-gray-400 italic">
+          Aucun paiement enregistré sur la période. Clique « 💰 Payer » sur une ligne de la pointeuse
+          ou « + Avance / prime » pour saisir manuellement.
+        </div>
+      ) : (
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 border-b text-xs text-gray-600">
+            <tr>
+              <th className="text-left px-4 py-2 font-medium">Date</th>
+              <th className="text-left px-4 py-2 font-medium">Membre</th>
+              <th className="text-left px-3 py-2 font-medium">Type</th>
+              <th className="text-left px-4 py-2 font-medium">Notes</th>
+              <th className="text-right px-4 py-2 font-medium">Montant</th>
+              <th className="w-8" />
+            </tr>
+          </thead>
+          <tbody className="divide-y">
+            {paiements.map((p) => (
+              <tr key={p.id} className="hover:bg-gray-50">
+                <td className="px-4 py-2 text-gray-700">{p.date}</td>
+                <td className="px-4 py-2 font-medium text-gray-900">{p.memberNom}</td>
+                <td className="px-3 py-2">
+                  <span className={`text-[10px] uppercase font-semibold px-1.5 py-0.5 rounded ${
+                    p.type === "salaire" ? "bg-blue-100 text-blue-800"
+                    : p.type === "avance" ? "bg-orange-100 text-orange-800"
+                    : p.type === "prime" ? "bg-amber-100 text-amber-800"
+                    : "bg-gray-100 text-gray-700"
+                  }`}>
+                    {p.type}
+                  </span>
+                </td>
+                <td className="px-4 py-2 text-xs text-gray-600">{p.notes || "—"}</td>
+                <td className="px-4 py-2 text-right font-semibold text-emerald-700">{fmt(p.montant)}</td>
+                <td className="px-2 text-right">
+                  <button
+                    onClick={() => removePaiement(p.id)}
+                    className="text-red-400 hover:text-red-700 text-xs"
+                    title="Supprimer ce paiement"
+                  >
+                    ×
+                  </button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {showAdd && <PaiementModal onClose={() => setShowAdd(false)} />}
+    </div>
+  );
+}
+
+function PaiementModal({ onClose }: { onClose: () => void }) {
+  const [equipeMembers, setEquipeMembers] = useState<{ id: string; nom: string; role: string }[]>([]);
+  const [memberId, setMemberId] = useState("");
+  const [montant, setMontant] = useState("");
+  const [type, setType] = useState<"salaire" | "avance" | "prime" | "autre">("avance");
+  const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, getDocs } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const snap = await getDocs(collection(db, "equipe"));
+      if (!alive) return;
+      const rows = snap.docs
+        .map((d) => ({ id: d.id, ...(d.data() as Record<string, unknown>) }))
+        .filter((m) => (m as { actif?: boolean }).actif !== false)
+        .map((m) => ({
+          id: m.id,
+          nom: String((m as { nom?: string }).nom || ""),
+          role: String((m as { role?: string }).role || ""),
+        }))
+        .sort((a, b) => a.nom.localeCompare(b.nom));
+      setEquipeMembers(rows);
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const submit = async () => {
+    if (!memberId) {
+      alert("Choisis un membre");
+      return;
+    }
+    const m = parseFloat(montant.replace(",", "."));
+    if (!Number.isFinite(m) || m === 0) {
+      alert("Montant invalide");
+      return;
+    }
+    if (!date) {
+      alert("Date obligatoire");
+      return;
+    }
+    setBusy(true);
+    try {
+      const member = equipeMembers.find((x) => x.id === memberId);
+      const { collection, addDoc, serverTimestamp } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      await addDoc(collection(db, "paiementsEquipe"), {
+        memberId,
+        memberNom: member?.nom || "",
+        memberRole: member?.role || "",
+        montant: m,
+        type,
+        date,
+        notes: notes.trim() || null,
+        createdAt: serverTimestamp(),
+      });
+      onClose();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-md max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <h2 className="text-lg font-semibold">+ Paiement</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-gray-600">Membre</label>
+            <select
+              value={memberId}
+              onChange={(e) => setMemberId(e.target.value)}
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            >
+              <option value="">— Choisir —</option>
+              {equipeMembers.map((m) => (
+                <option key={m.id} value={m.id}>{m.nom} ({m.role})</option>
+              ))}
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs text-gray-600">Montant (€)</label>
+              <input
+                type="number"
+                value={montant}
+                onChange={(e) => setMontant(e.target.value)}
+                placeholder="100"
+                className="w-full px-2 py-1.5 border rounded text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-600">Type</label>
+              <select
+                value={type}
+                onChange={(e) => setType(e.target.value as typeof type)}
+                className="w-full px-2 py-1.5 border rounded text-sm"
+              >
+                <option value="salaire">Salaire</option>
+                <option value="avance">Avance</option>
+                <option value="prime">Prime</option>
+                <option value="autre">Autre</option>
+              </select>
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Date</label>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Notes (optionnel)</label>
+            <input
+              type="text"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder='Ex: "avance pour location appart"'
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            />
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Annuler</button>
+          <button
+            onClick={submit}
+            disabled={busy}
+            className="px-3 py-1.5 text-sm bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50"
+          >
+            {busy ? "..." : "Enregistrer"}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
