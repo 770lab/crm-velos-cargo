@@ -65,8 +65,10 @@ const fmt = (n: number) =>
 export default function FinancesPage() {
   const user = useCurrentUser();
   const today = useMemo(() => new Date(), []);
-  const [from, setFrom] = useState(isoDay(startOfMonth(today)));
-  const [to, setTo] = useState(isoDay(endOfMonth(today)));
+  // Filtre par défaut = Année 2026 (Yoann 2026-05-01) : vue globale à
+  // l'arrivée pour piloter, pas le mois en cours.
+  const [from, setFrom] = useState(`${today.getFullYear()}-01-01`);
+  const [to, setTo] = useState(`${today.getFullYear()}-12-31`);
   const [data, setData] = useState<FinancesResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -121,6 +123,23 @@ export default function FinancesPage() {
     setFrom(`${today.getFullYear()}-01-01`);
     setTo(`${today.getFullYear()}-12-31`);
   };
+  // Aujourd'hui (Yoann 2026-05-01)
+  const setDay = () => {
+    const iso = isoDay(today);
+    setFrom(iso);
+    setTo(iso);
+  };
+  // Semaine ISO (Lundi → Dimanche)
+  const setWeek = () => {
+    const d = new Date(today);
+    const dow = (d.getDay() + 6) % 7; // 0=Lun, 6=Dim
+    const monday = new Date(d);
+    monday.setDate(d.getDate() - dow);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+    setFrom(isoDay(monday));
+    setTo(isoDay(sunday));
+  };
 
   const byRole = useMemo(() => {
     const groups: Record<string, MemberRow[]> = {};
@@ -163,13 +182,19 @@ export default function FinancesPage() {
           />
         </div>
         <div className="flex flex-wrap gap-2 ml-auto">
+          <button onClick={setDay} className="px-3 py-1.5 text-sm border rounded-lg hover:bg-gray-50">
+            Aujourd&apos;hui
+          </button>
+          <button onClick={setWeek} className="px-3 py-1.5 text-sm border rounded-lg hover:bg-gray-50">
+            Cette semaine
+          </button>
           <button onClick={() => setMonth(-1)} className="px-3 py-1.5 text-sm border rounded-lg hover:bg-gray-50">
             Mois précédent
           </button>
-          <button onClick={() => setMonth(0)} className="px-3 py-1.5 text-sm border rounded-lg bg-green-50 border-green-300 text-green-700 hover:bg-green-100">
+          <button onClick={() => setMonth(0)} className="px-3 py-1.5 text-sm border rounded-lg hover:bg-gray-50">
             Ce mois
           </button>
-          <button onClick={setYear} className="px-3 py-1.5 text-sm border rounded-lg hover:bg-gray-50">
+          <button onClick={setYear} className="px-3 py-1.5 text-sm border rounded-lg bg-green-50 border-green-300 text-green-700 hover:bg-green-100">
             Année {today.getFullYear()}
           </button>
         </div>
