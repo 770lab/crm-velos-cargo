@@ -180,6 +180,10 @@ function livraisonFromDoc(id: string, d: DocumentData): LivraisonRow {
     heureDepartTournee: typeof d.heureDepartTournee === "string" ? d.heureDepartTournee : null,
     csvAxdisSentAt: tsToIso(d.csvAxdisSentAt),
     csvAxdisSentTo: typeof d.csvAxdisSentTo === "string" ? d.csvAxdisSentTo : null,
+    dossierConfirmeAt: tsToIso(d.dossierConfirmeAt),
+    dossierConfirmePar: typeof d.dossierConfirmePar === "string" ? d.dossierConfirmePar : null,
+    deposeAt: tsToIso(d.deposeAt),
+    deposePar: typeof d.deposePar === "string" ? d.deposePar : null,
     client: {
       entreprise: d.clientSnapshot?.entreprise ?? "",
       ville: d.clientSnapshot?.ville ?? null,

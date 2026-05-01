@@ -2270,6 +2270,40 @@ Réponds STRICTEMENT en JSON sans markdown, format :
     }
   };
 
+  // Toggles workflow opérationnel admin (Yoann 2026-05-01) :
+  // - dossierConfirme : bureau a vérifié docs CEE complets
+  // - depose : dossier déposé pour remboursement CEE (= prise de paiement)
+  const toggleDossierConfirme = async (id: string, current: string | null | undefined) => {
+    setBusy(id);
+    try {
+      const now = new Date().toISOString();
+      const data = current
+        ? { dossierConfirmeAt: null, dossierConfirmePar: null }
+        : { dossierConfirmeAt: now, dossierConfirmePar: currentUser?.nom || null };
+      await gasPost("updateLivraison", { id, data });
+      onChanged();
+    } catch (e) {
+      alert("Échec : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBusy(null);
+    }
+  };
+  const toggleDepose = async (id: string, current: string | null | undefined) => {
+    setBusy(id);
+    try {
+      const now = new Date().toISOString();
+      const data = current
+        ? { deposeAt: null, deposePar: null }
+        : { deposeAt: now, deposePar: currentUser?.nom || null };
+      await gasPost("updateLivraison", { id, data });
+      onChanged();
+    } catch (e) {
+      alert("Échec : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBusy(null);
+    }
+  };
+
   const validateClient = async (id: string, status: "validee_orale" | "validee_mail" | "non_contacte", currentUserName: string) => {
     setBusy(id);
     let par: string | null = currentUserName || null;
@@ -3182,6 +3216,48 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                       </div>
                     );
                   })()}
+                  {/* Workflow admin (Yoann 2026-05-01) : 2 toggles
+                      complémentaires à "Validé par téléphone" pour traquer
+                      les étapes administratives qui causent des oublis :
+                      - 📁 Dossier complet : bureau a vérifié les docs CEE
+                      - 💰 À déposer / 📥 Déposé : dossier remis pour
+                        remboursement CEE (= prise de paiement) */}
+                  {l.statut !== "annulee" && (
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleDossierConfirme(l.id, l.dossierConfirmeAt); }}
+                        disabled={busy === l.id}
+                        className={`px-2 py-0.5 text-[11px] rounded border ${
+                          l.dossierConfirmeAt
+                            ? "bg-emerald-100 border-emerald-400 text-emerald-800"
+                            : "bg-white border-gray-300 text-gray-600 hover:bg-gray-50"
+                        }`}
+                        title={
+                          l.dossierConfirmeAt
+                            ? `Confirmé par ${l.dossierConfirmePar || "?"} · ${new Date(l.dossierConfirmeAt).toLocaleDateString("fr-FR")} (clic pour retirer)`
+                            : "Marquer le dossier comme complet (bureau a vérifié devis + Kbis + attestation + signature)"
+                        }
+                      >
+                        {l.dossierConfirmeAt ? "✅" : "☐"} Dossier complet
+                      </button>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); toggleDepose(l.id, l.deposeAt); }}
+                        disabled={busy === l.id}
+                        className={`px-2 py-0.5 text-[11px] rounded border ${
+                          l.deposeAt
+                            ? "bg-emerald-100 border-emerald-400 text-emerald-800"
+                            : "bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100"
+                        }`}
+                        title={
+                          l.deposeAt
+                            ? `Déposé par ${l.deposePar || "?"} · ${new Date(l.deposeAt).toLocaleDateString("fr-FR")} (clic pour retirer)`
+                            : "Marquer comme déposé (dossier remis pour remboursement CEE — prise de paiement)"
+                        }
+                      >
+                        {l.deposeAt ? "📥 Déposé" : "💰 À déposer"}
+                      </button>
+                    </div>
+                  )}
                   {tournee.tourneeId && (() => {
                     const cp = progression?.clients?.find((c) => c.clientId === l.clientId)?.totals;
                     const tot = cp?.total ?? l._count.velos;

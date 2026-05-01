@@ -137,6 +137,14 @@ interface LivraisonRow {
    *  Cloud Function sendPreparationCsv après envoi SMTP réussi. */
   csvAxdisSentAt?: string | null;
   csvAxdisSentTo?: string | null;
+  /** Toggles workflow opérationnel (Yoann 2026-05-01) : checkboxes que
+   *  l'opérateur clique manuellement pour traquer son avancement.
+   *  - dossierConfirme : bureau a vérifié docs CEE complets, clic explicite
+   *  - depose : dossier déposé pour remboursement CEE (= se faire payer) */
+  dossierConfirmeAt?: string | null;
+  dossierConfirmePar?: string | null;
+  deposeAt?: string | null;
+  deposePar?: string | null;
   client: {
     entreprise: string;
     ville: string | null;

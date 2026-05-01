@@ -63,6 +63,23 @@ export default function ClientsPage() {
     return map;
   }, [livraisons]);
 
+  // Workflow admin par client (Yoann 2026-05-01) : on agrège tous les états
+  // dossierConfirme / depose sur les livraisons actives du client. Un client
+  // est marqué "dossier confirmé" si AU MOINS une de ses livraisons
+  // non-annulées l'est. Pareil pour déposé. (1 client = 1 livraison en
+  // général, donc c'est rarement ambigu.)
+  const adminFlagsByClient = useMemo(() => {
+    const map = new Map<string, { dossierConfirme: boolean; depose: boolean }>();
+    for (const l of livraisons) {
+      if (!l.clientId || l.statut === "annulee") continue;
+      const cur = map.get(l.clientId) || { dossierConfirme: false, depose: false };
+      if (l.dossierConfirmeAt) cur.dossierConfirme = true;
+      if (l.deposeAt) cur.depose = true;
+      map.set(l.clientId, cur);
+    }
+    return map;
+  }, [livraisons]);
+
   const clients = useMemo(() => {
     let result = allClients;
     // Filtre RBAC apporteur : un apporteur ne voit QUE ses propres clients
@@ -344,6 +361,18 @@ export default function ClientsPage() {
               <th className="text-center px-4 py-3 font-medium text-gray-600" title="Bon de livraison signé/tamponné par le client">BL signé</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600" title="Vélos avec les 3 photos preuve montage uploadées">Monté</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Bicycle</th>
+              <th
+                className="text-center px-4 py-3 font-medium text-gray-600"
+                title="Dossier complet confirmé par le bureau (devis + Kbis + attestation + signature vérifiés)"
+              >
+                Dossier ✓
+              </th>
+              <th
+                className="text-center px-4 py-3 font-medium text-gray-600"
+                title="Dossier déposé pour remboursement CEE (= prise de paiement)"
+              >
+                Déposé
+              </th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Facturables</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Mail</th>
             </tr>
@@ -413,6 +442,26 @@ export default function ClientsPage() {
                 </td>
                 <td className="text-center px-4 py-3">
                   <DocCell ok={c.inscriptionBicycle} lien={c.bicycleLien ?? null} clientId={c.id} docType="inscriptionBicycle" onChange={() => refresh("clients")} />
+                </td>
+                <td className="text-center px-4 py-3">
+                  {(() => {
+                    const f = adminFlagsByClient.get(c.id);
+                    return f?.dossierConfirme ? (
+                      <span className="text-emerald-600" title="Dossier confirmé bureau">✅</span>
+                    ) : (
+                      <span className="text-gray-300" title="Pas encore confirmé">○</span>
+                    );
+                  })()}
+                </td>
+                <td className="text-center px-4 py-3">
+                  {(() => {
+                    const f = adminFlagsByClient.get(c.id);
+                    return f?.depose ? (
+                      <span className="text-emerald-600" title="Dossier déposé pour CEE">📥</span>
+                    ) : (
+                      <span className="text-gray-300" title="Pas encore déposé">○</span>
+                    );
+                  })()}
                 </td>
                 <td className="text-center px-4 py-3">
                   <span className={c.stats.facturables > 0 ? "text-amber-600 font-medium" : ""}>
