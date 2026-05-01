@@ -4055,6 +4055,7 @@ export async function runFirestoreGet(
         dateChargement: string | null;
         dateLivraisonScan: string | null;
         dateMontage: string | null;
+        photoChargementUrl: string | null;
       };
       const velosByClient: Record<string, Velo[]> = {};
       const totals = { total: 0, prepare: 0, charge: 0, livre: 0, monte: 0 };
@@ -4085,6 +4086,7 @@ export async function runFirestoreGet(
             dateChargement?: unknown;
             dateLivraisonScan?: unknown;
             dateMontage?: unknown;
+            photoChargementUrl?: string | null;
           };
           const cid = data.clientId || "";
           if (!cid) continue;
@@ -4098,7 +4100,18 @@ export async function runFirestoreGet(
           // (= somme des nbVelos des livraisons actives). Si le client a plus
           // de vélos cibles que demandé pour cette tournée (ex : 2 commandes
           // séparées), seuls les premiers comptent ici.
-          const cap = expectedByClient[cid] ?? 0;
+          //
+          // BUG 2026-05-01 (Yoann ANADOLU + MINE COMPAGNIE) : pour les
+          // livraisons reportées / créées via "validé par téléphone" sans
+          // que `nbVelos` ait été propagé, expectedByClient[cid] vaut 0 →
+          // TOUS les vélos du client étaient skippés et la tournée affichait
+          // "13/13 ✓" en oubliant le client postponé. Fallback : si la somme
+          // des nbVelos vaut 0 mais que le client est bien dans la tournée,
+          // on retire le plafond (Infinity) pour compter tous ses vélos
+          // actifs. La protection "2 commandes séparées" reste active dès
+          // qu'au moins une livraison du client porte un nbVelos > 0.
+          const expected = expectedByClient[cid] ?? 0;
+          const cap = expected > 0 ? expected : Number.POSITIVE_INFINITY;
           if (perClientTotals[cid].total >= cap) continue;
           const v: Velo = {
             veloId: d.id,
@@ -4107,6 +4120,7 @@ export async function runFirestoreGet(
             dateChargement: isoOrNull(data.dateChargement),
             dateLivraisonScan: isoOrNull(data.dateLivraisonScan),
             dateMontage: isoOrNull(data.dateMontage),
+            photoChargementUrl: data.photoChargementUrl || null,
           };
           velosByClient[cid].push(v);
           perClientTotals[cid].total++;

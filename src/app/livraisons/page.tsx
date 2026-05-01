@@ -1808,9 +1808,17 @@ function TourneeModal({
       clientId: string;
       entreprise?: string;
       totals: { total: number; prepare: number; charge: number; livre: number; monte: number };
-      velos?: { veloId: string; fnuci: string | null }[];
+      velos?: {
+        veloId: string;
+        fnuci: string | null;
+        datePreparation?: string | null;
+        dateChargement?: string | null;
+        photoChargementUrl?: string | null;
+      }[];
     }[];
   } | null>(null);
+  // Galerie photos CEE chargement (preuve TRA-EQ-131).
+  const [galleryOpen, setGalleryOpen] = useState(false);
 
   useEffect(() => {
     if (!tournee.tourneeId) return;
@@ -2816,6 +2824,59 @@ Réponds STRICTEMENT en JSON sans markdown, format :
               </button>
             </div>
           </div>
+          );
+        })()}
+
+        {/* Galerie photos CEE chargement (preuve TRA-EQ-131 pour COFRAC).
+            Visible aux admin/superadmin uniquement (perms.canSeeAdminBlocs)
+            dès qu'au moins 1 vélo de la tournée a une photoChargementUrl. */}
+        {perms.canSeeAdminBlocs && tournee.tourneeId && progression && (() => {
+          const photos: Array<{ veloId: string; fnuci: string | null; clientName: string; url: string }> = [];
+          for (const c of progression.clients ?? []) {
+            for (const v of c.velos ?? []) {
+              if (v.photoChargementUrl) {
+                photos.push({
+                  veloId: v.veloId,
+                  fnuci: v.fnuci,
+                  clientName: c.entreprise || "?",
+                  url: v.photoChargementUrl,
+                });
+              }
+            }
+          }
+          if (photos.length === 0) return null;
+          return (
+            <div className="mb-3 border border-purple-200 bg-purple-50 rounded-lg">
+              <button
+                type="button"
+                onClick={() => setGalleryOpen((v) => !v)}
+                className="w-full flex items-center justify-between px-3 py-2 text-sm text-purple-900 font-medium hover:bg-purple-100 rounded-lg"
+              >
+                <span>📷 Photos CEE chargement ({photos.length})</span>
+                <span className="text-xs">{galleryOpen ? "▲ replier" : "▼ déplier"}</span>
+              </button>
+              {galleryOpen && (
+                <div className="px-3 pb-3 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2">
+                  {photos.map((p) => (
+                    <a
+                      key={p.veloId}
+                      href={p.url}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block bg-white border border-purple-200 rounded overflow-hidden hover:border-purple-400"
+                      title={`${p.clientName} · ${p.fnuci || "(pas de FNUCI)"}`}
+                    >
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={p.url} alt={p.fnuci || "photo CEE"} className="w-full h-24 object-cover" />
+                      <div className="px-2 py-1 text-[10px] text-purple-900">
+                        <div className="font-mono truncate">{p.fnuci || "—"}</div>
+                        <div className="truncate text-purple-700">{p.clientName}</div>
+                      </div>
+                    </a>
+                  ))}
+                </div>
+              )}
+            </div>
           );
         })()}
 
