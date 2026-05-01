@@ -1781,6 +1781,177 @@ export const sendBlToFranck = onCall<{ tourneeId: string; clientId: string }>(
 );
 
 // ─────────────────────────────────────────────────────────────────────────
+// Phase 3 — Auto-matching bonsEnlevement <-> commandesCamion (Yoann
+// 2026-05-01). Quand un bon arrive avec tourneeRef = "VELO CARGO -
+// COMMANDE N", on lie automatiquement à commandesCamion[numero=N] et
+// on incrémente stockCartons sur l entrepôt destinataire.
+// ─────────────────────────────────────────────────────────────────────────
+const COMMANDE_REGEX = /VELO\s*CARGO\s*[-–]\s*COMMANDE\s*(\d+)/i;
+
+export const onBonEnlevementWritten = onDocumentWritten(
+  "bonsEnlevement/{bonId}",
+  async (event) => {
+    const bonId = event.params.bonId;
+    const before = event.data?.before.exists ? (event.data.before.data() as Record<string, unknown>) : null;
+    const after = event.data?.after.exists ? (event.data.after.data() as Record<string, unknown>) : null;
+    if (!after) return; // suppression : on ne fait rien (cas rare)
+
+    // Idempotence : si le bon est déjà lié à une commande, on ne refait rien.
+    if (after.commandeCamionId) {
+      logger.debug("[bon-trigger] déjà lié", { bonId, commandeId: after.commandeCamionId });
+      return;
+    }
+
+    // Le tourneeRef peut être réécrit à chaque sync. On match à chaque
+    // changement tant que pas encore lié.
+    const refRaw = String(after.tourneeRef || after.subject || "").trim();
+    if (!refRaw) return;
+    const m = refRaw.match(COMMANDE_REGEX);
+    if (!m) {
+      // Pas une commande camion (probablement une tournée AXDIS classique
+      // "VELO CARGO - TOURNEE X"). On ne touche pas.
+      return;
+    }
+    const numero = parseInt(m[1], 10);
+    if (!Number.isFinite(numero) || numero <= 0) return;
+
+    // Optimisation : si on vient juste de relier (before avait déjà commandeCamionId),
+    // ne pas reprocesser
+    if (before?.commandeCamionId) return;
+
+    logger.info("[bon-trigger] match COMMANDE détecté", { bonId, numero, refRaw });
+
+    // Cherche la commandeCamion correspondante
+    const cSnap = await db
+      .collection("commandesCamion")
+      .where("numero", "==", numero)
+      .limit(1)
+      .get();
+    if (cSnap.empty) {
+      logger.warn("[bon-trigger] commande introuvable", { numero, bonId });
+      return;
+    }
+    const commandeDoc = cSnap.docs[0];
+    const commande = commandeDoc.data() as {
+      statut?: string;
+      entrepotDestinataireId?: string;
+      bonRetourId?: string | null;
+    };
+    // Si déjà liée (autre bon ?), log et stop
+    if (commande.bonRetourId && commande.bonRetourId !== bonId) {
+      logger.warn("[bon-trigger] commande déjà liée à un autre bon", {
+        numero,
+        existingBon: commande.bonRetourId,
+        newBon: bonId,
+      });
+      return;
+    }
+
+    const numeroDoc = String(after.numeroDoc || "");
+    const quantite = Number(after.quantite || 0);
+    const entrepotId = commande.entrepotDestinataireId;
+    const today = new Date().toISOString().slice(0, 10);
+
+    // 1) Mise à jour commande : statut + bonRetour
+    try {
+      await commandeDoc.ref.set(
+        {
+          statut: "recue",
+          bonRetourId: bonId,
+          bonRetourNumero: numeroDoc || null,
+          quantiteLivree: quantite || null,
+          dateRecue: new Date().toISOString(),
+          autoMatchedAt: FieldValue.serverTimestamp(),
+          updatedAt: FieldValue.serverTimestamp(),
+        },
+        { merge: true },
+      );
+    } catch (e) {
+      logger.error("[bon-trigger] update commande KO", { numero, e });
+    }
+
+    // 2) Marque le bon avec commandeCamionId pour idempotence + UI
+    try {
+      await db.collection("bonsEnlevement").doc(bonId).set(
+        {
+          commandeCamionId: commandeDoc.id,
+          commandeCamionNumero: numero,
+        },
+        { merge: true },
+      );
+    } catch (e) {
+      logger.error("[bon-trigger] update bon KO", { bonId, e });
+    }
+
+    // 3) Auto-incrément stockCartons sur l entrepôt destinataire
+    //    + crée mouvement traçable.
+    if (entrepotId && quantite > 0) {
+      try {
+        await db.collection("entrepots").doc(entrepotId).collection("mouvements").add({
+          type: "carton",
+          quantite,
+          date: today,
+          source: `bon-axdis-${numeroDoc || bonId}`,
+          notes: `Réception ${numeroDoc} — ${refRaw}`,
+          bonId,
+          commandeCamionId: commandeDoc.id,
+          createdAt: FieldValue.serverTimestamp(),
+          autoCreated: true,
+        });
+        await db.collection("entrepots").doc(entrepotId).set(
+          {
+            stockCartons: FieldValue.increment(quantite),
+            updatedAt: FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
+        logger.info("[bon-trigger] stock incrémenté", { entrepotId, quantite, numero });
+      } catch (e) {
+        logger.error("[bon-trigger] increment stock KO", { entrepotId, quantite, e });
+      }
+    } else if (!entrepotId) {
+      logger.warn("[bon-trigger] commande sans entrepotDestinataireId — pas d incrément stock", { numero });
+    } else {
+      logger.warn("[bon-trigger] quantite vide ou 0 — pas d incrément stock", { numero, quantite });
+    }
+  },
+);
+
+// ─────────────────────────────────────────────────────────────────────────
+// rescanBonsForCommandes : fonction admin pour rétro-matcher les bons
+// existants reçus avant l'activation du trigger. À lancer une fois après
+// déploiement.
+// ─────────────────────────────────────────────────────────────────────────
+export const rescanBonsForCommandes = onCall<Record<string, never>>(async (request) => {
+  const auth = request.auth;
+  if (!auth) throw new HttpsError("unauthenticated", "Login requis");
+  const memberDoc = await db.collection("equipe").doc(auth.uid).get();
+  const role = memberDoc.exists ? (memberDoc.data() as { role?: string }).role : null;
+  if (role !== "admin" && role !== "superadmin") {
+    throw new HttpsError("permission-denied", "Réservé admin/superadmin");
+  }
+
+  const bonsSnap = await db.collection("bonsEnlevement").get();
+  let scanned = 0;
+  let matched = 0;
+  for (const bonDoc of bonsSnap.docs) {
+    const data = bonDoc.data();
+    if (data.commandeCamionId) continue; // déjà lié
+    const ref = String(data.tourneeRef || data.subject || "").trim();
+    const m = ref.match(COMMANDE_REGEX);
+    if (!m) continue;
+    scanned++;
+    // Trigger l'écriture (qui réveille onBonEnlevementWritten)
+    // En mettant à jour updatedAt seulement, on force le trigger sans
+    // modifier les données.
+    await bonDoc.ref.set({ rescannedAt: FieldValue.serverTimestamp() }, { merge: true });
+    matched++;
+  }
+  logger.info("rescanBonsForCommandes terminé", { scanned, matched });
+  return { ok: true, scanned, matched };
+});
+
+// ─────────────────────────────────────────────────────────────────────────
 // sendCommandeCamion : envoie le mail "VELO CARGO - COMMANDE N" à Tiffany
 // pour passer commande d'un camion complet vers un entrepôt destinataire
 // (Yoann 2026-05-01). L'email part de velos-cargo@artisansverts.energy
