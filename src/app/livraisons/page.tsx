@@ -708,6 +708,7 @@ export default function LivraisonsPage() {
         <DayView
           refDate={refDate}
           tourneesByDate={tourneesByDate}
+          sessionsByDate={sessionsByDate}
           onOpen={setOpenTournee}
           onBatchAxdis={(d, ts) => setBatchAxdis({ date: d, tournees: ts })}
         />
@@ -716,6 +717,7 @@ export default function LivraisonsPage() {
         <MultiDayView
           refDate={refDate}
           tourneesByDate={tourneesByDate}
+          sessionsByDate={sessionsByDate}
           onOpen={setOpenTournee}
           nbDays={3}
           onBatchAxdis={(d, ts) => setBatchAxdis({ date: d, tournees: ts })}
@@ -725,6 +727,7 @@ export default function LivraisonsPage() {
         <WeekView
           refDate={refDate}
           tourneesByDate={tourneesByDate}
+          sessionsByDate={sessionsByDate}
           onOpen={setOpenTournee}
           onBatchAxdis={(d, ts) => setBatchAxdis({ date: d, tournees: ts })}
         />
@@ -878,19 +881,48 @@ function NavBar({
 // Vue 1 jour : pleine largeur, idéale sur mobile. Affiche toutes les tournées
 // du jour de refDate sans tronquer (contrairement à la WeekView où chaque
 // colonne ne fait que 14% de la largeur écran).
+// Yoann 2026-05-01 : type partagé entre MonthView/WeekView/DayView/MultiDayView.
+// Auparavant MonthView seul rendait les sessions atelier en cards orange.
+type SessionAtelierItem = {
+  id: string;
+  entrepotNom: string;
+  statut: string;
+  quantitePrevue?: number | null;
+  monteurNoms: string[];
+};
+type SessionsByDate = Map<string, SessionAtelierItem[]>;
+
+function SessionAtelierCard({ s }: { s: SessionAtelierItem }) {
+  return (
+    <div
+      className="bg-amber-50 border border-amber-300 rounded px-1.5 py-1 text-[10px] leading-tight"
+      title={`Atelier ${s.entrepotNom} · ${s.monteurNoms.length} monteurs : ${s.monteurNoms.join(", ")}`}
+    >
+      <div className="font-semibold text-amber-900 truncate">🔧 Atelier {s.entrepotNom}</div>
+      <div className="text-amber-700 opacity-80 truncate">
+        {s.monteurNoms.length} monteur{s.monteurNoms.length > 1 ? "s" : ""}
+        {s.quantitePrevue ? ` · ${s.quantitePrevue}v` : ""}
+      </div>
+    </div>
+  );
+}
+
 function DayView({
   refDate,
   tourneesByDate,
+  sessionsByDate,
   onOpen,
   onBatchAxdis,
 }: {
   refDate: Date;
   tourneesByDate: Map<string, Tournee[]>;
+  sessionsByDate?: SessionsByDate;
   onOpen: (t: Tournee) => void;
   onBatchAxdis: (date: Date, tournees: Tournee[]) => void;
 }) {
   const iso = isoDate(refDate);
   const list = tourneesByDate.get(iso) || [];
+  const sessions = sessionsByDate?.get(iso) || [];
   const today = isoDate(new Date());
   const isToday = iso === today;
 
@@ -936,12 +968,19 @@ function DayView({
         })()}
       </div>
       <div className="p-3 space-y-2 min-h-[40vh]">
-        {list.length === 0 ? (
-          <div className="text-sm text-gray-400 italic text-center py-8">Aucune tournée ce jour-là.</div>
-        ) : (
-          list.map((t) => (
-            <TourneeCard key={t.tourneeId || t.livraisons[0].id} tournee={t} onClick={() => onOpen(t)} />
-          ))
+        {list.length === 0 && sessions.length === 0 && (
+          <div className="text-sm text-gray-400 italic text-center py-8">Aucune tournée ni session atelier ce jour-là.</div>
+        )}
+        {list.map((t) => (
+          <TourneeCard key={t.tourneeId || t.livraisons[0].id} tournee={t} onClick={() => onOpen(t)} />
+        ))}
+        {sessions.length > 0 && (
+          <div className="border-t border-amber-200 pt-2 mt-2 space-y-1">
+            <div className="text-[11px] font-semibold text-amber-900 mb-1">
+              🔧 {sessions.length} session{sessions.length > 1 ? "s" : ""} atelier
+            </div>
+            {sessions.map((s) => <SessionAtelierCard key={s.id} s={s} />)}
+          </div>
         )}
         <DayStaffingSummary tournees={list} />
       </div>
@@ -955,12 +994,14 @@ function DayView({
 function MultiDayView({
   refDate,
   tourneesByDate,
+  sessionsByDate,
   onOpen,
   nbDays,
   onBatchAxdis,
 }: {
   refDate: Date;
   tourneesByDate: Map<string, Tournee[]>;
+  sessionsByDate?: SessionsByDate;
   onOpen: (t: Tournee) => void;
   nbDays: number;
   onBatchAxdis: (date: Date, tournees: Tournee[]) => void;
@@ -1023,12 +1064,14 @@ function MultiDayView({
         {days.map((d) => {
           const iso = isoDate(d);
           const list = tourneesByDate.get(iso) || [];
+          const sessions = sessionsByDate?.get(iso) || [];
           return (
             <div key={iso} className="border-r last:border-r-0 p-2 space-y-1.5">
-              {list.length === 0 && <div className="text-[11px] text-gray-300">—</div>}
+              {list.length === 0 && sessions.length === 0 && <div className="text-[11px] text-gray-300">—</div>}
               {list.map((t) => (
                 <TourneeCard key={t.tourneeId || t.livraisons[0].id} tournee={t} onClick={() => onOpen(t)} compact />
               ))}
+              {sessions.map((s) => <SessionAtelierCard key={s.id} s={s} />)}
               <DayStaffingSummary tournees={list} />
             </div>
           );
@@ -1041,11 +1084,13 @@ function MultiDayView({
 function WeekView({
   refDate,
   tourneesByDate,
+  sessionsByDate,
   onOpen,
   onBatchAxdis,
 }: {
   refDate: Date;
   tourneesByDate: Map<string, Tournee[]>;
+  sessionsByDate?: SessionsByDate;
   onOpen: (t: Tournee) => void;
   onBatchAxdis: (date: Date, tournees: Tournee[]) => void;
 }) {
@@ -1107,12 +1152,14 @@ function WeekView({
         {days.map((d) => {
           const iso = isoDate(d);
           const list = tourneesByDate.get(iso) || [];
+          const sessions = sessionsByDate?.get(iso) || [];
           return (
             <div key={iso} className="border-r last:border-r-0 p-2 space-y-1.5">
-              {list.length === 0 && <div className="text-[11px] text-gray-300">—</div>}
+              {list.length === 0 && sessions.length === 0 && <div className="text-[11px] text-gray-300">—</div>}
               {list.map((t) => (
                 <TourneeCard key={t.tourneeId || t.livraisons[0].id} tournee={t} onClick={() => onOpen(t)} compact />
               ))}
+              {sessions.map((s) => <SessionAtelierCard key={s.id} s={s} />)}
               <DayStaffingSummary tournees={list} />
             </div>
           );
@@ -1130,7 +1177,7 @@ function MonthView({
 }: {
   refDate: Date;
   tourneesByDate: Map<string, Tournee[]>;
-  sessionsByDate?: Map<string, Array<{ id: string; entrepotNom: string; statut: string; quantitePrevue?: number | null; monteurNoms: string[] }>>;
+  sessionsByDate?: SessionsByDate;
   onOpen: (t: Tournee) => void;
 }) {
   const first = new Date(refDate.getFullYear(), refDate.getMonth(), 1);
@@ -1173,20 +1220,8 @@ function MonthView({
               {list.length > 3 && (
                 <div className="text-[10px] text-gray-500">+{list.length - 3} autres</div>
               )}
-              {/* Sessions atelier (Yoann 2026-05-01) : affichées comme
-                  cartes orange dans la cellule jour. */}
               {sessionsByDate?.get(iso)?.map((s) => (
-                <div
-                  key={s.id}
-                  className="bg-amber-50 border border-amber-300 rounded px-1.5 py-1 text-[9px] leading-tight"
-                  title={`Atelier ${s.entrepotNom} · ${s.monteurNoms.length} monteurs : ${s.monteurNoms.join(", ")}`}
-                >
-                  <div className="font-semibold text-amber-900">🔧 Atelier {s.entrepotNom}</div>
-                  <div className="text-amber-700 opacity-80">
-                    {s.monteurNoms.length} monteur{s.monteurNoms.length > 1 ? "s" : ""}
-                    {s.quantitePrevue ? ` · ${s.quantitePrevue}v` : ""}
-                  </div>
-                </div>
+                <SessionAtelierCard key={s.id} s={s} />
               ))}
             </div>
           );
