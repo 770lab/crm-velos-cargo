@@ -259,6 +259,8 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   // suggestTournee (vague 3) — algo pur côté frontend, pas de Cloud Function
   // (lit clients + livraisons direct Firestore, bin-packing local).
   "suggestTournee",
+  // Phase B-1 (Yoann 2026-05-01) : suggestion tournée depuis un entrepôt.
+  "suggestTourneeFromEntrepot",
   // parcelle cadastrale (vague 3) — APIs publiques, pas de Cloud Function
   "fetchParcelle",
   "autoFetchParcelles",
@@ -3840,6 +3842,195 @@ export async function runFirestoreAction(
           distance: Math.round(c.distance * 10) / 10,
           velosRestants: c.velosRestants,
         })),
+      };
+    }
+
+    case "suggestTourneeFromEntrepot": {
+      // Yoann 2026-05-01 — Phase B-1 IA tournées multi-dépôts.
+      // Au lieu de partir d'un client cible (suggestTournee), on part d'un
+      // entrepôt sélectionné. On retourne les meilleurs clients à livrer
+      // dans le rayon, triés par distance, limités par capacité camion ET
+      // par stock disponible de l'entrepôt (cartons + montés selon mode
+      // de montage).
+      const entrepotId = String(body.entrepotId || "");
+      const mode = String(body.mode || "moyen");
+      const maxDistance = Number(body.maxDistance || 50);
+      const modeMontage = String(body.modeMontage || "client") as
+        | "client"
+        | "atelier"
+        | "client_redistribue";
+      if (!entrepotId) return { error: "entrepotId requis" };
+
+      // Capacité camion (mêmes valeurs que suggestTournee)
+      const capaciteOverride = Number(body.capacite);
+      const capacites: Record<string, number> = {
+        gros: 132,
+        moyen: 54,
+        camionnette: 20,
+        petit: 20,
+      };
+      const capaciteCamion = capaciteOverride > 0 ? capaciteOverride : (capacites[mode] ?? 54);
+
+      // Lit l'entrepôt
+      const eSnap = await getDoc(doc(db, "entrepots", entrepotId));
+      if (!eSnap.exists()) return { error: "Entrepôt introuvable" };
+      const entrepot = eSnap.data() as {
+        nom?: string;
+        ville?: string;
+        adresse?: string;
+        lat?: number;
+        lng?: number;
+        stockCartons?: number;
+        stockVelosMontes?: number;
+        role?: string;
+      };
+      if (typeof entrepot.lat !== "number" || typeof entrepot.lng !== "number") {
+        return { error: "Entrepôt sans coordonnées GPS — géocode-le d'abord" };
+      }
+      const eLat = entrepot.lat;
+      const eLng = entrepot.lng;
+
+      // Stock dispo selon mode montage :
+      // - "client" (cartons + montage client) → stock cartons
+      // - "atelier" (vélos pré-montés) → stock vélos montés
+      // - "client_redistribue" → stock vélos montés (le client redistribue)
+      let stockDispo = 0;
+      if (entrepot.role === "fournisseur") {
+        stockDispo = 99999; // AXDIS : pas de limite (stock fournisseur)
+      } else if (modeMontage === "client") {
+        stockDispo = Number(entrepot.stockCartons || 0);
+      } else {
+        stockDispo = Number(entrepot.stockVelosMontes || 0);
+      }
+      if (stockDispo <= 0) {
+        return {
+          error: `Stock insuffisant à ${entrepot.nom} (mode ${modeMontage} : ${stockDispo} dispo)`,
+          entrepot: { id: entrepotId, nom: entrepot.nom, stockDispo },
+        };
+      }
+
+      // Capacité effective = min(capacité camion, stock dispo)
+      const capaciteEffective = Math.min(capaciteCamion, stockDispo);
+
+      // Charge tous les clients livrables
+      const cSnap = await getDocs(collection(db, "clients"));
+      const points: Array<{
+        id: string;
+        entreprise: string;
+        ville: string;
+        lat: number;
+        lng: number;
+        nbVelos: number;
+        velosLivres: number;
+      }> = [];
+      for (const d of cSnap.docs) {
+        const o = d.data() as {
+          entreprise?: string;
+          ville?: string;
+          latitude?: number;
+          longitude?: number;
+          nbVelosCommandes?: number;
+          stats?: { livres?: number };
+        };
+        const lat = typeof o.latitude === "number" ? o.latitude : NaN;
+        const lng = typeof o.longitude === "number" ? o.longitude : NaN;
+        if (!isFinite(lat) || !isFinite(lng)) continue;
+        points.push({
+          id: d.id,
+          entreprise: String(o.entreprise || ""),
+          ville: String(o.ville || ""),
+          lat,
+          lng,
+          nbVelos: Number(o.nbVelosCommandes || 0),
+          velosLivres: Number(o.stats?.livres || 0),
+        });
+      }
+
+      // Livraisons planifiées pour calculer le reste à planifier par client
+      const lSnap = await getDocs(collection(db, "livraisons"));
+      const planifiesParClient = new Map<string, number>();
+      for (const d of lSnap.docs) {
+        const o = d.data() as { statut?: string; clientId?: string; nbVelos?: number };
+        if (String(o.statut || "").toLowerCase() !== "planifiee") continue;
+        const cid = String(o.clientId || "");
+        if (!cid) continue;
+        planifiesParClient.set(cid, (planifiesParClient.get(cid) || 0) + (Number(o.nbVelos) || 0));
+      }
+
+      // Candidats : clients dans le rayon avec reste > 0
+      type Candidate = {
+        id: string;
+        entreprise: string;
+        ville: string;
+        lat: number;
+        lng: number;
+        distance: number;
+        velosRestants: number;
+      };
+      const candidats: Candidate[] = points
+        .map((p) => ({
+          id: p.id,
+          entreprise: p.entreprise,
+          ville: p.ville,
+          lat: p.lat,
+          lng: p.lng,
+          distance: haversineKmFs(eLat, eLng, p.lat, p.lng),
+          velosRestants: Math.max(0, p.nbVelos - p.velosLivres - (planifiesParClient.get(p.id) || 0)),
+        }))
+        .filter((c) => c.distance <= maxDistance && c.velosRestants > 0)
+        .sort((a, b) => a.distance - b.distance);
+
+      // Heuristique : on remplit le camion en partant des clients les plus
+      // proches (nearest neighbor), tant qu'il reste de la capacité.
+      const stops: Array<Candidate & { nbVelos: number }> = [];
+      let resteCamion = capaciteEffective;
+      for (const c of candidats) {
+        if (resteCamion <= 0) break;
+        const nb = Math.min(c.velosRestants, resteCamion);
+        if (nb <= 0) continue;
+        stops.push({ ...c, nbVelos: nb });
+        resteCamion -= nb;
+      }
+
+      const totalVelosTournee = stops.reduce((s, x) => s + x.nbVelos, 0);
+      return {
+        ok: true,
+        entrepot: {
+          id: entrepotId,
+          nom: entrepot.nom || "?",
+          ville: entrepot.ville || "",
+          adresse: entrepot.adresse || "",
+          lat: eLat,
+          lng: eLng,
+          role: entrepot.role || "stock",
+          stockDispo,
+        },
+        mode,
+        modeMontage,
+        capaciteCamion,
+        capaciteEffective,
+        totalVelos: totalVelosTournee,
+        nbStops: stops.length,
+        stops: stops.map((s) => ({
+          id: s.id,
+          entreprise: s.entreprise,
+          ville: s.ville,
+          lat: s.lat,
+          lng: s.lng,
+          nbVelos: s.nbVelos,
+          distance: Math.round(s.distance * 10) / 10,
+          velosRestantsApres: s.velosRestants - s.nbVelos,
+        })),
+        candidatsHorsTournee: candidats
+          .filter((c) => !stops.some((s) => s.id === c.id))
+          .slice(0, 5)
+          .map((c) => ({
+            id: c.id,
+            entreprise: c.entreprise,
+            ville: c.ville,
+            distance: Math.round(c.distance * 10) / 10,
+            velosRestants: c.velosRestants,
+          })),
       };
     }
 
