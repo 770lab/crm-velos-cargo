@@ -2137,6 +2137,9 @@ type SuggestionResult = {
   dureeTotaleMin?: number | null;
   routingSource?: "haversine" | "maps";
   routingError?: string | null;
+  velosParHeure?: number | null;
+  velosParKm?: number | null;
+  tauxRemplissage?: number | null;
   stops?: SuggestionStop[];
   candidatsHorsTournee?: Array<{ id: string; entreprise: string; ville: string; distance: number; velosRestants: number }>;
 };
@@ -2337,6 +2340,27 @@ export function SuggererTourneeModal({
                       <span className="ml-2 text-amber-700">⚠️ Maps KO ({result.routingError}) — fallback Haversine</span>
                     )}
                   </div>
+                  {/* KPIs rentabilité (Yoann 2026-05-01 — Phase 2.3) */}
+                  <div className="grid grid-cols-3 gap-2 mt-2 text-[10px]">
+                    {result.velosParHeure != null && (
+                      <div className="bg-white border border-emerald-200 rounded p-1 text-center">
+                        <div className="font-bold text-emerald-900 text-sm">{result.velosParHeure}</div>
+                        <div className="text-emerald-700 uppercase">v/h chauffeur</div>
+                      </div>
+                    )}
+                    {result.velosParKm != null && (
+                      <div className="bg-white border border-emerald-200 rounded p-1 text-center">
+                        <div className="font-bold text-emerald-900 text-sm">{result.velosParKm}</div>
+                        <div className="text-emerald-700 uppercase">v/km</div>
+                      </div>
+                    )}
+                    {result.tauxRemplissage != null && (
+                      <div className={`border rounded p-1 text-center ${result.tauxRemplissage >= 90 ? "bg-emerald-100 border-emerald-400" : result.tauxRemplissage >= 60 ? "bg-amber-50 border-amber-300" : "bg-red-50 border-red-300"}`}>
+                        <div className="font-bold text-sm">{result.tauxRemplissage}%</div>
+                        <div className="uppercase text-gray-600">remplissage</div>
+                      </div>
+                    )}
+                  </div>
                 </div>
                 <div className="border rounded-lg overflow-hidden">
                   <table className="w-full text-sm">
@@ -2453,6 +2477,9 @@ type JourneeTournee = {
   dureeArretsMin: number;
   dureeTotalMin: number;
   routingSource: "haversine" | "maps";
+  velosParHeure?: number;
+  velosParKm?: number;
+  tauxRemplissage?: number;
   stops: JourneeStop[];
 };
 type JourneeResult = {
@@ -2468,6 +2495,8 @@ type JourneeResult = {
   nbTournees?: number;
   totalVelosJournee?: number;
   totalKmJournee?: number;
+  velosParHeureJournee?: number;
+  velosParKmJournee?: number;
   monteursParTournee?: number;
   tournees?: JourneeTournee[];
 };
@@ -2641,6 +2670,21 @@ function PlanifierJourneeModal({
                     <div className="text-emerald-600">💤 {formatMin(result.tempsLibreMin || 0)} libre</div>
                     <div>📦 {result.entrepot?.stockRestantApres ?? "?"} reste en stock</div>
                   </div>
+                  {/* KPIs globaux journée (Yoann 2026-05-01 — Phase 2.3) */}
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    {result.velosParHeureJournee != null && (
+                      <div className="bg-white border border-emerald-200 rounded px-2 py-1 text-center">
+                        <span className="text-base font-bold text-emerald-900">{result.velosParHeureJournee}</span>
+                        <span className="text-[10px] text-emerald-700 ml-1 uppercase">vélos / heure chauffeur</span>
+                      </div>
+                    )}
+                    {result.velosParKmJournee != null && (
+                      <div className="bg-white border border-emerald-200 rounded px-2 py-1 text-center">
+                        <span className="text-base font-bold text-emerald-900">{result.velosParKmJournee}</span>
+                        <span className="text-[10px] text-emerald-700 ml-1 uppercase">vélos / km roulés</span>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 {result.tournees.map((t) => (
@@ -2654,6 +2698,8 @@ function PlanifierJourneeModal({
                         <span title="Durée trajet route">🚗 {formatMin(t.dureeRouteMin)}</span>
                         <span title="Durée totale arrêts">🛑 {formatMin(t.dureeArretsMin)}</span>
                         <span title="Durée totale tournée"><strong>⏱ {formatMin(t.dureeTotalMin)}</strong></span>
+                        {t.velosParHeure != null && <span title="Productivité chauffeur">⚡ {t.velosParHeure} v/h</span>}
+                        {t.tauxRemplissage != null && <span title="Taux remplissage camion" className={t.tauxRemplissage >= 90 ? "text-emerald-700 font-bold" : t.tauxRemplissage >= 60 ? "text-amber-700" : "text-red-700"}>📊 {t.tauxRemplissage}%</span>}
                         {t.routingSource === "maps" && <span className="text-blue-700">🗺</span>}
                       </div>
                     </div>

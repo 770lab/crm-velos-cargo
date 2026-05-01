@@ -4070,26 +4070,37 @@ export async function runFirestoreAction(
         }
       }
 
-      // Phase 3 : nearest-neighbor depuis index 0 (entrepôt) avec la matrice
-      const indicesRestants: number[] = selected.map((_, idx) => idx + 1); // 1..N
-      const ordreIdx: number[] = []; // chemin en indices matrice
-      let cur = 0;
-      while (indicesRestants.length > 0) {
-        let bestK = 0;
-        let bestD = Infinity;
-        for (let k = 0; k < indicesRestants.length; k++) {
-          const idx = indicesRestants[k];
-          if (distM[cur][idx] < bestD) {
-            bestD = distM[cur][idx];
-            bestK = k;
+      // Phase 3 : Clarke-Wright Savings (Yoann 2026-05-01 — Phase 2.1).
+      // Avant : nearest-neighbor naïf depuis l entrepôt.
+      // Maintenant : CWS standard industriel, gain typique 10-30 % sur la
+      // distance totale. La capacité est intégrée dans CWS (les fusions
+      // dépassant capacity sont rejetées) — on prend la meilleure route
+      // (plus dense en demande) parmi les routes générées.
+      const demands: number[] = [0, ...selected.map((s) => s.velosRestants)];
+      const cwsRoutes = clarkeWrightSavings(distM, demands, capaciteEffective);
+      let ordreIdx: number[] = cwsRoutes.length > 0 ? cwsRoutes[0] : [];
+      // Si CWS n a rien produit (cas dégénéré : 1 seul client) → fallback NN
+      if (ordreIdx.length === 0) {
+        const remaining: number[] = selected.map((_, i) => i + 1);
+        let cur = 0;
+        while (remaining.length > 0) {
+          let bk = 0;
+          let bd = Infinity;
+          for (let k = 0; k < remaining.length; k++) {
+            if (distM[cur][remaining[k]] < bd) {
+              bd = distM[cur][remaining[k]];
+              bk = k;
+            }
           }
+          const next = remaining.splice(bk, 1)[0];
+          ordreIdx.push(next);
+          cur = next;
         }
-        const next = indicesRestants.splice(bestK, 1)[0];
-        ordreIdx.push(next);
-        cur = next;
       }
 
-      // Phase 4 : 2-opt sur ordreIdx avec la matrice
+      // Phase 4 : 2-opt + Or-opt sur la route CWS (grattage des derniers %)
+      ordreIdx = refine2OptOrOpt(ordreIdx, distM);
+
       const tourLenIdx = (arr: number[]) => {
         if (arr.length === 0) return 0;
         let total = distM[0][arr[0]];
@@ -4097,27 +4108,6 @@ export async function runFirestoreAction(
         total += distM[arr[arr.length - 1]][0];
         return total;
       };
-      let improved = true;
-      let iter = 0;
-      while (improved && iter < 4) {
-        improved = false;
-        iter++;
-        const baseLen = tourLenIdx(ordreIdx);
-        for (let i = 0; i < ordreIdx.length - 1 && !improved; i++) {
-          for (let j = i + 1; j < ordreIdx.length; j++) {
-            const candidate = [
-              ...ordreIdx.slice(0, i),
-              ...ordreIdx.slice(i, j + 1).reverse(),
-              ...ordreIdx.slice(j + 1),
-            ];
-            if (tourLenIdx(candidate) < baseLen - 0.01) {
-              ordreIdx.splice(0, ordreIdx.length, ...candidate);
-              improved = true;
-              break;
-            }
-          }
-        }
-      }
 
       // Construit la liste finale de stops avec distances et durées segment
       const stops: Stop[] = ordreIdx.map((idx, i) => {
@@ -4162,6 +4152,17 @@ export async function runFirestoreAction(
         dureeTotaleMin,
         routingSource,
         routingError,
+        // KPIs rentabilité (Yoann 2026-05-01 — Phase 2.3) :
+        // velos/heure chauffeur ; velos/km ; taux remplissage capacité camion.
+        velosParHeure: dureeTotaleMin && dureeTotaleMin > 0
+          ? Math.round((totalVelosTournee / (dureeTotaleMin / 60)) * 10) / 10
+          : null,
+        velosParKm: distanceTotaleKm > 0
+          ? Math.round((totalVelosTournee / distanceTotaleKm) * 100) / 100
+          : null,
+        tauxRemplissage: capaciteCamion > 0
+          ? Math.round((totalVelosTournee / capaciteCamion) * 100)
+          : null,
         stops: stops.map((s) => ({
           id: s.id,
           entreprise: s.entreprise,
@@ -4275,6 +4276,9 @@ export async function runFirestoreAction(
         dureeArretsMin: number;
         dureeTotalMin: number;
         routingSource: "haversine" | "maps";
+        velosParHeure: number;
+        velosParKm: number;
+        tauxRemplissage: number;
         stops: Array<{ id: string; entreprise: string; ville: string; lat: number; lng: number; nbVelos: number; distance: number }>;
       }> = [];
 
@@ -4331,30 +4335,24 @@ export async function runFirestoreAction(
           }
         }
 
-        // NN + 2-opt
-        const indices: number[] = sel.map((_, i) => i + 1);
-        const ord: number[] = [];
-        let curIdx = 0;
-        while (indices.length > 0) {
-          let bk = 0; let bd = Infinity;
-          for (let k = 0; k < indices.length; k++) {
-            if (dM[curIdx][indices[k]] < bd) { bd = dM[curIdx][indices[k]]; bk = k; }
-          }
-          const nx = indices.splice(bk, 1)[0];
-          ord.push(nx); curIdx = nx;
-        }
-        const tourL = (a: number[]) => { if (!a.length) return 0; let t = dM[0][a[0]]; for (let i = 1; i < a.length; i++) t += dM[a[i - 1]][a[i]]; t += dM[a[a.length - 1]][0]; return t; };
-        let imp = true; let it = 0;
-        while (imp && it < 4) {
-          imp = false; it++;
-          const base = tourL(ord);
-          for (let i = 0; i < ord.length - 1 && !imp; i++) {
-            for (let j = i + 1; j < ord.length; j++) {
-              const cd = [...ord.slice(0, i), ...ord.slice(i, j + 1).reverse(), ...ord.slice(j + 1)];
-              if (tourL(cd) < base - 0.01) { ord.splice(0, ord.length, ...cd); imp = true; break; }
+        // CWS + 2-opt + Or-opt (Yoann 2026-05-01 — Phase 2.1)
+        const dem = [0, ...sel.map((s) => s.velosRestants)];
+        const cwsR = clarkeWrightSavings(dM, dem, capEff);
+        let ord: number[] = cwsR.length > 0 ? cwsR[0] : [];
+        if (ord.length === 0) {
+          const remaining: number[] = sel.map((_, i) => i + 1);
+          let curIdx = 0;
+          while (remaining.length > 0) {
+            let bk = 0; let bd = Infinity;
+            for (let k = 0; k < remaining.length; k++) {
+              if (dM[curIdx][remaining[k]] < bd) { bd = dM[curIdx][remaining[k]]; bk = k; }
             }
+            const nx = remaining.splice(bk, 1)[0];
+            ord.push(nx); curIdx = nx;
           }
         }
+        ord = refine2OptOrOpt(ord, dM);
+        const tourL = (a: number[]) => { if (!a.length) return 0; let t = dM[0][a[0]]; for (let i = 1; i < a.length; i++) t += dM[a[i - 1]][a[i]]; t += dM[a[a.length - 1]][0]; return t; };
 
         // Durée totale = route + arrêts (+ recharge si tnum > 1)
         const distKm = Math.round(tourL(ord) * 10) / 10;
@@ -4367,10 +4365,13 @@ export async function runFirestoreAction(
           // Fallback Haversine → estimation 35 km/h moyenne urbaine
           dureeRoute = Math.round((distKm / 35) * 60);
         }
-        const totalVelosT = sel.reduce((s, x) => s + x.velosRestants, 0);
+        // Total vélos = somme des stops effectivement inclus par CWS
+        // (peut être < sel.reduce si CWS a dû splitter en plusieurs routes
+        // et qu on n a gardé que la 1ère)
+        const totalVelosT = ord.reduce((s, idx) => s + sel[idx - 1].velosRestants, 0);
         const dureeArrets = mModeMontage === "client"
           ? Math.round((minPerVeloPerMonteur * totalVelosT) / monteursParTournee)
-          : tempsArretMontesMin * sel.length;
+          : tempsArretMontesMin * ord.length;
         const dureeRecharge = tnum === 1 ? 0 : tempsRechargeMin;
         const dureeT = dureeRoute + dureeArrets + dureeRecharge;
 
@@ -4386,16 +4387,23 @@ export async function runFirestoreAction(
           index: tnum,
           capaciteEffective: capEff,
           totalVelos: totalVelosT,
-          nbStops: sel.length,
+          nbStops: ord.length,
           distanceKm: distKm,
           dureeRouteMin: dureeRoute,
           dureeArretsMin: dureeArrets,
           dureeTotalMin: dureeT,
           routingSource: rSrc,
+          // KPIs rentabilité par tournée (Yoann 2026-05-01 — Phase 2.3)
+          velosParHeure: dureeT > 0 ? Math.round((totalVelosT / (dureeT / 60)) * 10) / 10 : 0,
+          velosParKm: distKm > 0 ? Math.round((totalVelosT / distKm) * 100) / 100 : 0,
+          tauxRemplissage: capCamion > 0 ? Math.round((totalVelosT / capCamion) * 100) : 0,
           stops: stopsOut,
         });
 
-        for (const s of sel) servis.add(s.id);
+        // Marque servis SEULEMENT les clients effectivement inclus par CWS
+        // (si la route CWS retournée a moins de stops que sel, les autres
+        // restent dispos pour la tournée suivante).
+        for (const idx of ord) servis.add(sel[idx - 1].id);
         stockRestant -= totalVelosT;
         dureeJourneeUtilisee += dureeT;
       }
@@ -4403,6 +4411,13 @@ export async function runFirestoreAction(
       const totalVelosJournee = tournees.reduce((s, t) => s + t.totalVelos, 0);
       const totalKmJournee = Math.round(tournees.reduce((s, t) => s + t.distanceKm, 0) * 10) / 10;
       const tempsLibreMin = Math.max(0, dureeJourneeMin - dureeJourneeUtilisee);
+      // KPIs globaux journée
+      const velosParHeureJournee = dureeJourneeUtilisee > 0
+        ? Math.round((totalVelosJournee / (dureeJourneeUtilisee / 60)) * 10) / 10
+        : 0;
+      const velosParKmJournee = totalKmJournee > 0
+        ? Math.round((totalVelosJournee / totalKmJournee) * 100) / 100
+        : 0;
 
       return {
         ok: true,
@@ -4413,6 +4428,8 @@ export async function runFirestoreAction(
         dureeJourneeMin,
         dureeJourneeUtilisee,
         tempsLibreMin,
+        velosParHeureJournee,
+        velosParKmJournee,
         nbTournees: tournees.length,
         totalVelosJournee,
         totalKmJournee,
@@ -4521,6 +4538,155 @@ function haversineKmFs(lat1: number, lng1: number, lat2: number, lng2: number): 
     + Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180)
       * Math.sin(dLng / 2) * Math.sin(dLng / 2);
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// Clarke-Wright Savings — algorithme VRP standard industriel (Clarke & Wright,
+// 1964). Gain typique 10-30 % vs nearest-neighbor sur distance totale.
+//
+// Yoann 2026-05-01 — Phase 2.1 logistique.
+//
+// Entrée :
+//   distM : matrice (N+1)×(N+1) où index 0 = entrepôt, 1..N = clients
+//   demands : array N (demande de chaque client) — index 0 ignoré
+//   capacity : capacité du véhicule (même unité que demands)
+//
+// Sortie : liste de routes (chacune = array d index 1..N), respect capacité.
+//   Routes triées par demande décroissante (la 1ère = la + dense).
+//   La meilleure tournée pour 1 camion = routes[0].
+//
+// Algo :
+//   1. Init : N routes triviales [0, i, 0]
+//   2. Calcule savings s(i,j) = d(0,i) + d(0,j) - d(i,j)
+//   3. Trie savings décroissants
+//   4. Pour chaque saving, fusionne les 2 routes contenant i et j si :
+//      - i et j sont aux extrémités (pas au milieu)
+//      - capacité respectée après fusion
+function clarkeWrightSavings(
+  distM: number[][],
+  demands: number[],
+  capacity: number,
+): number[][] {
+  const N = distM.length - 1;
+  if (N === 0) return [];
+  // Routes initiales : 1 par client, ordre = [client]. L entrepôt (0) est
+  // implicite début/fin, on ne le stocke pas dans la route.
+  const routes: number[][] = [];
+  const routeOf = new Map<number, number>();
+  for (let i = 1; i <= N; i++) {
+    routes.push([i]);
+    routeOf.set(i, routes.length - 1);
+  }
+  // Calcule tous les savings (paires uniques)
+  const savings: Array<{ i: number; j: number; saving: number }> = [];
+  for (let i = 1; i <= N; i++) {
+    for (let j = i + 1; j <= N; j++) {
+      savings.push({ i, j, saving: distM[0][i] + distM[0][j] - distM[i][j] });
+    }
+  }
+  savings.sort((a, b) => b.saving - a.saving);
+
+  for (const { i, j, saving } of savings) {
+    if (saving <= 0) break; // au-delà, fusionner allonge la tournée
+    const ri = routeOf.get(i);
+    const rj = routeOf.get(j);
+    if (ri === undefined || rj === undefined || ri === rj) continue;
+    const routeI = routes[ri];
+    const routeJ = routes[rj];
+    if (routeI.length === 0 || routeJ.length === 0) continue;
+
+    // i et j doivent être aux extrémités de leur route respective
+    const iIsStart = routeI[0] === i;
+    const iIsEnd = routeI[routeI.length - 1] === i;
+    const jIsStart = routeJ[0] === j;
+    const jIsEnd = routeJ[routeJ.length - 1] === j;
+    if (!(iIsStart || iIsEnd) || !(jIsStart || jIsEnd)) continue;
+
+    // Capacité combinée
+    const demI = routeI.reduce((s, idx) => s + demands[idx], 0);
+    const demJ = routeJ.reduce((s, idx) => s + demands[idx], 0);
+    if (demI + demJ > capacity) continue;
+
+    // Fusion : on choisit le sens qui place i et j adjacents
+    let merged: number[];
+    if (iIsEnd && jIsStart) merged = [...routeI, ...routeJ];
+    else if (iIsStart && jIsEnd) merged = [...routeJ, ...routeI];
+    else if (iIsEnd && jIsEnd) merged = [...routeI, ...[...routeJ].reverse()];
+    else if (iIsStart && jIsStart) merged = [...[...routeI].reverse(), ...routeJ];
+    else continue;
+
+    // Nouveau slot
+    const newIdx = routes.length;
+    routes.push(merged);
+    for (const idx of merged) routeOf.set(idx, newIdx);
+    routes[ri] = [];
+    routes[rj] = [];
+  }
+
+  // Filtre les routes vides (mergées) et trie par demande totale décroissante
+  const result = routes
+    .filter((r) => r.length > 0)
+    .map((r) => ({ route: r, dem: r.reduce((s, idx) => s + demands[idx], 0) }))
+    .sort((a, b) => b.dem - a.dem)
+    .map((x) => x.route);
+  return result;
+}
+
+// 2-opt + Or-opt sur une route donnée (indices dans la matrice). Best-effort,
+// limite itérations pour rester O(n²·k) raisonnable (k=4).
+//   - 2-opt : reverse(i..j) si raccourcit la tournée totale
+//   - Or-opt : déplace un segment de 1, 2 ou 3 stops vers une autre position
+function refine2OptOrOpt(
+  route: number[],
+  distM: number[][],
+): number[] {
+  if (route.length <= 2) return route;
+  const tourLen = (arr: number[]): number => {
+    let t = distM[0][arr[0]];
+    for (let i = 1; i < arr.length; i++) t += distM[arr[i - 1]][arr[i]];
+    t += distM[arr[arr.length - 1]][0];
+    return t;
+  };
+  let cur = [...route];
+  let improved = true;
+  let iter = 0;
+  while (improved && iter < 4) {
+    improved = false;
+    iter++;
+    const baseLen = tourLen(cur);
+
+    // 2-opt
+    for (let i = 0; i < cur.length - 1 && !improved; i++) {
+      for (let j = i + 1; j < cur.length; j++) {
+        const cand = [...cur.slice(0, i), ...cur.slice(i, j + 1).reverse(), ...cur.slice(j + 1)];
+        if (tourLen(cand) < baseLen - 0.01) {
+          cur = cand;
+          improved = true;
+          break;
+        }
+      }
+    }
+    if (improved) continue;
+
+    // Or-opt : déplace segments de 1 à 3 stops
+    for (const segLen of [1, 2, 3]) {
+      if (improved) break;
+      if (segLen >= cur.length) continue;
+      for (let i = 0; i + segLen <= cur.length && !improved; i++) {
+        const seg = cur.slice(i, i + segLen);
+        const without = [...cur.slice(0, i), ...cur.slice(i + segLen)];
+        for (let k = 0; k <= without.length && !improved; k++) {
+          if (k === i) continue; // même position
+          const cand = [...without.slice(0, k), ...seg, ...without.slice(k)];
+          if (tourLen(cand) < baseLen - 0.01) {
+            cur = cand;
+            improved = true;
+            break;
+          }
+        }
+      }
+    }
+  }
+  return cur;
 }
 
 export async function runFirestoreGet(
