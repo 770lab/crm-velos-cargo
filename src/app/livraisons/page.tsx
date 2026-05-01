@@ -4424,26 +4424,88 @@ function EquipeAssignBlock({
         {monteurs.length === 0 ? (
           <div className="text-xs text-gray-400 italic">Aucun monteur enregistré</div>
         ) : (
-          <div className="flex flex-wrap gap-1.5">
-            {monteurs.map((m) => {
-              const on = monteurIds.includes(m.id);
+          <>
+            {/* Auto-sélection par chef d équipe (Yoann 2026-05-01) :
+                regroupe les monteurs par chefId, propose un bouton par chef
+                qui a au moins 1 monteur rattaché. Click = toggle de toute
+                la team (si tous coches -> tous decochés, sinon tous coches).
+                Garde les monteurs déjà sélectionnés des autres chefs. */}
+            {(() => {
+              const teamsByChef = new Map<string, { chef: typeof chefs[number]; monteurs: typeof monteurs }>();
+              for (const m of monteurs) {
+                if (!m.chefId) continue;
+                const chef = chefs.find((c) => c.id === m.chefId);
+                if (!chef) continue;
+                if (!teamsByChef.has(chef.id)) teamsByChef.set(chef.id, { chef, monteurs: [] });
+                teamsByChef.get(chef.id)!.monteurs.push(m);
+              }
+              const teams = Array.from(teamsByChef.values());
+              if (teams.length === 0) return null;
               return (
-                <button
-                  key={m.id}
-                  type="button"
-                  onClick={() => toggleMonteur(m.id)}
-                  className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
-                    on
-                      ? "bg-emerald-600 text-white border-emerald-600"
-                      : "border-gray-300 text-gray-700 hover:bg-gray-50"
-                  }`}
-                >
-                  {on ? "✓ " : ""}
-                  {m.nom}
-                </button>
+                <div className="mb-2 flex flex-wrap gap-1.5 items-center">
+                  <span className="text-[11px] text-gray-500">Sélection rapide par équipe :</span>
+                  {teams.map(({ chef, monteurs: teamMonteurs }) => {
+                    const allSelected = teamMonteurs.every((m) => monteurIds.includes(m.id));
+                    const someSelected = teamMonteurs.some((m) => monteurIds.includes(m.id));
+                    const teamIds = teamMonteurs.map((m) => m.id);
+                    return (
+                      <button
+                        key={chef.id}
+                        type="button"
+                        onClick={() => {
+                          setMonteurIds((prev) => {
+                            let next: string[];
+                            if (allSelected) {
+                              // Décocher toute la team
+                              next = prev.filter((id) => !teamIds.includes(id));
+                            } else {
+                              // Cocher toute la team (en plus des autres déjà cochés)
+                              next = Array.from(new Set([...prev, ...teamIds]));
+                            }
+                            onMonteurCountChange?.(Math.max(1, next.length));
+                            return next;
+                          });
+                        }}
+                        className={`text-[11px] px-2 py-1 rounded-full border ${
+                          allSelected
+                            ? "bg-blue-600 text-white border-blue-600"
+                            : someSelected
+                              ? "bg-blue-100 text-blue-800 border-blue-300"
+                              : "bg-white text-gray-700 border-gray-300 hover:bg-blue-50"
+                        }`}
+                        title={`Team ${chef.nom} : ${teamMonteurs.map((m) => m.nom).join(", ")}`}
+                      >
+                        {allSelected ? "✓" : someSelected ? "◐" : "+"} Team {chef.nom} ({teamMonteurs.length})
+                      </button>
+                    );
+                  })}
+                </div>
               );
-            })}
-          </div>
+            })()}
+            <div className="flex flex-wrap gap-1.5">
+              {monteurs.map((m) => {
+                const on = monteurIds.includes(m.id);
+                const chef = m.chefId ? chefs.find((c) => c.id === m.chefId) : null;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    onClick={() => toggleMonteur(m.id)}
+                    className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
+                      on
+                        ? "bg-emerald-600 text-white border-emerald-600"
+                        : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                    }`}
+                    title={chef ? `Team ${chef.nom}` : "Monteur indépendant"}
+                  >
+                    {on ? "✓ " : ""}
+                    {m.nom}
+                    {chef && <span className={`ml-1 text-[10px] ${on ? "opacity-80" : "opacity-50"}`}>· {chef.nom}</span>}
+                  </button>
+                );
+              })}
+            </div>
+          </>
         )}
       </div>
 
