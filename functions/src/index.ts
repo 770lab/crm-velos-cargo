@@ -1229,6 +1229,10 @@ const TIFFANY_EMAIL = "Tiffany@axdis.fr";
 // Maria (équipe interne LUZE) doit aussi recevoir une copie du CSV de
 // préparation envoyé à Tiffany (30-04 09h57, demande Yoann).
 const MARIA_EMAIL = "maria@artisansverts.energy";
+// Comptabilité (Yoann 2026-05-01) : pour les commandes camion vers AXDIS
+// (bon de commande), on copie naomi (compta) et benjamin pour traçabilité.
+const NAOMI_EMAIL = "naomi@artisansverts.energy";
+const BENJAMIN_EMAIL = "benjamin@artisansverts.energy";
 
 function csvEscape(s: string): string {
   if (s.includes(";") || s.includes('"') || s.includes("\n")) {
@@ -1360,8 +1364,10 @@ export const sendPreparationCsv = onCall<{ tourneeId: string }>(
       const info = await transporter.sendMail({
         from: `"VELO CARGO" <${SENDER_EMAIL}>`,
         to: TIFFANY_EMAIL,
-        // Copies (30-04 09h57) : SENDER pour traçabilité + Maria (équipe interne).
-        cc: [SENDER_EMAIL, MARIA_EMAIL],
+        // CC Yoann 2026-05-01 : sender + comptabilité Naomi + Benjamin.
+        // Maria reste copiée UNIQUEMENT sur ce mail-ci (CSV FNUCI prep)
+        // car elle suit l'équipe terrain et a besoin du CSV.
+        cc: [SENDER_EMAIL, NAOMI_EMAIL, BENJAMIN_EMAIL, MARIA_EMAIL],
         subject,
         text: body,
         attachments: [
@@ -1377,7 +1383,7 @@ export const sendPreparationCsv = onCall<{ tourneeId: string }>(
         velosCount,
         messageId: info.messageId,
         to: TIFFANY_EMAIL,
-        cc: [SENDER_EMAIL, MARIA_EMAIL],
+        cc: [SENDER_EMAIL, NAOMI_EMAIL, BENJAMIN_EMAIL, MARIA_EMAIL],
       });
       // Trace l'envoi sur les livraisons de la tournée pour que l'UI passe le
       // bouton en vert (Yoann 2026-04-29).
@@ -2046,7 +2052,7 @@ export const sendCommandeCamion = onCall<SendCommandeCamionPayload>(
       const info = await transporter.sendMail({
         from: `"VELO CARGO" <${SENDER_EMAIL}>`,
         to: TIFFANY_EMAIL,
-        cc: [SENDER_EMAIL, MARIA_EMAIL],
+        cc: [SENDER_EMAIL, NAOMI_EMAIL, BENJAMIN_EMAIL],
         subject,
         text: body,
       });
