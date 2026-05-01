@@ -185,9 +185,17 @@ export default function FinancesPage() {
       )}
 
       {/* === Charges opérationnelles (frais saisis + achats vélos Axdis) ===
-          Indépendant du chargement GAS — utilise Firestore en temps réel. */}
+          Indépendant du chargement GAS — utilise Firestore en temps réel.
+          On y injecte la masse salariale calculée plus bas (data.totals.coutTotal)
+          pour avoir un "coût / vélo all-in" qui inclut salaires + primes +
+          commissions apporteurs (demande Yoann 2026-05-01). Si data n'est
+          pas encore chargé, on passe 0 et la carte all-in est masquée. */}
       {(user?.role === "superadmin" || user?.role === "admin") && (
-        <ChargesOperationnellesSection from={from} to={to} />
+        <ChargesOperationnellesSection
+          from={from}
+          to={to}
+          coutMainOeuvre={data?.totals?.coutTotal || 0}
+        />
       )}
 
       {data?.ok && (

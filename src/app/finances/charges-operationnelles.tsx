@@ -75,7 +75,19 @@ const fmt = (n: number) =>
 
 const isoDay = (d: Date) => d.toISOString().slice(0, 10);
 
-export function ChargesOperationnellesSection({ from, to }: { from: string; to: string }) {
+export function ChargesOperationnellesSection({
+  from,
+  to,
+  coutMainOeuvre = 0,
+}: {
+  from: string;
+  to: string;
+  /** Coût total main d'œuvre (salaires + primes + commissions apporteurs)
+   * sur la période. Si fourni > 0, on affiche le coût total / vélo livré
+   * incluant cette main d'œuvre (sinon on n'affiche que le coût hors masse
+   * salariale comme avant). */
+  coutMainOeuvre?: number;
+}) {
   const [frais, setFrais] = useState<Frais[]>([]);
   const [bons, setBons] = useState<BonRow[]>([]);
   const [veloLivresCount, setVeloLivresCount] = useState(0);
@@ -188,6 +200,11 @@ export function ChargesOperationnellesSection({ from, to }: { from: string; to: 
   const totalFraisOps = frais.reduce((s, f) => s + f.montantHT, 0);
   const totalCharges = coutVelosLivres + totalFraisOps;
   const coutParVeloLivre = veloLivresCount > 0 ? totalCharges / veloLivresCount : 0;
+  // Coût TOTAL incluant la main d'œuvre (salaires + primes + apporteurs).
+  // Demande Yoann 2026-05-01 : il veut le vrai coût all-in par vélo, pas
+  // juste hors masse salariale.
+  const totalChargesAllIn = totalCharges + coutMainOeuvre;
+  const coutParVeloAllIn = veloLivresCount > 0 ? totalChargesAllIn / veloLivresCount : 0;
   const prixVenteHT = prixVenteVeloTTC / (1 + TVA_RATE);
   const encaissementsHT = veloLivresCount * prixVenteHT;
   const margeBruteHT = encaissementsHT - totalCharges;
@@ -233,8 +250,33 @@ export function ChargesOperationnellesSection({ from, to }: { from: string; to: 
         />
         <KpiCard label="Frais opérationnels" value={fmt(totalFraisOps)} accent="text-blue-700" />
         <KpiCard label="Total charges" value={fmt(totalCharges)} accent="text-red-700" hint="hors masse salariale" />
-        <KpiCard label="Coût / vélo livré" value={fmt(coutParVeloLivre)} accent="text-gray-700" />
+        <KpiCard label="Coût / vélo livré" value={fmt(coutParVeloLivre)} accent="text-gray-700" hint="hors masse salariale" />
       </div>
+
+      {/* Coût TOTAL all-in (incluant masse salariale) — affiché seulement si
+          la main d'œuvre est chargée (data finances). */}
+      {coutMainOeuvre > 0 && (
+        <div className="mb-3 grid grid-cols-2 lg:grid-cols-3 gap-3">
+          <KpiCard
+            label="Main d'œuvre"
+            value={fmt(coutMainOeuvre)}
+            accent="text-indigo-700"
+            hint="salaires + primes + apporteurs"
+          />
+          <KpiCard
+            label="Total charges all-in"
+            value={fmt(totalChargesAllIn)}
+            accent="text-red-700"
+            hint="achats + frais ops + main d'œuvre"
+          />
+          <KpiCard
+            label="Coût / vélo livré (all-in)"
+            value={fmt(coutParVeloAllIn)}
+            accent="text-gray-900"
+            hint={`${fmt(totalChargesAllIn)} / ${veloLivresCount} vélos`}
+          />
+        </div>
+      )}
 
       {/* Note pédagogique sur le calcul */}
       {totalAchatsCommandes > coutVelosLivres && (
