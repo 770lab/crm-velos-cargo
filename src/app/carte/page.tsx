@@ -1411,6 +1411,7 @@ function EntrepotsPanel() {
     groupeClient?: string | null;
   };
   const [entrepots, setEntrepots] = useState<EntrepotMini[]>([]);
+  const [showStrategie, setShowStrategie] = useState(false);
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -1453,11 +1454,23 @@ function EntrepotsPanel() {
   return (
     <div>
       <div className="p-4 border-b">
-        <h2 className="font-semibold text-lg">🏬 Entrepôts</h2>
+        <div className="flex items-center justify-between gap-2">
+          <h2 className="font-semibold text-lg">🏬 Entrepôts</h2>
+          <button
+            onClick={() => setShowStrategie(true)}
+            className="px-2 py-1 text-[11px] bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded hover:opacity-90 font-semibold whitespace-nowrap"
+            title="Demande à Gemini de proposer 3 stratégies de planification de la journée"
+          >
+            🧠 Stratégie IA
+          </button>
+        </div>
         <p className="text-sm text-gray-500 mt-1">
           Stock disponible par dépôt pour planifier les tournées.
         </p>
       </div>
+      {showStrategie && (
+        <StrategieGeminiModal onClose={() => setShowStrategie(false)} />
+      )}
       <div className="p-3 border-b bg-gray-50">
         <div className="grid grid-cols-3 gap-2">
           <div className="bg-white border rounded p-2 text-center">
@@ -1564,6 +1577,184 @@ function EntrepotsPanel() {
       <div className="p-3 border-t bg-gray-50 text-[11px] text-gray-500">
         💡 Pour gérer les stocks et passer commande à Tiffany, va sur la page
         <a href="/entrepots" className="text-blue-600 hover:underline ml-1">Entrepôts</a>.
+      </div>
+    </div>
+  );
+}
+
+// StrategieGeminiModal — Yoann 2026-05-01 — Phase 3.1
+// Demande à Gemini 3 plans de planification journée alternatifs avec narratif
+// et tradeoffs. L IA voit l état complet : entrepôts + stocks + clients
+// restants + capacités. Elle propose 3 stratégies différentes et recommande.
+type GeminiPlan = {
+  titre: string;
+  strategie: string;
+  narratif: string;
+  params: {
+    entrepotId: string;
+    entrepotNom: string;
+    modeCamion: string;
+    modeMontage: string;
+    maxTournees: number;
+    monteursParTournee: number;
+  };
+  estimation: {
+    velosLivresEstime: number;
+    dureeJourneeEstime: number;
+    scoreVelosParHeure: number;
+  };
+};
+type StrategieResult = {
+  ok: boolean;
+  error?: string;
+  plans?: GeminiPlan[];
+  recommandation?: string;
+  alertes?: string[];
+  model?: string;
+};
+
+function StrategieGeminiModal({ onClose }: { onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<StrategieResult | null>(null);
+  const [dureeJourneeMin, setDureeJourneeMin] = useState(510);
+  const [monteursParTournee, setMonteursParTournee] = useState(2);
+
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const r = (await gasPost("strategieGemini", {
+        dureeJourneeMin,
+        monteursParTournee,
+      })) as StrategieResult;
+      setResult(r);
+    } catch (e) {
+      setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const formatMin = (m: number) => `${Math.floor(m / 60)}h${String(Math.round(m % 60)).padStart(2, "0")}`;
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <div>
+            <h2 className="text-lg font-semibold">🧠 Stratégie Gemini · 3 plans alternatifs</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              L IA logisticien analyse stocks + clients restants + capacités, propose 3 stratégies avec tradeoffs.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 mb-3 bg-purple-50 border border-purple-200 rounded p-3">
+          <div>
+            <label className="text-xs text-gray-600">Journée chauffeur (min)</label>
+            <input
+              type="number"
+              value={dureeJourneeMin}
+              onChange={(e) => setDureeJourneeMin(Number(e.target.value))}
+              min={120}
+              max={720}
+              step={30}
+              className="w-full px-2 py-1.5 border rounded text-sm bg-white"
+            />
+            <div className="text-[10px] text-gray-500 mt-0.5">{formatMin(dureeJourneeMin)}</div>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Monteurs / tournée</label>
+            <input
+              type="number"
+              value={monteursParTournee}
+              onChange={(e) => setMonteursParTournee(Number(e.target.value))}
+              min={1}
+              max={10}
+              className="w-full px-2 py-1.5 border rounded text-sm bg-white"
+            />
+          </div>
+        </div>
+
+        <button
+          onClick={run}
+          disabled={busy}
+          className="w-full px-3 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 text-white rounded-lg hover:opacity-90 disabled:opacity-50 font-semibold"
+        >
+          {busy ? "🧠 Gemini réfléchit..." : "🧠 Demander 3 stratégies à Gemini"}
+        </button>
+
+        {result && (
+          <div className="mt-4">
+            {result.error && (
+              <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800">
+                ❌ {result.error}
+              </div>
+            )}
+            {result.recommandation && (
+              <div className="bg-amber-50 border border-amber-300 rounded p-3 mb-3">
+                <div className="text-sm font-bold text-amber-900 mb-1">💡 Recommandation</div>
+                <div className="text-xs text-amber-900">{result.recommandation}</div>
+              </div>
+            )}
+            {result.alertes && result.alertes.length > 0 && (
+              <div className="bg-rose-50 border border-rose-300 rounded p-3 mb-3">
+                <div className="text-sm font-bold text-rose-900 mb-1">⚠️ Alertes</div>
+                <ul className="text-xs text-rose-900 space-y-0.5">
+                  {result.alertes.map((a, i) => <li key={i}>• {a}</li>)}
+                </ul>
+              </div>
+            )}
+            {result.plans && result.plans.length > 0 && (
+              <div className="space-y-3">
+                {result.plans.map((p, i) => (
+                  <div key={i} className="border-2 border-purple-300 rounded-lg overflow-hidden">
+                    <div className="bg-gradient-to-r from-purple-100 to-indigo-100 border-b border-purple-300 px-3 py-2">
+                      <div className="text-sm font-bold text-purple-900">
+                        Plan {String.fromCharCode(65 + i)} — {p.titre}
+                      </div>
+                      <div className="text-xs text-purple-700 mt-0.5 italic">{p.strategie}</div>
+                    </div>
+                    <div className="p-3 space-y-2">
+                      <p className="text-xs text-gray-700 leading-relaxed">{p.narratif}</p>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-[11px]">
+                        <div className="bg-gray-50 border rounded p-1.5">
+                          <div className="text-gray-500 uppercase text-[9px]">Entrepôt</div>
+                          <div className="font-semibold truncate">{p.params.entrepotNom}</div>
+                        </div>
+                        <div className="bg-gray-50 border rounded p-1.5">
+                          <div className="text-gray-500 uppercase text-[9px]">Camion</div>
+                          <div className="font-semibold">{p.params.modeCamion} · {p.params.modeMontage}</div>
+                        </div>
+                        <div className="bg-emerald-50 border border-emerald-200 rounded p-1.5">
+                          <div className="text-emerald-600 uppercase text-[9px]">Vélos estim.</div>
+                          <div className="font-bold text-emerald-900">{p.estimation?.velosLivresEstime}v</div>
+                        </div>
+                        <div className="bg-blue-50 border border-blue-200 rounded p-1.5">
+                          <div className="text-blue-600 uppercase text-[9px]">Durée estim.</div>
+                          <div className="font-bold text-blue-900">{formatMin(p.estimation?.dureeJourneeEstime || 0)}</div>
+                        </div>
+                      </div>
+                      <div className="text-[10px] text-gray-500 italic pt-1 border-t">
+                        🤖 {p.params.maxTournees} tournée{p.params.maxTournees > 1 ? "s" : ""} · {p.estimation?.scoreVelosParHeure} v/h chauffeur
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {result.model && (
+              <div className="mt-3 text-[10px] text-gray-400 italic text-center">
+                Généré par {result.model}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Fermer</button>
+        </div>
       </div>
     </div>
   );

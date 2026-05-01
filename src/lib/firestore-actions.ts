@@ -4438,6 +4438,152 @@ export async function runFirestoreAction(
       };
     }
 
+    case "strategieGemini": {
+      // Yoann 2026-05-01 — Phase 3.1 : Gemini joue le logisticien stratège.
+      // Au lieu d un seul plan algorithmique, on lui demande 3 plans
+      // alternatifs avec narratif et tradeoffs. Aide le user à arbitrer
+      // selon le contexte (urgence, météo, fatigue équipe, jour férié,
+      // priorités client...).
+      const dureeJourneeMinG = Number(body.dureeJourneeMin || 510);
+      const monteursParTourneeG = Math.max(1, Number(body.monteursParTournee || 2));
+
+      // Charge entrepôts non-fournisseur non-archivés avec stock > 0
+      const eSnap = await getDocs(collection(db, "entrepots"));
+      type EntrepotCtx = { id: string; nom: string; ville: string; lat: number; lng: number; stockCartons: number; stockVelosMontes: number; role: string };
+      const entrepotsCtx: EntrepotCtx[] = [];
+      for (const d of eSnap.docs) {
+        const o = d.data() as { nom?: string; ville?: string; lat?: number; lng?: number; stockCartons?: number; stockVelosMontes?: number; role?: string; dateArchivage?: unknown };
+        if (o.dateArchivage) continue;
+        if (o.role === "fournisseur") continue;
+        if (typeof o.lat !== "number" || typeof o.lng !== "number") continue;
+        const sc = Number(o.stockCartons || 0);
+        const sm = Number(o.stockVelosMontes || 0);
+        if (sc + sm <= 0) continue;
+        entrepotsCtx.push({
+          id: d.id,
+          nom: String(o.nom || ""),
+          ville: String(o.ville || ""),
+          lat: o.lat,
+          lng: o.lng,
+          stockCartons: sc,
+          stockVelosMontes: sm,
+          role: String(o.role || "stock"),
+        });
+      }
+      if (entrepotsCtx.length === 0) {
+        return { ok: false, error: "Aucun entrepôt avec stock disponible" };
+      }
+
+      // Charge clients restants (top 50 par volume restant)
+      const cSnap = await getDocs(collection(db, "clients"));
+      const lvSnap = await getDocs(collection(db, "livraisons"));
+      const planifies = new Map<string, number>();
+      for (const d of lvSnap.docs) {
+        const o = d.data() as { statut?: string; clientId?: string; nbVelos?: number };
+        if (String(o.statut || "").toLowerCase() !== "planifiee") continue;
+        const cid = String(o.clientId || "");
+        if (!cid) continue;
+        planifies.set(cid, (planifies.get(cid) || 0) + (Number(o.nbVelos) || 0));
+      }
+      type ClientCtx = { id: string; entreprise: string; ville: string; lat: number; lng: number; velosRestants: number };
+      const clientsCtx: ClientCtx[] = [];
+      for (const d of cSnap.docs) {
+        const o = d.data() as { entreprise?: string; ville?: string; latitude?: number; longitude?: number; nbVelosCommandes?: number; stats?: { livres?: number } };
+        if (typeof o.latitude !== "number" || typeof o.longitude !== "number") continue;
+        const reste = Math.max(0, Number(o.nbVelosCommandes || 0) - Number(o.stats?.livres || 0) - (planifies.get(d.id) || 0));
+        if (reste <= 0) continue;
+        clientsCtx.push({
+          id: d.id,
+          entreprise: String(o.entreprise || ""),
+          ville: String(o.ville || ""),
+          lat: o.latitude,
+          lng: o.longitude,
+          velosRestants: reste,
+        });
+      }
+      // Top 50 par volume restant pour limiter le prompt
+      clientsCtx.sort((a, b) => b.velosRestants - a.velosRestants);
+      const clientsForPrompt = clientsCtx.slice(0, 50);
+
+      const totalVelosRestants = clientsCtx.reduce((s, c) => s + c.velosRestants, 0);
+      const totalCartons = entrepotsCtx.reduce((s, e) => s + e.stockCartons, 0);
+      const totalMontes = entrepotsCtx.reduce((s, e) => s + e.stockVelosMontes, 0);
+
+      const prompt = `Tu es un logisticien expert en VRP (Vehicle Routing Problem). Tu planifies des tournées de livraison de vélos cargo en région Île-de-France et alentours.
+
+CONTEXTE OPÉRATIONNEL :
+- Durée journée chauffeur : ${dureeJourneeMinG} minutes (${Math.round(dureeJourneeMinG / 60 * 10) / 10}h)
+- Monteurs par tournée disponibles : ${monteursParTourneeG}
+- Temps d arrêt en mode "client" (livre cartons + monte sur place) : 12 min × nbVélos / nbMonteurs
+- Temps d arrêt en mode "atelier" (vélos déjà montés) : 15 min/stop fixe
+- Recharge entrepôt entre 2 tournées : 10 min
+- Camions disponibles : Grand (132 cartons / 40 montés), Moyen (54/30), Petit/Camionnette (20/20)
+
+ENTREPÔTS DISPONIBLES (${entrepotsCtx.length}) :
+${entrepotsCtx.map((e) => `- ${e.id} | ${e.nom} (${e.ville}) | lat=${e.lat.toFixed(4)},lng=${e.lng.toFixed(4)} | ${e.stockCartons} cartons + ${e.stockVelosMontes} montés`).join("\n")}
+
+CLIENTS À LIVRER (top ${clientsForPrompt.length} par volume, ${clientsCtx.length} au total, ${totalVelosRestants} vélos restants au global) :
+${clientsForPrompt.map((c) => `- ${c.id} | ${c.entreprise} (${c.ville}) | lat=${c.lat.toFixed(4)},lng=${c.lng.toFixed(4)} | ${c.velosRestants}v`).join("\n")}
+
+STOCK GLOBAL : ${totalCartons} cartons + ${totalMontes} montés = ${totalCartons + totalMontes} vélos disponibles.
+
+DEMANDE :
+Propose 3 stratégies de planification de la JOURNÉE pour 1 chauffeur + ${monteursParTourneeG} monteurs. Chaque stratégie doit être réaliste et tenir dans la fenêtre journée.
+
+Tradeoff principal : mode "client" (cartons) = camion bien rempli (132 max) mais arrêts longs (12 min/vélo) → 1 grosse tournée. Mode "atelier" (montés) = camion plus petit (40 max) mais arrêts courts (15 min/stop) → 2-3 tournées rapides possibles.
+
+Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
+
+{
+  "plans": [
+    {
+      "titre": "string court (max 60 chars)",
+      "strategie": "string : description en 1 phrase",
+      "narratif": "string : pourquoi cette stratégie, tradeoffs, 2-4 phrases",
+      "params": {
+        "entrepotId": "string parmi les ids ci-dessus",
+        "entrepotNom": "string",
+        "modeCamion": "gros | moyen | petit | camionnette",
+        "modeMontage": "client | atelier | client_redistribue",
+        "maxTournees": number (1-3),
+        "monteursParTournee": number
+      },
+      "estimation": {
+        "velosLivresEstime": number,
+        "dureeJourneeEstime": number (minutes),
+        "scoreVelosParHeure": number
+      }
+    },
+    ... 2 autres plans ...
+  ],
+  "recommandation": "string : quelle stratégie est la meilleure aujourd hui et pourquoi (2-3 phrases)",
+  "alertes": ["string : alerte ou opportunité non évidente, par ex stock faible / client urgent / etc"]
+}`;
+
+      try {
+        const { callGemini } = await import("@/lib/gemini-client");
+        const r = await callGemini(prompt);
+        if (!r.ok) return { ok: false, error: r.error };
+        // Parse JSON strict, robuste aux backticks/markdown éventuels
+        const txt = r.text.trim();
+        const jsonStart = txt.indexOf("{");
+        const jsonEnd = txt.lastIndexOf("}");
+        if (jsonStart < 0 || jsonEnd < 0) {
+          return { ok: false, error: "Réponse Gemini sans JSON détectable", raw: txt.slice(0, 500) };
+        }
+        const jsonStr = txt.slice(jsonStart, jsonEnd + 1);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(jsonStr);
+        } catch (e) {
+          return { ok: false, error: "JSON Gemini invalide : " + (e instanceof Error ? e.message : String(e)), raw: jsonStr.slice(0, 500) };
+        }
+        return { ok: true, ...(parsed as Record<string, unknown>), model: r.model };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
+    }
+
     default:
       return { ok: false, error: `Action Firestore non implémentée: ${action}` };
   }
