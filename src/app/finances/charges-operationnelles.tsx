@@ -503,7 +503,9 @@ export function ChargesOperationnellesSection({
                 <th className="text-left px-3 py-1.5 font-medium">Catégorie</th>
                 <th className="text-left px-3 py-1.5 font-medium">Libellé</th>
                 <th className="text-right px-3 py-1.5 font-medium">Montant HT</th>
-                <th className="w-8"></th>
+                <th className="text-center px-2 py-1.5 font-medium w-24" title="Toggle mensuel + supprimer">
+                  Actions
+                </th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -525,8 +527,28 @@ export function ChargesOperationnellesSection({
                       </span>
                       {f.sousCategorie && <span className="text-[11px] text-gray-500 ml-2">{f.sousCategorie}</span>}
                     </td>
-                    <td className="px-3 py-1.5 text-xs text-gray-700">
-                      {f.libelle}
+                    <td className="px-3 py-1.5 text-xs text-gray-700 max-w-xs">
+                      {(() => {
+                        const isUrl = /^https?:\/\//i.test(f.libelle.trim());
+                        if (isUrl) {
+                          return (
+                            <a
+                              href={f.libelle}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="block truncate text-blue-700 hover:underline"
+                              title={f.libelle}
+                            >
+                              {f.libelle}
+                            </a>
+                          );
+                        }
+                        return (
+                          <div className="truncate" title={f.libelle}>
+                            {f.libelle}
+                          </div>
+                        );
+                      })()}
                       {isMensuel && (
                         <div className="text-[10px] text-indigo-700 mt-0.5">
                           📆 Mensuel · lissé sur {monthDays} jours ouvrés ({fmt(dailyRate)}/jour)
@@ -545,13 +567,13 @@ export function ChargesOperationnellesSection({
                         fmt(f.montantHT)
                       )}
                     </td>
-                    <td className="px-2 text-right whitespace-nowrap">
+                    <td className="px-2 py-1.5 text-center whitespace-nowrap">
                       <button
                         onClick={() => toggleFrequence(f)}
-                        className={`text-[11px] px-1.5 py-0.5 rounded mr-1 ${
+                        className={`text-[11px] px-2 py-1 rounded mr-1 border ${
                           isMensuel
-                            ? "bg-indigo-100 text-indigo-800 hover:bg-indigo-200"
-                            : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                            ? "bg-indigo-100 text-indigo-800 border-indigo-300 hover:bg-indigo-200"
+                            : "bg-white text-gray-600 border-gray-300 hover:bg-gray-50"
                         }`}
                         title={
                           isMensuel
@@ -559,7 +581,7 @@ export function ChargesOperationnellesSection({
                             : "Lisser ce frais sur les jours ouvrés du mois (location, abonnement, etc.)"
                         }
                       >
-                        📆
+                        {isMensuel ? "📆 Mensuel ✓" : "📆 Lisser"}
                       </button>
                       <button
                         onClick={() => removeFrais(f.id)}
