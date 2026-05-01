@@ -302,20 +302,29 @@ export default function EntrepotsPage() {
                 leur stock, pas besoin de tracker les cartons ici.
               </div>
             ) : (
-              <div className="grid grid-cols-2 gap-3">
-                <StockPanel
-                  entrepotId={e.id}
-                  kind="carton"
-                  value={e.stockCartons}
-                  editable={isAdmin}
-                />
-                <StockPanel
-                  entrepotId={e.id}
-                  kind="monte"
-                  value={e.stockVelosMontes}
-                  editable={isAdmin}
-                />
-              </div>
+              <>
+                <div className="grid grid-cols-2 gap-3">
+                  <StockPanel
+                    entrepotId={e.id}
+                    kind="carton"
+                    value={e.stockCartons}
+                    editable={isAdmin}
+                  />
+                  <StockPanel
+                    entrepotId={e.id}
+                    kind="monte"
+                    value={e.stockVelosMontes}
+                    editable={isAdmin}
+                  />
+                </div>
+                {isAdmin && (
+                  <CommandeCamionPanel
+                    entrepotId={e.id}
+                    entrepotNom={e.nom}
+                    entrepotAdresse={`${e.adresse}, ${e.codePostal} ${e.ville}`}
+                  />
+                )}
+              </>
             )}
 
             {e.capaciteMax && e.capaciteMax > 0 && (
@@ -510,6 +519,363 @@ function MouvementLine({
           ×
         </button>
       )}
+    </div>
+  );
+}
+
+// Commande de camion complet à Tiffany (Yoann 2026-05-01). Numéro
+// incrémental global "VELO CARGO - COMMANDE N" pour matching avec les
+// bons de retour AXDIS. Pas d'envoi mail auto (Cloud Function à coder
+// plus tard) — pour l'instant on ouvre un mailto: pré-rempli.
+type CommandeCamion = {
+  id: string;
+  numero: number;
+  entrepotDestinataireId: string;
+  entrepotDestinataireNom: string;
+  quantite: number;
+  reference: string;
+  dateCommande: string;
+  dateLivraisonSouhaitee?: string | null;
+  statut: "envoyee" | "recue" | "annulee";
+  notes?: string;
+  bonRetourNumero?: string | null;
+  createdAt?: Timestamp;
+};
+
+const TIFFANY_EMAIL = "Tiffany@axdis.fr";
+
+function CommandeCamionPanel({
+  entrepotId,
+  entrepotNom,
+  entrepotAdresse,
+}: {
+  entrepotId: string;
+  entrepotNom: string;
+  entrepotAdresse: string;
+}) {
+  const [commandes, setCommandes] = useState<CommandeCamion[]>([]);
+  const [showModal, setShowModal] = useState(false);
+  const [showHistory, setShowHistory] = useState(false);
+
+  useEffect(() => {
+    const q = query(
+      collection(db, "commandesCamion"),
+      orderBy("createdAt", "desc"),
+    );
+    const unsub = onSnapshot(q, (snap) => {
+      const rows: CommandeCamion[] = [];
+      for (const d of snap.docs) {
+        const data = d.data();
+        if (data.entrepotDestinataireId !== entrepotId) continue;
+        rows.push({
+          id: d.id,
+          numero: Number(data.numero || 0),
+          entrepotDestinataireId: String(data.entrepotDestinataireId || ""),
+          entrepotDestinataireNom: String(data.entrepotDestinataireNom || ""),
+          quantite: Number(data.quantite || 0),
+          reference: String(data.reference || ""),
+          dateCommande: String(data.dateCommande || ""),
+          dateLivraisonSouhaitee:
+            typeof data.dateLivraisonSouhaitee === "string" ? data.dateLivraisonSouhaitee : null,
+          statut: data.statut === "recue" || data.statut === "annulee" ? data.statut : "envoyee",
+          notes: typeof data.notes === "string" ? data.notes : undefined,
+          bonRetourNumero:
+            typeof data.bonRetourNumero === "string" ? data.bonRetourNumero : null,
+          createdAt: data.createdAt instanceof Timestamp ? data.createdAt : undefined,
+        });
+      }
+      setCommandes(rows);
+    });
+    return () => unsub();
+  }, [entrepotId]);
+
+  const enCours = commandes.filter((c) => c.statut === "envoyee").length;
+  const recues = commandes.filter((c) => c.statut === "recue").length;
+
+  return (
+    <>
+      <div className="mt-3 bg-blue-50 border border-blue-200 rounded-lg p-3">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-xs text-blue-900 font-medium">
+            🚚 Commandes camion (Tiffany)
+            <span className="ml-2 text-blue-700">
+              {enCours > 0 && `${enCours} en cours · `}
+              {recues > 0 && `${recues} reçue${recues > 1 ? "s" : ""}`}
+              {enCours === 0 && recues === 0 && "aucune commande"}
+            </span>
+          </div>
+          <div className="flex gap-1">
+            {commandes.length > 0 && (
+              <button
+                onClick={() => setShowHistory((v) => !v)}
+                className="text-[11px] px-2 py-1 bg-white border border-blue-300 rounded hover:bg-blue-50"
+              >
+                {showHistory ? "▲" : "▼"} {commandes.length}
+              </button>
+            )}
+            <button
+              onClick={() => setShowModal(true)}
+              className="text-[11px] px-2 py-1 bg-blue-600 text-white rounded hover:bg-blue-700 font-semibold"
+            >
+              + Commander camion complet
+            </button>
+          </div>
+        </div>
+        {showHistory && commandes.length > 0 && (
+          <div className="mt-2 max-h-48 overflow-y-auto bg-white rounded border border-blue-200 divide-y text-[11px]">
+            {commandes.map((c) => (
+              <CommandeLine key={c.id} c={c} />
+            ))}
+          </div>
+        )}
+      </div>
+      {showModal && (
+        <CommandeCamionModal
+          entrepotId={entrepotId}
+          entrepotNom={entrepotNom}
+          entrepotAdresse={entrepotAdresse}
+          existingCommandes={commandes}
+          onClose={() => setShowModal(false)}
+        />
+      )}
+    </>
+  );
+}
+
+function CommandeLine({ c }: { c: CommandeCamion }) {
+  const markRecue = async () => {
+    const numBon = prompt(
+      `N° du bon de retour AXDIS (référence ${c.reference}) :`,
+      c.bonRetourNumero || "",
+    );
+    if (numBon === null) return;
+    await setDoc(
+      doc(db, "commandesCamion", c.id),
+      {
+        statut: "recue",
+        bonRetourNumero: numBon.trim() || null,
+        dateRecue: new Date().toISOString(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+  };
+  const cancel = async () => {
+    if (!confirm(`Annuler la ${c.reference} ?`)) return;
+    await setDoc(
+      doc(db, "commandesCamion", c.id),
+      { statut: "annulee", updatedAt: serverTimestamp() },
+      { merge: true },
+    );
+  };
+  const remove = async () => {
+    if (!confirm(`Supprimer définitivement la ${c.reference} ?`)) return;
+    await deleteDoc(doc(db, "commandesCamion", c.id));
+  };
+  const statutColor =
+    c.statut === "recue"
+      ? "bg-emerald-100 text-emerald-800"
+      : c.statut === "annulee"
+        ? "bg-gray-100 text-gray-500"
+        : "bg-amber-100 text-amber-800";
+  const statutLabel =
+    c.statut === "recue" ? "✓ reçue" : c.statut === "annulee" ? "✕ annulée" : "⏳ envoyée";
+  return (
+    <div className="px-2 py-1.5 flex items-center gap-2">
+      <div className="font-mono font-bold text-blue-900 shrink-0 w-20">{c.reference}</div>
+      <div className="text-[11px] text-gray-600 shrink-0 w-12 text-right">{c.quantite}v</div>
+      <div className="text-[10px] text-gray-500 shrink-0 w-20">{c.dateCommande}</div>
+      <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${statutColor}`}>
+        {statutLabel}
+      </span>
+      <div className="flex-1 min-w-0 truncate text-[10px] text-gray-500">
+        {c.bonRetourNumero ? `Bon ${c.bonRetourNumero}` : c.notes || ""}
+      </div>
+      <div className="flex gap-1 shrink-0">
+        {c.statut === "envoyee" && (
+          <>
+            <button
+              onClick={markRecue}
+              className="text-[10px] px-1.5 py-0.5 bg-emerald-100 hover:bg-emerald-200 text-emerald-700 rounded"
+              title="Marquer comme reçue (bon AXDIS arrivé)"
+            >
+              ✓
+            </button>
+            <button
+              onClick={cancel}
+              className="text-[10px] px-1.5 py-0.5 bg-gray-100 hover:bg-gray-200 text-gray-600 rounded"
+              title="Annuler la commande"
+            >
+              ✕
+            </button>
+          </>
+        )}
+        {c.statut !== "envoyee" && (
+          <button
+            onClick={remove}
+            className="text-[10px] px-1.5 py-0.5 text-red-400 hover:text-red-700 rounded"
+            title="Supprimer"
+          >
+            🗑
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CommandeCamionModal({
+  entrepotId,
+  entrepotNom,
+  entrepotAdresse,
+  existingCommandes,
+  onClose,
+}: {
+  entrepotId: string;
+  entrepotNom: string;
+  entrepotAdresse: string;
+  existingCommandes: CommandeCamion[];
+  onClose: () => void;
+}) {
+  const user = useCurrentUser();
+  const [quantite, setQuantite] = useState("132");
+  const [dateLivraisonSouhaitee, setDateLivraisonSouhaitee] = useState("");
+  const [notes, setNotes] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    const q = parseInt(quantite.replace(",", "."), 10);
+    if (!Number.isFinite(q) || q <= 0) {
+      alert("Quantité invalide");
+      return;
+    }
+    setBusy(true);
+    try {
+      // 1. Compteur global incrémental.
+      // Lecture max(numero) sur toutes les commandes existantes.
+      const allSnap = await import("firebase/firestore").then((m) =>
+        m.getDocs(collection(db, "commandesCamion")),
+      );
+      let maxNum = 0;
+      for (const d of allSnap.docs) {
+        const n = Number(d.data().numero || 0);
+        if (n > maxNum) maxNum = n;
+      }
+      const numero = maxNum + 1;
+      const reference = `VELO CARGO - COMMANDE ${numero}`;
+      const today = new Date().toISOString().slice(0, 10);
+      // 2. Crée le doc
+      await addDoc(collection(db, "commandesCamion"), {
+        numero,
+        reference,
+        entrepotDestinataireId: entrepotId,
+        entrepotDestinataireNom: entrepotNom,
+        entrepotDestinataireAdresse: entrepotAdresse,
+        quantite: q,
+        dateCommande: today,
+        dateLivraisonSouhaitee: dateLivraisonSouhaitee || null,
+        statut: "envoyee",
+        notes: notes.trim() || null,
+        commandePar: user?.nom || null,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      // 3. Ouvre mailto: pour Tiffany — l opérateur valide et envoie depuis son client mail
+      const subject = encodeURIComponent(reference);
+      const livraisonLine = dateLivraisonSouhaitee
+        ? `Livraison souhaitée : ${dateLivraisonSouhaitee}\n`
+        : "";
+      const notesLine = notes.trim() ? `\nNotes : ${notes.trim()}\n` : "";
+      const body = encodeURIComponent(
+        `Bonjour Tiffany,\n\n` +
+          `Merci de préparer un camion complet de ${q} vélos cargo pour livraison à :\n\n` +
+          `${entrepotNom}\n${entrepotAdresse}\n\n` +
+          livraisonLine +
+          `Référence à reporter sur le bon de commande : ${reference}\n` +
+          notesLine +
+          `\nCordialement,\n${user?.nom || "Yoann"}`,
+      );
+      window.open(`mailto:${TIFFANY_EMAIL}?subject=${subject}&body=${body}`, "_blank");
+      onClose();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const lastNum = existingCommandes.reduce((max, c) => (c.numero > max ? c.numero : max), 0);
+  const nextNum = lastNum + 1;
+
+  return (
+    <div
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4"
+      onClick={onClose}
+    >
+      <div
+        className="bg-white rounded-2xl p-5 w-full max-w-md max-h-[90vh] overflow-y-auto"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex justify-between items-start mb-3">
+          <h2 className="text-lg font-semibold">🚚 Commander un camion complet</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">
+            ×
+          </button>
+        </div>
+        <div className="space-y-3">
+          <div className="bg-blue-50 border border-blue-200 rounded p-2 text-[11px] text-blue-900">
+            Référence générée : <strong>VELO CARGO - COMMANDE {nextNum}</strong>
+            <br />
+            Destination : <strong>{entrepotNom}</strong>
+            <br />
+            <span className="opacity-80">{entrepotAdresse}</span>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Quantité (vélos)</label>
+            <input
+              type="number"
+              value={quantite}
+              onChange={(e) => setQuantite(e.target.value)}
+              className="w-full px-2 py-1.5 border rounded text-sm"
+              placeholder="132 (camion PL standard)"
+            />
+            <div className="text-[10px] text-gray-500 mt-0.5">
+              132 = 1 camion poids lourd · 528 = 4 PL livraison directe usine
+            </div>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Date livraison souhaitée (optionnel)</label>
+            <input
+              type="date"
+              value={dateLivraisonSouhaitee}
+              onChange={(e) => setDateLivraisonSouhaitee(e.target.value)}
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Notes (optionnel)</label>
+            <input
+              type="text"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder='Ex: "ASAP - prévu pour gros déploiement"'
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            />
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">
+            Annuler
+          </button>
+          <button
+            onClick={submit}
+            disabled={busy}
+            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 font-semibold"
+          >
+            {busy ? "Enregistrement…" : "📧 Enregistrer + ouvrir mail Tiffany"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
