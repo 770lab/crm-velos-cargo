@@ -198,6 +198,11 @@ interface EquipeMember {
    *  monteur sur une tournée en plus de son rôle de chef. Salaire compté
    *  une seule fois (sur le rôle principal chef). */
   aussiMonteur?: boolean;
+  /** Taux horaire en EUR/h (Yoann 2026-05-01). Si défini, prioritaire
+   *  sur salaireJournalier pour le calcul de salaire. Surtout utilisé
+   *  pour Naomi (préparation) : heures = max(datePreparation) -
+   *  min(datePreparation) par jour ouvré. */
+  tauxHoraire?: number | null;
 }
 
 type CamionType = "gros" | "moyen" | "petit" | "retrait";

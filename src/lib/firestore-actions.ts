@@ -2136,6 +2136,9 @@ export async function runFirestoreAction(
         chefId: body.role === "monteur" ? (body.chefId || null) : null,
         // aussiMonteur : pour les chefs polyvalents (Yoann 2026-05-01).
         aussiMonteur: body.role === "chef" ? (body.aussiMonteur === true) : false,
+        // tauxHoraire : Yoann 2026-05-01. Surtout utilisé pour Naomi
+        // (paie a l heure depuis premiere/derniere préparation du jour).
+        tauxHoraire: body.tauxHoraire != null ? Number(body.tauxHoraire) : null,
         updatedAt: ts(),
       };
       if (id) {
@@ -5508,8 +5511,42 @@ export async function runFirestoreGet(
         coutSalaire: number;
         coutPrime: number;
         coutTotal: number;
+        tauxHoraire?: number;
+        heuresTravaillees?: number;
       }> = [];
       const totals = { coutSalaires: 0, coutPrimes: 0, coutTotal: 0, jours: 0 };
+      // Helper : calcule heures travaillees pour un préparateur sur la période
+      // (premiere - derniere prep du jour, par jour), retourne total heures.
+      // Yoann 2026-05-01 : Naomi paie a l heure depuis ses scans markVeloPrepare.
+      async function calcHeuresPreparation(prepId: string): Promise<number> {
+        const vSnap = await getDocs(
+          query(collection(db, "velos"), where("preparateurId", "==", prepId)),
+        );
+        const parJour = new Map<string, { min: number; max: number }>();
+        for (const vd of vSnap.docs) {
+          const v = vd.data() as { datePreparation?: unknown };
+          const tIso = isoOf(v.datePreparation);
+          if (!tIso || !inRange(tIso)) continue;
+          const t = new Date(tIso).getTime();
+          const day = tIso.slice(0, 10);
+          const cur = parJour.get(day);
+          if (!cur) parJour.set(day, { min: t, max: t });
+          else {
+            if (t < cur.min) cur.min = t;
+            if (t > cur.max) cur.max = t;
+          }
+        }
+        let totalH = 0;
+        for (const { min, max } of parJour.values()) {
+          const dh = (max - min) / (1000 * 60 * 60);
+          // Clip : si une seule prep dans la journée, on compte 1h min.
+          // Si > 12h (delta exotique), on clip à 12h.
+          const clipped = Math.max(1, Math.min(12, dh || 1));
+          totalH += clipped;
+        }
+        return Math.round(totalH * 100) / 100;
+      }
+
       // Chunks de 30 (limite Firestore "in")
       for (let i = 0; i < memberIds.length; i += 30) {
         const chunk = memberIds.slice(i, i + 30);
@@ -5523,14 +5560,25 @@ export async function runFirestoreGet(
             role?: string;
             salaireJournalier?: number;
             primeVelo?: number;
+            tauxHoraire?: number;
           };
           const agg = byMemberId[ed.id];
           if (!agg) continue;
           const salaireJournalier = typeof e.salaireJournalier === "number" ? e.salaireJournalier : 0;
           const primeVelo = typeof e.primeVelo === "number" ? e.primeVelo : 0;
+          const tauxHoraire = typeof e.tauxHoraire === "number" ? e.tauxHoraire : 0;
           const jours = agg.joursSet.size;
           const velosPrimes = agg.velosPrimes;
-          const coutSalaire = Math.round(jours * salaireJournalier * 100) / 100;
+          // Si tauxHoraire défini ET rôle préparateur : on calcule à l heure.
+          // Sinon, salaire journalier classique.
+          let coutSalaire: number;
+          let heuresTravaillees = 0;
+          if (tauxHoraire > 0 && e.role === "preparateur") {
+            heuresTravaillees = await calcHeuresPreparation(ed.id);
+            coutSalaire = Math.round(heuresTravaillees * tauxHoraire * 100) / 100;
+          } else {
+            coutSalaire = Math.round(jours * salaireJournalier * 100) / 100;
+          }
           const coutPrime = Math.round(velosPrimes * primeVelo * 100) / 100;
           const coutTotal = Math.round((coutSalaire + coutPrime) * 100) / 100;
           byMember.push({
@@ -5544,6 +5592,8 @@ export async function runFirestoreGet(
             coutSalaire,
             coutPrime,
             coutTotal,
+            tauxHoraire,
+            heuresTravaillees,
           });
           totals.coutSalaires += coutSalaire;
           totals.coutPrimes += coutPrime;

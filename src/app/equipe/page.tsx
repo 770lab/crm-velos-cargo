@@ -250,6 +250,11 @@ function MembreModal({
   const [chefId, setChefId] = useState(member?.chefId || "");
   // Toggle polyvalence chef → monteur (Yoann 2026-05-01).
   const [aussiMonteur, setAussiMonteur] = useState(member?.aussiMonteur === true);
+  // Taux horaire (Yoann 2026-05-01) : surtout pour les préparateurs
+  // (Naomi), paie à l heure (premiere/derniere prepa du jour).
+  const [tauxHoraire, setTauxHoraire] = useState(
+    member?.tauxHoraire != null ? String(member.tauxHoraire) : "",
+  );
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPinForm, setShowPinForm] = useState(false);
@@ -298,6 +303,8 @@ function MembreModal({
         chefId: role === "monteur" ? (chefId || null) : null,
         // aussiMonteur pertinent uniquement pour les chefs.
         aussiMonteur: role === "chef" ? aussiMonteur : false,
+        // tauxHoraire : tous rôles (mais surtout préparateur).
+        tauxHoraire: tauxHoraire.trim() ? Number(tauxHoraire.replace(",", ".")) : null,
       };
       if (isArchived) payload.actif = true;
       const r = await gasPost("upsertMembre", payload);
@@ -487,6 +494,33 @@ function MembreModal({
                 ? "Prime monteur : split entre les monteurs de la tournée (si 2 monteurs sur 10 vélos, chacun touche prime × 5)."
                 : "Tous les vélos de la tournée comptent pour la prime."}
             </p>
+            {/* Taux horaire (Yoann 2026-05-01) : surtout pour les
+                préparateurs (Naomi). Si défini, prioritaire sur le
+                salaire journalier. Heures calculées entre la 1re et
+                la dernière prep du jour. */}
+            {(role === "preparateur" || role === "monteur" || role === "chef") && (
+              <div>
+                <label className="block text-xs text-gray-500 mb-1">
+                  Taux horaire (€/h) <span className="text-gray-400 font-normal">— optionnel, prioritaire sur salaire journalier si défini</span>
+                </label>
+                <input
+                  type="number"
+                  inputMode="decimal"
+                  min={0}
+                  step={0.5}
+                  value={tauxHoraire}
+                  onChange={(e) => setTauxHoraire(e.target.value)}
+                  className="w-full px-3 py-2 border rounded-lg text-sm"
+                  placeholder="ex : 14"
+                />
+                {role === "preparateur" && (
+                  <p className="text-[11px] text-gray-400 mt-0.5">
+                    Pour Naomi : heures = (1re préparation du jour − dernière préparation
+                    du jour) en h. Salaire = heures × taux horaire.
+                  </p>
+                )}
+              </div>
+            )}
             {role === "chef" && (
               <label className="flex items-start gap-2 text-sm cursor-pointer pt-1">
                 <input

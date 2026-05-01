@@ -17,6 +17,9 @@ interface MemberRow {
   coutSalaire: number;
   coutPrime: number;
   coutTotal: number;
+  /** Yoann 2026-05-01 : Naomi paie a l heure (premiere/derniere prep). */
+  tauxHoraire?: number;
+  heuresTravaillees?: number;
 }
 
 interface FinancesResponse {
@@ -549,10 +552,21 @@ function MemberRowWithPaiement({
           {ROLE_LABEL[member.role]}
         </span>
       </td>
-      <td className="px-3 py-2 text-right">{member.jours || "—"}</td>
+      <td className="px-3 py-2 text-right">
+        {member.tauxHoraire && member.tauxHoraire > 0 && member.role === "preparateur" ? (
+          <span title={`Paie horaire — ${member.heuresTravaillees ?? 0}h cumulées`}>
+            <strong>{member.heuresTravaillees ?? 0}h</strong>
+            <div className="text-[9px] text-gray-400">{member.jours || 0}j</div>
+          </span>
+        ) : (
+          member.jours || "—"
+        )}
+      </td>
       <td className="px-3 py-2 text-right">{member.velosPrimes || "—"}</td>
       <td className="px-3 py-2 text-right text-xs text-gray-500">
-        {member.salaireJournalier ? fmt(member.salaireJournalier) : "—"}
+        {member.tauxHoraire && member.tauxHoraire > 0 && member.role === "preparateur"
+          ? `${fmt(member.tauxHoraire)}/h`
+          : member.salaireJournalier ? fmt(member.salaireJournalier) : "—"}
       </td>
       <td className="px-3 py-2 text-right text-xs text-gray-500">
         {member.primeVelo ? fmt(member.primeVelo) : "—"}
