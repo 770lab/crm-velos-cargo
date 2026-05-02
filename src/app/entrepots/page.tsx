@@ -76,6 +76,7 @@ export default function EntrepotsPage() {
   const [entrepots, setEntrepots] = useState<Entrepot[]>([]);
   const [editing, setEditing] = useState<Entrepot | "new" | null>(null);
   const [showStockCible, setShowStockCible] = useState(false);
+  const [showFlotte, setShowFlotte] = useState(false);
 
   useEffect(() => {
     const q = collection(db, "entrepots");
@@ -197,6 +198,13 @@ export default function EntrepotsPage() {
         </div>
         {isAdmin && (
           <div className="flex gap-2 flex-wrap">
+            <button
+              onClick={() => setShowFlotte(true)}
+              className="px-3 py-2 bg-slate-700 text-white rounded-lg text-sm font-medium hover:bg-slate-800"
+              title="Gère les camions de la flotte (capacités, restrictions Paris)"
+            >
+              🚛 Flotte
+            </button>
             <button
               onClick={() => setShowStockCible(true)}
               className="px-3 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-lg text-sm font-medium hover:opacity-90"
@@ -411,6 +419,7 @@ export default function EntrepotsPage() {
         />
       )}
       {showStockCible && <StockCibleModal onClose={() => setShowStockCible(false)} />}
+      {showFlotte && <FlotteModal onClose={() => setShowFlotte(false)} />}
     </div>
   );
 }
@@ -3120,6 +3129,250 @@ function StockCibleModal({ onClose }: { onClose: () => void }) {
 
         <div className="mt-4 flex justify-end">
           <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Fermer</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// FlotteModal — Yoann 2026-05-03
+// Gestion CRUD des camions de la flotte (collection flotte). Permet
+// d ajouter / éditer / désactiver sans passer par Firestore console.
+type CamionFlotte = {
+  id: string;
+  nom: string;
+  type: string;
+  capaciteCartons: number;
+  capaciteVelosMontes: number;
+  peutEntrerParis: boolean;
+  actif: boolean;
+  notes: string;
+};
+
+function FlotteModal({ onClose }: { onClose: () => void }) {
+  const [camions, setCamions] = useState<CamionFlotte[]>([]);
+  const [editing, setEditing] = useState<CamionFlotte | "new" | null>(null);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, onSnapshot } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const unsub = onSnapshot(collection(db, "flotte"), (snap) => {
+        if (!alive) return;
+        const rows: CamionFlotte[] = [];
+        for (const d of snap.docs) {
+          const data = d.data();
+          rows.push({
+            id: d.id,
+            nom: String(data.nom || ""),
+            type: String(data.type || "moyen"),
+            capaciteCartons: Number(data.capaciteCartons || data.capaciteVelos || 0),
+            capaciteVelosMontes: Number(data.capaciteVelosMontes || 0),
+            peutEntrerParis: data.peutEntrerParis === true,
+            actif: data.actif !== false,
+            notes: String(data.notes || ""),
+          });
+        }
+        rows.sort((a, b) => a.nom.localeCompare(b.nom));
+        setCamions(rows);
+      });
+      return () => unsub();
+    })();
+    return () => { alive = false; };
+  }, []);
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[2000] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <div>
+            <h2 className="text-lg font-semibold">🚛 Flotte de camions</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Capacités utilisées pour les tournées (cartons et vélos montés). Toggle Paris pour les contraintes poids lourd.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+        <div className="space-y-2">
+          {camions.map((c) => (
+            <div key={c.id} className={`border rounded p-3 ${c.actif ? "" : "opacity-50 bg-gray-50"}`}>
+              <div className="flex items-center justify-between gap-2">
+                <div>
+                  <div className="font-bold">
+                    {c.peutEntrerParis ? "🚐" : "🚛"} {c.nom} <span className="text-xs font-normal text-gray-500">({c.type})</span>
+                    {!c.actif && <span className="ml-2 text-[10px] px-1.5 py-0.5 bg-gray-200 rounded">inactif</span>}
+                  </div>
+                  <div className="text-xs text-gray-600 mt-0.5">
+                    📦 {c.capaciteCartons} cartons · 🔧 {c.capaciteVelosMontes} montés ·{" "}
+                    {c.peutEntrerParis ? "✅ Paris OK" : "❌ interdit Paris"}
+                  </div>
+                  {c.notes && <div className="text-[11px] text-gray-500 italic mt-1">{c.notes}</div>}
+                </div>
+                <button
+                  onClick={() => setEditing(c)}
+                  className="px-2 py-1 text-xs bg-gray-100 hover:bg-gray-200 rounded"
+                >
+                  ✏️ Modifier
+                </button>
+              </div>
+            </div>
+          ))}
+          {camions.length === 0 && (
+            <div className="text-sm text-gray-400 italic text-center py-6">Aucun camion configuré.</div>
+          )}
+        </div>
+        <div className="mt-4 flex justify-between gap-2">
+          <button
+            onClick={() => setEditing("new")}
+            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 font-semibold"
+          >
+            + Nouveau camion
+          </button>
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Fermer</button>
+        </div>
+      </div>
+      {editing && (
+        <CamionEditModal
+          camion={editing === "new" ? null : editing}
+          onClose={() => setEditing(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function CamionEditModal({ camion, onClose }: { camion: CamionFlotte | null; onClose: () => void }) {
+  const [nom, setNom] = useState(camion?.nom || "");
+  const [type, setType] = useState(camion?.type || "moyen");
+  const [capaciteCartons, setCapaciteCartons] = useState(String(camion?.capaciteCartons || ""));
+  const [capaciteVelosMontes, setCapaciteVelosMontes] = useState(String(camion?.capaciteVelosMontes || ""));
+  const [peutEntrerParis, setPeutEntrerParis] = useState(camion?.peutEntrerParis ?? true);
+  const [actif, setActif] = useState(camion?.actif ?? true);
+  const [notes, setNotes] = useState(camion?.notes || "");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!nom.trim()) {
+      alert("Nom obligatoire");
+      return;
+    }
+    setBusy(true);
+    try {
+      const { collection, addDoc, doc, setDoc, serverTimestamp } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const cc = parseInt(capaciteCartons, 10) || 0;
+      const cm = parseInt(capaciteVelosMontes, 10) || 0;
+      const payload = {
+        nom: nom.trim(),
+        type,
+        capaciteCartons: cc,
+        capaciteVelosMontes: cm,
+        capaciteVelos: Math.max(cc, cm), // legacy field
+        peutEntrerParis,
+        actif,
+        notes: notes.trim() || null,
+        updatedAt: serverTimestamp(),
+      };
+      if (camion?.id) {
+        await setDoc(doc(db, "flotte", camion.id), payload, { merge: true });
+      } else {
+        await addDoc(collection(db, "flotte"), { ...payload, createdAt: serverTimestamp() });
+      }
+      onClose();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[2100] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-md" onClick={(e) => e.stopPropagation()}>
+        <h2 className="text-lg font-semibold mb-3">
+          {camion?.id ? `✏️ ${camion.nom}` : "+ Nouveau camion"}
+        </h2>
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-gray-600">Nom</label>
+            <input
+              type="text"
+              value={nom}
+              onChange={(e) => setNom(e.target.value)}
+              placeholder="Ex: Petit camion · Grand camion"
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Type</label>
+            <select
+              value={type}
+              onChange={(e) => setType(e.target.value)}
+              className="w-full px-2 py-1.5 border rounded text-sm bg-white"
+            >
+              <option value="petit">Petit</option>
+              <option value="moyen">Moyen</option>
+              <option value="gros">Gros</option>
+              <option value="camionnette">Camionnette</option>
+            </select>
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs text-gray-600">📦 Capacité cartons</label>
+              <input
+                type="number"
+                value={capaciteCartons}
+                onChange={(e) => setCapaciteCartons(e.target.value)}
+                placeholder="Ex: 77"
+                className="w-full px-2 py-1.5 border rounded text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-600">🔧 Capacité montés</label>
+              <input
+                type="number"
+                value={capaciteVelosMontes}
+                onChange={(e) => setCapaciteVelosMontes(e.target.value)}
+                placeholder="Ex: 40"
+                className="w-full px-2 py-1.5 border rounded text-sm"
+              />
+            </div>
+          </div>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={peutEntrerParis}
+              onChange={(e) => setPeutEntrerParis(e.target.checked)}
+            />
+            <span className="text-sm">✅ Peut entrer dans Paris (et petites rues)</span>
+          </label>
+          <label className="flex items-center gap-2 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={actif}
+              onChange={(e) => setActif(e.target.checked)}
+            />
+            <span className="text-sm">Camion actif (utilisé dans les tournées)</span>
+          </label>
+          <div>
+            <label className="text-xs text-gray-600">Notes</label>
+            <input
+              type="text"
+              value={notes}
+              onChange={(e) => setNotes(e.target.value)}
+              placeholder="Ex: POIDS LOURD restrictions Paris"
+              className="w-full px-2 py-1.5 border rounded text-sm"
+            />
+          </div>
+        </div>
+        <div className="mt-4 flex justify-end gap-2">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Annuler</button>
+          <button
+            onClick={submit}
+            disabled={busy || !nom.trim()}
+            className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 disabled:opacity-50 font-semibold"
+          >
+            {busy ? "..." : "✓ Sauvegarder"}
+          </button>
         </div>
       </div>
     </div>
