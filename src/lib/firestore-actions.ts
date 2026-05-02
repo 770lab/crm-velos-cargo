@@ -261,6 +261,10 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "suggestTournee",
   // Phase B-1 (Yoann 2026-05-01) : suggestion tournée depuis un entrepôt.
   "suggestTourneeFromEntrepot",
+  // Phase B-2 (Yoann 2026-05-01) : planificateur multi-tournées journée.
+  "planifierJourneeCamion",
+  // Phase 3.1 (Yoann 2026-05-01) : Gemini logisticien stratège.
+  "strategieGemini",
   // parcelle cadastrale (vague 3) — APIs publiques, pas de Cloud Function
   "fetchParcelle",
   "autoFetchParcelles",
