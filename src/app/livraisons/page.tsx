@@ -10,6 +10,8 @@ import { callGemini } from "@/lib/gemini-client";
 import DateLoadPicker, { type DayLoad } from "@/components/date-load-picker";
 import AddClientModal from "@/components/add-client-modal";
 import DayPlannerModal from "@/components/day-planner-modal";
+// Yoann 2026-05-03 : édition session atelier au click depuis la card calendrier
+import { SessionAtelierModal } from "@/app/entrepots/page";
 
 import { BASE_PATH } from "@/lib/base-path";
 // Étapes accessibles par rôle.
@@ -885,6 +887,7 @@ function NavBar({
 // Auparavant MonthView seul rendait les sessions atelier en cards orange.
 type SessionAtelierItem = {
   id: string;
+  entrepotId: string;
   entrepotNom: string;
   statut: string;
   quantitePrevue?: number | null;
@@ -893,10 +896,17 @@ type SessionAtelierItem = {
 type SessionsByDate = Map<string, SessionAtelierItem[]>;
 
 function SessionAtelierCard({ s }: { s: SessionAtelierItem }) {
+  // Yoann 2026-05-03 : click pour ouvrir le modal d édition (gérer monteurs,
+  // chef, statut, quantité, notes). Le modal est exporté depuis /entrepots
+  // (mode édition via existingSessionId).
+  const [showEdit, setShowEdit] = useState(false);
   return (
+    <>
     <div
-      className="bg-amber-50 border border-amber-300 rounded px-1.5 py-1 text-[10px] leading-tight"
-      title={`Atelier ${s.entrepotNom} · ${s.monteurNoms.length} monteurs : ${s.monteurNoms.join(", ")}`}
+      role="button"
+      onClick={(e) => { e.stopPropagation(); setShowEdit(true); }}
+      className="bg-amber-50 border border-amber-300 rounded px-1.5 py-1 text-[10px] leading-tight cursor-pointer hover:bg-amber-100 hover:border-amber-400"
+      title={`Atelier ${s.entrepotNom} · ${s.monteurNoms.length} monteurs : ${s.monteurNoms.join(", ")} — clique pour gérer le personnel`}
     >
       <div className="font-semibold text-amber-900 truncate">🔧 Atelier {s.entrepotNom}</div>
       <div className="text-amber-700 opacity-80 truncate">
@@ -904,6 +914,15 @@ function SessionAtelierCard({ s }: { s: SessionAtelierItem }) {
         {s.quantitePrevue ? ` · ${s.quantitePrevue}v` : ""}
       </div>
     </div>
+    {showEdit && (
+      <SessionAtelierModal
+        entrepotId={s.entrepotId}
+        entrepotNom={s.entrepotNom}
+        existingSessionId={s.id}
+        onClose={() => setShowEdit(false)}
+      />
+    )}
+    </>
   );
 }
 

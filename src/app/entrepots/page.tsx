@@ -1780,13 +1780,17 @@ function SessionLine({
   );
 }
 
-function SessionAtelierModal({
+// Yoann 2026-05-03 : exporté + mode édition (si existingSessionId fourni,
+// charge le doc et update au lieu de create).
+export function SessionAtelierModal({
   entrepotId,
   entrepotNom,
+  existingSessionId,
   onClose,
 }: {
   entrepotId: string;
   entrepotNom: string;
+  existingSessionId?: string;
   onClose: () => void;
 }) {
   type Member = { id: string; nom: string; role: string; chefId?: string | null; aussiMonteur?: boolean };
@@ -1795,8 +1799,37 @@ function SessionAtelierModal({
   const [chefId, setChefId] = useState("");
   const [monteurIds, setMonteurIds] = useState<string[]>([]);
   const [quantitePrevue, setQuantitePrevue] = useState("");
+  const [quantiteReelle, setQuantiteReelle] = useState("");
+  const [statut, setStatut] = useState<"planifiee" | "en_cours" | "terminee" | "annulee">("planifiee");
   const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState(false);
+  const [loadingExisting, setLoadingExisting] = useState(!!existingSessionId);
+
+  // Charge la session existante si on est en mode édition
+  useEffect(() => {
+    if (!existingSessionId) return;
+    let alive = true;
+    (async () => {
+      const { doc, getDoc } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const snap = await getDoc(doc(db, "sessionsMontageAtelier", existingSessionId));
+      if (!alive || !snap.exists()) {
+        if (alive) setLoadingExisting(false);
+        return;
+      }
+      const d = snap.data() as Record<string, unknown>;
+      setDate(String(d.date || ""));
+      setChefId(typeof d.chefId === "string" ? d.chefId : "");
+      setMonteurIds(Array.isArray(d.monteurIds) ? d.monteurIds : []);
+      setQuantitePrevue(d.quantitePrevue != null ? String(d.quantitePrevue) : "");
+      setQuantiteReelle(d.quantiteReelle != null ? String(d.quantiteReelle) : "");
+      const st = String(d.statut || "planifiee");
+      setStatut(["en_cours", "terminee", "annulee"].includes(st) ? (st as "en_cours" | "terminee" | "annulee") : "planifiee");
+      setNotes(typeof d.notes === "string" ? d.notes : "");
+      setLoadingExisting(false);
+    })();
+    return () => { alive = false; };
+  }, [existingSessionId]);
   // Détection conflit (Yoann 2026-05-01) : monteurId -> "tournée X (Client)" ou
   // "atelier Y" pour ce jour. Affiché en warning sur les boutons + bandeau.
   const [conflits, setConflits] = useState<Map<string, string>>(new Map());
@@ -1928,12 +1961,13 @@ function SessionAtelierModal({
     }
     setBusy(true);
     try {
-      const { collection, addDoc, serverTimestamp } = await import("firebase/firestore");
+      const { collection, addDoc, doc, setDoc, serverTimestamp } = await import("firebase/firestore");
       const { db } = await import("@/lib/firebase");
       const monteurNoms = monteurIds.map((id) => equipe.find((m) => m.id === id)?.nom || "?");
       const chef = chefs.find((c) => c.id === chefId);
       const q = quantitePrevue ? parseInt(quantitePrevue, 10) : null;
-      await addDoc(collection(db, "sessionsMontageAtelier"), {
+      const qr = quantiteReelle ? parseInt(quantiteReelle, 10) : null;
+      const payload = {
         entrepotId,
         entrepotNom,
         date,
@@ -1942,11 +1976,41 @@ function SessionAtelierModal({
         chefId: chef?.id || null,
         chefNom: chef?.nom || null,
         quantitePrevue: q && q > 0 ? q : null,
+        quantiteReelle: qr && qr > 0 ? qr : null,
         notes: notes.trim() || null,
-        statut: "planifiee",
-        createdAt: serverTimestamp(),
+        statut,
         updatedAt: serverTimestamp(),
-      });
+      };
+      if (existingSessionId) {
+        // Mode édition : merge update sur le doc existant
+        await setDoc(doc(db, "sessionsMontageAtelier", existingSessionId), payload, { merge: true });
+      } else {
+        // Mode création
+        await addDoc(collection(db, "sessionsMontageAtelier"), {
+          ...payload,
+          createdAt: serverTimestamp(),
+        });
+      }
+      onClose();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Suppression (mode édition uniquement) — soft delete via statut=annulee
+  const cancelSession = async () => {
+    if (!existingSessionId) return;
+    if (!confirm(`Annuler cette session atelier du ${date} ?`)) return;
+    setBusy(true);
+    try {
+      const { doc, setDoc, serverTimestamp } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      await setDoc(doc(db, "sessionsMontageAtelier", existingSessionId), {
+        statut: "annulee",
+        updatedAt: serverTimestamp(),
+      }, { merge: true });
       onClose();
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e));
@@ -1959,9 +2023,16 @@ function SessionAtelierModal({
     <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[2000] p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-start mb-3">
-          <h2 className="text-lg font-semibold">+ Planifier session montage atelier</h2>
+          <h2 className="text-lg font-semibold">
+            {existingSessionId ? "🔧 Gérer session atelier" : "+ Planifier session montage atelier"}
+          </h2>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
         </div>
+        {loadingExisting && (
+          <div className="bg-blue-50 border border-blue-200 rounded p-2 text-[11px] text-blue-900 mb-2">
+            Chargement de la session…
+          </div>
+        )}
         <div className="space-y-3">
           <div className="bg-amber-50 border border-amber-200 rounded p-2 text-[11px] text-amber-900">
             📍 Entrepôt : <strong>{entrepotNom}</strong>
@@ -1993,16 +2064,45 @@ function SessionAtelierModal({
               ))}
             </select>
           </div>
-          <div>
-            <label className="text-xs text-gray-600">Quantité prévue (vélos à monter)</label>
-            <input
-              type="number"
-              value={quantitePrevue}
-              onChange={(e) => setQuantitePrevue(e.target.value)}
-              placeholder="Ex: 100"
-              className="w-full px-2 py-1.5 border rounded text-sm"
-            />
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs text-gray-600">Quantité prévue</label>
+              <input
+                type="number"
+                value={quantitePrevue}
+                onChange={(e) => setQuantitePrevue(e.target.value)}
+                placeholder="Ex: 100"
+                className="w-full px-2 py-1.5 border rounded text-sm"
+              />
+            </div>
+            {existingSessionId && (
+              <div>
+                <label className="text-xs text-gray-600">Quantité réelle (montés)</label>
+                <input
+                  type="number"
+                  value={quantiteReelle}
+                  onChange={(e) => setQuantiteReelle(e.target.value)}
+                  placeholder="Réel"
+                  className="w-full px-2 py-1.5 border rounded text-sm"
+                />
+              </div>
+            )}
           </div>
+          {existingSessionId && (
+            <div>
+              <label className="text-xs text-gray-600">Statut</label>
+              <select
+                value={statut}
+                onChange={(e) => setStatut(e.target.value as typeof statut)}
+                className="w-full px-2 py-1.5 border rounded text-sm bg-white"
+              >
+                <option value="planifiee">📅 Planifiée</option>
+                <option value="en_cours">🔧 En cours</option>
+                <option value="terminee">✓ Terminée</option>
+                <option value="annulee">✕ Annulée</option>
+              </select>
+            </div>
+          )}
           <div>
             <label className="text-xs text-gray-600 block mb-1">Monteurs assignés ({monteurIds.length} sélectionnés)</label>
             {conflits.size > 0 && (
@@ -2072,15 +2172,29 @@ function SessionAtelierModal({
             />
           </div>
         </div>
-        <div className="mt-4 flex justify-end gap-2">
-          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Annuler</button>
-          <button
-            onClick={submit}
-            disabled={busy || monteurIds.length === 0}
-            className="px-3 py-1.5 text-sm bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50 font-semibold"
-          >
-            {busy ? "..." : "🔧 Planifier la session"}
-          </button>
+        <div className="mt-4 flex justify-between gap-2">
+          <div>
+            {existingSessionId && statut !== "annulee" && (
+              <button
+                onClick={cancelSession}
+                disabled={busy}
+                className="px-3 py-1.5 text-sm border border-red-300 text-red-700 rounded hover:bg-red-50"
+                title="Annule cette session (soft delete, statut=annulee)"
+              >
+                ✕ Annuler la session
+              </button>
+            )}
+          </div>
+          <div className="flex gap-2">
+            <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Fermer</button>
+            <button
+              onClick={submit}
+              disabled={busy || monteurIds.length === 0}
+              className="px-3 py-1.5 text-sm bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50 font-semibold"
+            >
+              {busy ? "..." : existingSessionId ? "✓ Sauvegarder" : "🔧 Planifier la session"}
+            </button>
+          </div>
         </div>
       </div>
     </div>
