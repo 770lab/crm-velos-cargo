@@ -268,6 +268,8 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   // Yoann 2026-05-03 : reset stock + suggestion stock cible 100km Paris
   "resetStockEntrepot",
   "suggestionStockEntrepot",
+  // Yoann 2026-05-03 : Gemini scanne les anomalies clients
+  "detectAnomaliesClients",
   // parcelle cadastrale (vague 3) — APIs publiques, pas de Cloud Function
   "fetchParcelle",
   "autoFetchParcelles",
@@ -4998,6 +5000,163 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
         totalCibleMontes,
         entrepots: result,
       };
+    }
+
+    case "detectAnomaliesClients": {
+      // Yoann 2026-05-03 — Phase 3.3 : Gemini scanne les clients et identifie
+      // les anomalies (retard livraison, volume incohérent, docs manquants
+      // depuis longtemps, signé mais pas planifié, etc.).
+      const cSnapAn = await getDocs(collection(db, "clients"));
+      const lSnapAn = await getDocs(collection(db, "livraisons"));
+      const planifAn = new Map<string, number>();
+      const livrAn = new Map<string, string>(); // clientId -> last delivery date
+      for (const d of lSnapAn.docs) {
+        const o = d.data() as { statut?: string; clientId?: string; nbVelos?: number; dateEffective?: string; datePrevue?: string };
+        const cid = String(o.clientId || "");
+        if (!cid) continue;
+        if (String(o.statut || "").toLowerCase() === "planifiee") {
+          planifAn.set(cid, (planifAn.get(cid) || 0) + (Number(o.nbVelos) || 0));
+        }
+        if (String(o.statut || "").toLowerCase() === "livree") {
+          const dt = String(o.dateEffective || o.datePrevue || "").slice(0, 10);
+          if (dt && (!livrAn.has(cid) || dt > livrAn.get(cid)!)) {
+            livrAn.set(cid, dt);
+          }
+        }
+      }
+
+      type ClientStat = {
+        id: string;
+        entreprise: string;
+        ville: string;
+        codePostal: string;
+        nbVelosCommandes: number;
+        velosLivres: number;
+        velosRestants: number;
+        velosPlanifies: number;
+        ageJours: number | null;
+        dateEngagement: string | null;
+        dateLastLivraison: string | null;
+        docsComplets: boolean;
+        statut: string | null;
+      };
+      const stats: ClientStat[] = [];
+      const todayMs = Date.now();
+      for (const d of cSnapAn.docs) {
+        const o = d.data() as Record<string, unknown>;
+        const stCli = (o.stats as { livres?: number } | undefined) || {};
+        const livres = Number(stCli.livres || 0);
+        const cmd = Number(o.nbVelosCommandes || 0);
+        const planif = planifAn.get(d.id) || 0;
+        const reste = Math.max(0, cmd - livres - planif);
+        const dateEng = typeof o.dateEngagement === "string" ? o.dateEngagement.slice(0, 10) : null;
+        let ageJours: number | null = null;
+        if (dateEng) {
+          const t = new Date(dateEng).getTime();
+          if (!isNaN(t)) ageJours = Math.floor((todayMs - t) / 86400000);
+        }
+        const docsComplets = !!o.kbisRecu && !!o.attestationRecue && !!o.devisSignee;
+        if (cmd === 0 && reste === 0) continue; // pas pertinent
+        stats.push({
+          id: d.id,
+          entreprise: String(o.entreprise || ""),
+          ville: String(o.ville || ""),
+          codePostal: String(o.codePostal || ""),
+          nbVelosCommandes: cmd,
+          velosLivres: livres,
+          velosRestants: reste,
+          velosPlanifies: planif,
+          ageJours,
+          dateEngagement: dateEng,
+          dateLastLivraison: livrAn.get(d.id) || null,
+          docsComplets,
+          statut: typeof o.statut === "string" ? o.statut : null,
+        });
+      }
+
+      // Stats globales pour donner du contexte à Gemini
+      const totalClients = stats.length;
+      const totalVelosRestants = stats.reduce((s, c) => s + c.velosRestants, 0);
+      const ages = stats.filter((s) => s.ageJours != null).map((s) => s.ageJours!).sort((a, b) => a - b);
+      const medianeAge = ages.length > 0 ? ages[Math.floor(ages.length / 2)] : null;
+      const volumes = stats.map((s) => s.nbVelosCommandes).sort((a, b) => a - b);
+      const medianeVolume = volumes.length > 0 ? volumes[Math.floor(volumes.length / 2)] : null;
+      const docsKO = stats.filter((s) => !s.docsComplets && s.velosRestants > 0).length;
+
+      // Top candidats anomalies = on trie par "score de risque" :
+      //   âge élevé + reste > 0 (en attente longue durée)
+      //   docs incomplets + signé
+      //   volume très faible (1-2 vélos = anomalie probable)
+      const topRisques = [...stats]
+        .filter((s) => s.velosRestants > 0)
+        .sort((a, b) => {
+          const scoreA = (a.ageJours || 0) * (a.docsComplets ? 1 : 2);
+          const scoreB = (b.ageJours || 0) * (b.docsComplets ? 1 : 2);
+          return scoreB - scoreA;
+        })
+        .slice(0, 40);
+
+      const prompt = `Tu es un analyste opérations d une PME qui livre des vélos cargo en région parisienne. Analyse la base clients pour identifier les anomalies prioritaires à traiter.
+
+CONTEXTE :
+- ${totalClients} clients avec commande active
+- ${totalVelosRestants} vélos restant à livrer au global
+- Âge médian engagement : ${medianeAge ?? "?"} jours
+- Volume médian commande : ${medianeVolume ?? "?"} vélos
+- ${docsKO} clients avec docs incomplets ET vélos restants
+
+TOP ${topRisques.length} CLIENTS À RISQUE :
+${topRisques.map((c) => `- ${c.id} | ${c.entreprise} (${c.ville}, ${c.codePostal}) | cmd=${c.nbVelosCommandes}v · livrés=${c.velosLivres} · planifiés=${c.velosPlanifies} · reste=${c.velosRestants} · âge=${c.ageJours ?? "?"}j · docs=${c.docsComplets ? "OK" : "INCOMPLETS"}${c.dateLastLivraison ? ` · derniere liv ${c.dateLastLivraison}` : " · jamais livré"}${c.statut ? ` · statut=${c.statut}` : ""}`).join("\n")}
+
+DEMANDE :
+Identifie les 5-10 anomalies les plus prioritaires. Pour chaque anomalie :
+- Type : "retard_excessif" | "docs_manquants" | "volume_anormal" | "abandonné_probable" | "incohérence_donnée" | "autre"
+- Sévérité : 1 (info) à 5 (critique)
+- Action recommandée concrète
+
+Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
+
+{
+  "anomalies": [
+    {
+      "clientId": "string",
+      "entreprise": "string",
+      "type": "retard_excessif | docs_manquants | volume_anormal | abandonne_probable | incoherence_donnee | autre",
+      "severite": 1-5,
+      "diagnostic": "string : ce qui est anormal en 1-2 phrases",
+      "action": "string : action concrète recommandée"
+    },
+    ... 4-9 autres ...
+  ],
+  "resume": "string : synthèse globale en 2-3 phrases (santé générale du portefeuille)",
+  "kpisCles": {
+    "tauxLivraison": number (% global cmd→livré),
+    "clientsEnAttenteLongue": number (>60j sans livraison),
+    "clientsBloquesDocsKO": number
+  }
+}`;
+
+      try {
+        const { callGemini } = await import("@/lib/gemini-client");
+        const r = await callGemini(prompt);
+        if (!r.ok) return { ok: false, error: r.error };
+        const txt = r.text.trim();
+        const jsonStart = txt.indexOf("{");
+        const jsonEnd = txt.lastIndexOf("}");
+        if (jsonStart < 0 || jsonEnd < 0) {
+          return { ok: false, error: "Réponse Gemini sans JSON détectable", raw: txt.slice(0, 500) };
+        }
+        const jsonStr = txt.slice(jsonStart, jsonEnd + 1);
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(jsonStr);
+        } catch (e) {
+          return { ok: false, error: "JSON Gemini invalide : " + (e instanceof Error ? e.message : String(e)), raw: jsonStr.slice(0, 500) };
+        }
+        return { ok: true, ...(parsed as Record<string, unknown>), model: r.model, totalClients, totalVelosRestants };
+      } catch (e) {
+        return { ok: false, error: e instanceof Error ? e.message : String(e) };
+      }
     }
 
     default:

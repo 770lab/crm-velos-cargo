@@ -23,6 +23,7 @@ export default function ClientsPage() {
   const [showAdd, setShowAdd] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [showSync, setShowSync] = useState(false);
+  const [showAnomalies, setShowAnomalies] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
   const [editVelos, setEditVelos] = useState<ClientRow | null>(null);
@@ -252,6 +253,13 @@ export default function ClientsPage() {
             {autoParcellesBusy ? "Auto-parcelles…" : "Auto-parcelles"}
           </button>
           <button
+            onClick={() => setShowAnomalies(true)}
+            className="px-4 py-2 bg-gradient-to-r from-rose-600 to-pink-600 text-white rounded-lg hover:opacity-90 text-sm font-medium"
+            title="Gemini scanne les clients et identifie les anomalies prioritaires (retards, docs manquants, volumes anormaux)"
+          >
+            🔍 Anomalies IA
+          </button>
+          <button
             onClick={() => setShowAdd(true)}
             className="px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm"
           >
@@ -259,6 +267,7 @@ export default function ClientsPage() {
           </button>
         </div>
       </div>
+      {showAnomalies && <AnomaliesIaModal onClose={() => setShowAnomalies(false)} />}
 
       <div className="flex flex-col sm:flex-row gap-3 mb-6">
         <input
@@ -2048,6 +2057,154 @@ function Stat({ label, value }: { label: string; value: number }) {
     <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-center">
       <div className="text-2xl font-bold text-gray-900">{value}</div>
       <div className="text-xs text-gray-500">{label}</div>
+    </div>
+  );
+}
+
+// AnomaliesIaModal — Yoann 2026-05-03 — Phase 3.3
+// Gemini scanne les clients et flagge les anomalies prioritaires (retards,
+// docs manquants, volumes anormaux, clients abandonnés probables).
+type AnomalieItem = {
+  clientId: string;
+  entreprise: string;
+  type: string;
+  severite: number;
+  diagnostic: string;
+  action: string;
+};
+type AnomaliesResult = {
+  ok?: boolean;
+  error?: string;
+  raw?: string;
+  anomalies?: AnomalieItem[];
+  resume?: string;
+  kpisCles?: { tauxLivraison?: number; clientsEnAttenteLongue?: number; clientsBloquesDocsKO?: number };
+  totalClients?: number;
+  totalVelosRestants?: number;
+  model?: string;
+};
+
+function AnomaliesIaModal({ onClose }: { onClose: () => void }) {
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<AnomaliesResult | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const { gasPost } = await import("@/lib/gas");
+      const r = (await gasPost("detectAnomaliesClients", {})) as AnomaliesResult;
+      setResult(r);
+    } catch (e) {
+      setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const severiteColor = (s: number) => {
+    if (s >= 5) return "bg-red-100 border-red-300 text-red-900";
+    if (s >= 4) return "bg-orange-100 border-orange-300 text-orange-900";
+    if (s >= 3) return "bg-amber-100 border-amber-300 text-amber-900";
+    if (s >= 2) return "bg-blue-100 border-blue-300 text-blue-900";
+    return "bg-gray-100 border-gray-300 text-gray-700";
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[2000] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <div>
+            <h2 className="text-lg font-semibold">🔍 Anomalies clients (IA)</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Gemini scanne les clients en attente et identifie les cas qui méritent une action prioritaire (retards, docs, abandon probable).
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+
+        <button
+          onClick={run}
+          disabled={busy}
+          className="w-full px-3 py-2 bg-gradient-to-r from-rose-600 to-pink-600 text-white rounded-lg hover:opacity-90 disabled:opacity-50 font-semibold mb-3"
+        >
+          {busy ? "🔍 Analyse en cours..." : "🔍 Lancer l'analyse Gemini"}
+        </button>
+
+        {result && (
+          <div>
+            {result.error && (
+              <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800 mb-3">
+                ❌ {result.error}
+                {result.raw && <pre className="mt-2 text-[10px] overflow-x-auto">{result.raw}</pre>}
+              </div>
+            )}
+            {result.resume && (
+              <div className="bg-blue-50 border border-blue-300 rounded p-3 mb-3">
+                <div className="text-xs font-semibold text-blue-900 mb-1">💡 Synthèse globale</div>
+                <div className="text-xs text-blue-900">{result.resume}</div>
+              </div>
+            )}
+            {result.kpisCles && (
+              <div className="grid grid-cols-3 gap-2 mb-3">
+                {result.kpisCles.tauxLivraison != null && (
+                  <div className="bg-emerald-50 border border-emerald-200 rounded p-2 text-center">
+                    <div className="text-lg font-bold text-emerald-900">{result.kpisCles.tauxLivraison}%</div>
+                    <div className="text-[10px] uppercase text-emerald-700">Taux livraison</div>
+                  </div>
+                )}
+                {result.kpisCles.clientsEnAttenteLongue != null && (
+                  <div className="bg-amber-50 border border-amber-200 rounded p-2 text-center">
+                    <div className="text-lg font-bold text-amber-900">{result.kpisCles.clientsEnAttenteLongue}</div>
+                    <div className="text-[10px] uppercase text-amber-700">Attente &gt; 60j</div>
+                  </div>
+                )}
+                {result.kpisCles.clientsBloquesDocsKO != null && (
+                  <div className="bg-rose-50 border border-rose-200 rounded p-2 text-center">
+                    <div className="text-lg font-bold text-rose-900">{result.kpisCles.clientsBloquesDocsKO}</div>
+                    <div className="text-[10px] uppercase text-rose-700">Bloqués docs</div>
+                  </div>
+                )}
+              </div>
+            )}
+            {result.anomalies && result.anomalies.length > 0 && (
+              <div className="space-y-2">
+                {result.anomalies.map((a, i) => (
+                  <div key={i} className={`border rounded-lg p-3 ${severiteColor(a.severite)}`}>
+                    <div className="flex items-start justify-between gap-2 mb-1">
+                      <div>
+                        <a
+                          href={`/clients/detail?id=${encodeURIComponent(a.clientId)}`}
+                          className="font-bold hover:underline"
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          {a.entreprise}
+                        </a>
+                        <span className="ml-2 text-[10px] uppercase opacity-70">{a.type}</span>
+                      </div>
+                      <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-white/60">
+                        Sév. {a.severite}/5
+                      </span>
+                    </div>
+                    <div className="text-[11px] mb-1"><strong>Diagnostic :</strong> {a.diagnostic}</div>
+                    <div className="text-[11px] italic"><strong>→ Action :</strong> {a.action}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {result.model && (
+              <div className="mt-3 text-[10px] text-gray-400 italic text-center">
+                {result.totalClients} clients analysés · Généré par {result.model}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Fermer</button>
+        </div>
+      </div>
     </div>
   );
 }
