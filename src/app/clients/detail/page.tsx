@@ -80,6 +80,7 @@ interface ClientDetail {
   dateEngagement: string | null;
   liasseFiscaleDate: string | null;
   notes: string | null;
+  creneauLivraison?: string | null;
   statut: string | null;
   raisonAnnulation: string | null;
   annuleeAt: string | null;
@@ -536,6 +537,38 @@ function ClientDetailPage() {
             </label>
           </div>
         </div>
+      </div>
+
+      {/* Yoann 2026-05-03 — VRP-TW : créneau de livraison préféré (matin /
+          après-midi / spécifique). Pris en compte par strategieGemini pour
+          regrouper les clients du même créneau dans la même tournée. */}
+      <div className="bg-white rounded-xl border p-4 mb-8">
+        <h3 className="font-semibold text-sm text-gray-700 mb-2">🕐 Créneau de livraison préféré</h3>
+        <div className="flex items-center gap-2 flex-wrap">
+          {(["", "matin", "apresmidi", "specifique"] as const).map((cr) => {
+            const labels: Record<string, string> = { "": "Flexible", matin: "Matin (8h-12h)", apresmidi: "Après-midi (14h-18h)", specifique: "Spécifique" };
+            const cur = client.creneauLivraison || "";
+            const isSel = cur === cr || (cur && cur !== "matin" && cur !== "apresmidi" && cr === "specifique");
+            return (
+              <button
+                key={cr || "flex"}
+                onClick={() => updateField("creneauLivraison", cr || "")}
+                className={`px-3 py-1.5 text-sm rounded-full border ${isSel ? "bg-blue-600 text-white border-blue-600" : "bg-white border-gray-300 hover:bg-gray-50"}`}
+              >
+                {labels[cr]}
+              </button>
+            );
+          })}
+        </div>
+        {(client.creneauLivraison && client.creneauLivraison !== "matin" && client.creneauLivraison !== "apresmidi") && (
+          <input
+            type="text"
+            value={client.creneauLivraison}
+            onChange={(e) => updateField("creneauLivraison", e.target.value)}
+            placeholder='Ex: "10h-12h impératif" ou "après 16h"'
+            className="mt-2 w-full px-2 py-1.5 border rounded-lg text-sm"
+          />
+        )}
       </div>
 
       {/* Bons de livraison signes par le client. Le chauffeur les prend en

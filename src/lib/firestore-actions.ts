@@ -4513,11 +4513,11 @@ export async function runFirestoreAction(
         if (!cid) continue;
         planifies.set(cid, (planifies.get(cid) || 0) + (Number(o.nbVelos) || 0));
       }
-      type ClientCtx = { id: string; entreprise: string; ville: string; lat: number; lng: number; velosRestants: number; codePostal: string; estParis: boolean };
+      type ClientCtx = { id: string; entreprise: string; ville: string; lat: number; lng: number; velosRestants: number; codePostal: string; estParis: boolean; creneauLivraison: string | null };
       const clientsCtx: ClientCtx[] = [];
       let nbClientsExclusGroupe = 0;
       for (const d of cSnap.docs) {
-        const o = d.data() as { entreprise?: string; ville?: string; latitude?: number; longitude?: number; nbVelosCommandes?: number; stats?: { livres?: number }; codePostal?: string; groupe?: string; groupeClient?: string };
+        const o = d.data() as { entreprise?: string; ville?: string; latitude?: number; longitude?: number; nbVelosCommandes?: number; stats?: { livres?: number }; codePostal?: string; groupe?: string; groupeClient?: string; creneauLivraison?: string };
         if (typeof o.latitude !== "number" || typeof o.longitude !== "number") continue;
         const reste = Math.max(0, Number(o.nbVelosCommandes || 0) - Number(o.stats?.livres || 0) - (planifies.get(d.id) || 0));
         if (reste <= 0) continue;
@@ -4540,6 +4540,9 @@ export async function runFirestoreAction(
           velosRestants: reste,
           codePostal: cp,
           estParis,
+          // Yoann 2026-05-03 — VRP-TW : créneau préféré pour la livraison.
+          // Format libre : "matin", "apresmidi", "specifique 14h-16h", null=flexible
+          creneauLivraison: typeof o.creneauLivraison === "string" && o.creneauLivraison.trim() ? o.creneauLivraison.trim() : null,
         });
       }
       // Top 50 par volume restant pour limiter le prompt
@@ -4699,7 +4702,13 @@ ENTREPÔTS DISPONIBLES (${entrepotsCtx.length}) :
 ${entrepotsCtx.map((e) => `- ${e.id} | ${e.nom} (${e.ville}) | lat=${e.lat.toFixed(4)},lng=${e.lng.toFixed(4)} | ${e.stockCartons} cartons + ${e.stockVelosMontes} montés`).join("\n")}
 
 CLIENTS À LIVRER (top ${clientsForPrompt.length} par volume, ${clientsCtx.length} au total, ${totalVelosRestants} vélos restants au global) :
-${clientsForPrompt.map((c) => `- ${c.id} | ${c.entreprise} (${c.ville}, ${c.codePostal})${c.estParis ? " ⚠️PARIS" : ""} | lat=${c.lat.toFixed(4)},lng=${c.lng.toFixed(4)} | ${c.velosRestants}v`).join("\n")}
+${clientsForPrompt.map((c) => `- ${c.id} | ${c.entreprise} (${c.ville}, ${c.codePostal})${c.estParis ? " ⚠️PARIS" : ""}${c.creneauLivraison ? ` 🕐${c.creneauLivraison}` : ""} | lat=${c.lat.toFixed(4)},lng=${c.lng.toFixed(4)} | ${c.velosRestants}v`).join("\n")}
+${(() => {
+  const avecCreneau = clientsForPrompt.filter((c) => c.creneauLivraison);
+  if (avecCreneau.length === 0) return "";
+  const creneaux = new Set(avecCreneau.map((c) => c.creneauLivraison));
+  return `\n🕐 ${avecCreneau.length} client${avecCreneau.length > 1 ? "s" : ""} avec contrainte horaire (${[...creneaux].join(", ")}) → respecter les créneaux dans l ordre de visite. Idéalement regrouper les clients du même créneau dans la même tournée pour minimiser le risque de retard.`;
+})()}
 
 STOCK GLOBAL : ${totalCartons} cartons + ${totalMontes} montés = ${totalCartons + totalMontes} vélos disponibles.
 
