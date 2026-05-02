@@ -331,7 +331,10 @@ export default function EntrepotsPage() {
                   entrepotNom={e.nom}
                   editable={isAdmin}
                 />
-                {isAdmin && (
+                {/* Yoann 2026-05-03 : pas de Suggérer/Journée sur les
+                    éphémères (livrés directement par le client à ses propres
+                    magasins, hors flotte LUZE). */}
+                {isAdmin && e.role !== "ephemere" && (
                   <SuggererTourneePanel
                     entrepotId={e.id}
                     entrepotNom={e.nom}
@@ -2252,10 +2255,10 @@ export function SuggererTourneeModal({
               onChange={(e) => setMode(e.target.value as typeof mode)}
               className="w-full px-2 py-1.5 border rounded text-sm bg-white"
             >
-              <option value="gros">Grand (132 cartons / 40 montés)</option>
+              <option value="gros">Grand (77 cartons / 40 montés) — interdit Paris</option>
+              <option value="petit">Petit (44 cartons / 20 montés) — accès Paris</option>
               <option value="moyen">Moyen (54 cartons / 30 montés)</option>
-              <option value="petit">Petit (20)</option>
-              <option value="camionnette">Camionnette (20)</option>
+              <option value="camionnette">Camionnette (44 cartons / 20 montés)</option>
             </select>
           </div>
           <div>

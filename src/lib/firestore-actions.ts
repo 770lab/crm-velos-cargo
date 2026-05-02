@@ -3888,11 +3888,15 @@ export async function runFirestoreAction(
       // - Mode "atelier" / "client_redistribue" (vélos déjà montés) :
       //   capacité réduite car les vélos prennent plus de place
       const capaciteOverride = Number(body.capacite);
+      // Yoann 2026-05-03 : capacités RÉELLES de la flotte
+      // (gros = poids lourd 77 cartons / 40 montés ; petit = 44 cartons /
+      //  20 montés peut entrer Paris). Source de vérité : collection flotte.
+      // Ces tables sont juste un fallback si pas de match flotte.
       const CAPACITES_CARTONS: Record<string, number> = {
-        gros: 132,
+        gros: 77,
         moyen: 54,
-        camionnette: 20,
-        petit: 20,
+        camionnette: 44,
+        petit: 44,
       };
       const CAPACITES_MONTES: Record<string, number> = {
         gros: 40, // Yoann 2026-05-01 : grand camion 40 vélos montés max
@@ -4216,7 +4220,7 @@ export async function runFirestoreAction(
       const minPerVeloPerMonteur = Number(body.minPerVeloPerMonteur || 12);
       if (!epId) return { error: "entrepotId requis" };
 
-      const CAPACITES_CARTONS_M: Record<string, number> = { gros: 132, moyen: 54, camionnette: 20, petit: 20 };
+      const CAPACITES_CARTONS_M: Record<string, number> = { gros: 77, moyen: 54, camionnette: 44, petit: 44 };
       const CAPACITES_MONTES_M: Record<string, number> = { gros: 40, moyen: 30, camionnette: 20, petit: 20 };
       const capTable = mModeMontage === "client" ? CAPACITES_CARTONS_M : CAPACITES_MONTES_M;
       const capCamion = capTable[camionMode] ?? 30;
@@ -4464,10 +4468,18 @@ export async function runFirestoreAction(
       const eSnap = await getDocs(collection(db, "entrepots"));
       type EntrepotCtx = { id: string; nom: string; ville: string; lat: number; lng: number; stockCartons: number; stockVelosMontes: number; role: string };
       const entrepotsCtx: EntrepotCtx[] = [];
+      const groupesEphemeres = new Set<string>(); // groupeClient des éphémères → exclus de la planif
       for (const d of eSnap.docs) {
-        const o = d.data() as { nom?: string; ville?: string; lat?: number; lng?: number; stockCartons?: number; stockVelosMontes?: number; role?: string; dateArchivage?: unknown };
+        const o = d.data() as { nom?: string; ville?: string; lat?: number; lng?: number; stockCartons?: number; stockVelosMontes?: number; role?: string; dateArchivage?: unknown; groupeClient?: string };
         if (o.dateArchivage) continue;
         if (o.role === "fournisseur") continue;
+        // Yoann 2026-05-03 : entrepôt éphémère = stock client (Firat Food) où
+        // les vélos sont destinés UNIQUEMENT aux magasins du groupe (livré
+        // par le client lui-même, pas par notre flotte). On exclut donc.
+        if (o.role === "ephemere") {
+          if (o.groupeClient) groupesEphemeres.add(String(o.groupeClient).toLowerCase());
+          continue;
+        }
         if (typeof o.lat !== "number" || typeof o.lng !== "number") continue;
         const sc = Number(o.stockCartons || 0);
         const sm = Number(o.stockVelosMontes || 0);
@@ -4498,13 +4510,24 @@ export async function runFirestoreAction(
         if (!cid) continue;
         planifies.set(cid, (planifies.get(cid) || 0) + (Number(o.nbVelos) || 0));
       }
-      type ClientCtx = { id: string; entreprise: string; ville: string; lat: number; lng: number; velosRestants: number };
+      type ClientCtx = { id: string; entreprise: string; ville: string; lat: number; lng: number; velosRestants: number; codePostal: string; estParis: boolean };
       const clientsCtx: ClientCtx[] = [];
+      let nbClientsExclusGroupe = 0;
       for (const d of cSnap.docs) {
-        const o = d.data() as { entreprise?: string; ville?: string; latitude?: number; longitude?: number; nbVelosCommandes?: number; stats?: { livres?: number } };
+        const o = d.data() as { entreprise?: string; ville?: string; latitude?: number; longitude?: number; nbVelosCommandes?: number; stats?: { livres?: number }; codePostal?: string; groupe?: string; groupeClient?: string };
         if (typeof o.latitude !== "number" || typeof o.longitude !== "number") continue;
         const reste = Math.max(0, Number(o.nbVelosCommandes || 0) - Number(o.stats?.livres || 0) - (planifies.get(d.id) || 0));
         if (reste <= 0) continue;
+        // Yoann 2026-05-03 : si le client appartient à un groupe qui a un
+        // entrepôt éphémère, il est livré DEPUIS l éphémère par le groupe
+        // (pas notre flotte). On l exclut des candidats.
+        const groupeClient = (o.groupe || o.groupeClient || "").toLowerCase();
+        if (groupeClient && groupesEphemeres.has(groupeClient)) {
+          nbClientsExclusGroupe++;
+          continue;
+        }
+        const cp = String(o.codePostal || "");
+        const estParis = /^75\d{3}$/.test(cp); // 75001-75020 = Paris intra-muros
         clientsCtx.push({
           id: d.id,
           entreprise: String(o.entreprise || ""),
@@ -4512,13 +4535,18 @@ export async function runFirestoreAction(
           lat: o.latitude,
           lng: o.longitude,
           velosRestants: reste,
+          codePostal: cp,
+          estParis,
         });
       }
       // Top 50 par volume restant pour limiter le prompt
       clientsCtx.sort((a, b) => b.velosRestants - a.velosRestants);
       const clientsForPrompt = clientsCtx.slice(0, 50);
 
+      // totalVelosRestants = somme APRES exclusion groupes éphémères
+      // (ne compte plus les clients du groupe Firat dans le besoin réel)
       const totalVelosRestants = clientsCtx.reduce((s, c) => s + c.velosRestants, 0);
+      const nbClientsParis = clientsCtx.filter((c) => c.estParis).length;
       const totalCartons = entrepotsCtx.reduce((s, e) => s + e.stockCartons, 0);
       const totalMontes = entrepotsCtx.reduce((s, e) => s + e.stockVelosMontes, 0);
 
@@ -4570,20 +4598,32 @@ RESSOURCES HUMAINES & MATÉRIELLES (réelles, à respecter) :
 
 CONTEXTE OPÉRATIONNEL :
 - Durée journée chauffeur : ${dureeJourneeMinG} minutes (${Math.round(dureeJourneeMinG / 60 * 10) / 10}h) — CHAQUE chauffeur peut faire 1 ou plusieurs tournées dans cette fenêtre
-- Préférence par défaut monteurs/tournée : ${monteursParTourneeG} (mais tu peux dévier si la stratégie le justifie)
-- Temps d arrêt en mode "client" (cartons + montage chez client) : 12 min × nbVélos / nbMonteurs sur place
-  → moins de monteurs = arrêts plus longs. Ex : 10v à 1 monteur = 120 min. À 4 monteurs = 30 min.
-- Temps d arrêt en mode "atelier" (vélos pré-montés à livrer) : ~15 min/stop fixe (déchargement seul, pas de montage)
+- Préférence par défaut monteurs/tournée mode "client" : ${monteursParTourneeG}
+- Mode "client" (cartons + montage chez client) : monteurs OBLIGATOIRES sur place ; temps arrêt = 12 min × nbVélos / nbMonteurs
+  → 10v à 1 monteur = 120 min. À 4 monteurs = 30 min.
+- Mode "atelier" (vélos pré-montés livrés) : **0 monteur nécessaire** (vélos déjà montés en session atelier en amont) — chauffeur seul fait la livraison ; temps arrêt ~15 min/stop fixe
+- Mode "client_redistribue" (groupe éphémère) : NE PAS UTILISER ici — réservé aux livraisons internes du groupe (déjà gérées hors planif)
 - Recharge entrepôt entre 2 tournées du même chauffeur : 10 min
-- Capacités camions par mode : Grand 132 cartons / 40 montés · Moyen 54/30 · Petit/Camionnette 20/20
 
-CONTRAINTE CLÉ : tu as ${nbChauffeurs} chauffeur${nbChauffeurs > 1 ? "s" : ""}, donc tu peux faire jusqu à ${nbChauffeurs} tournée${nbChauffeurs > 1 ? "s" : ""} EN PARALLÈLE le même jour (chacune avec son camion + monteurs). Une stratégie peut allouer 1, 2 ou 3 tournées simultanées.
+🚛 FLOTTE RÉELLE :
+- Petit camion : 44 cartons / 20 montés · ✅ peut entrer dans Paris et petites rues
+- Grand camion : 77 cartons / 40 montés · ❌ POIDS LOURD interdit Paris/petites rues
+- Si client en Paris (CP 75XXX) → forcer petit camion. Si volume > 44 cartons sur Paris → soit splitter en 2 tournées petit camion soit livrer en montés (plus compact)
+
+CONTRAINTE CLÉ : tu as ${nbChauffeurs} chauffeur${nbChauffeurs > 1 ? "s" : ""}, donc jusqu à ${nbChauffeurs} tournée${nbChauffeurs > 1 ? "s" : ""} EN PARALLÈLE le même jour. Tu peux aussi enchaîner plusieurs tournées sur 1 chauffeur (matin + après-midi).
+
+🧠 INTELLIGENCE ATTENDUE :
+1. Si beaucoup de stock vélos montés (${totalMontes}v) + clients petits volumes → tournée "atelier" SANS MONTEURS, plus de stops par jour, finit tôt
+2. Si beaucoup de stock cartons (${totalCartons}v) + clients gros volumes (>30v) avec espace montage → tournée "client" cartons + monteurs sur place
+3. **PLAN MIXTE possible** : 1 chauffeur fait tournée atelier le matin (sans monteurs, rentre 11h) + tournée cartons après-midi avec monteurs récupérés
+4. Quand client est à Paris : impose le petit camion (le grand est interdit)
+5. Si peu de monteurs disponibles vs gros volume cartons → préfère mode atelier (rapidité) ou impose des monteurs supplémentaires${nbClientsExclusGroupe > 0 ? `\n\nNOTE : ${nbClientsExclusGroupe} client(s) ont été exclu(s) de cette planif car ils appartiennent à un groupe livré directement par leur entrepôt éphémère (Firat Food et autres groupes). Pas à inclure dans tes plans.` : ""}
 
 ENTREPÔTS DISPONIBLES (${entrepotsCtx.length}) :
 ${entrepotsCtx.map((e) => `- ${e.id} | ${e.nom} (${e.ville}) | lat=${e.lat.toFixed(4)},lng=${e.lng.toFixed(4)} | ${e.stockCartons} cartons + ${e.stockVelosMontes} montés`).join("\n")}
 
 CLIENTS À LIVRER (top ${clientsForPrompt.length} par volume, ${clientsCtx.length} au total, ${totalVelosRestants} vélos restants au global) :
-${clientsForPrompt.map((c) => `- ${c.id} | ${c.entreprise} (${c.ville}) | lat=${c.lat.toFixed(4)},lng=${c.lng.toFixed(4)} | ${c.velosRestants}v`).join("\n")}
+${clientsForPrompt.map((c) => `- ${c.id} | ${c.entreprise} (${c.ville}, ${c.codePostal})${c.estParis ? " ⚠️PARIS" : ""} | lat=${c.lat.toFixed(4)},lng=${c.lng.toFixed(4)} | ${c.velosRestants}v`).join("\n")}
 
 STOCK GLOBAL : ${totalCartons} cartons + ${totalMontes} montés = ${totalCartons + totalMontes} vélos disponibles.
 

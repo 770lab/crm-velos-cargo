@@ -273,6 +273,7 @@ export default function CartePage() {
     const candidats = entrepotsList.filter(
       (e) =>
         e.role !== "fournisseur" &&
+        e.role !== "ephemere" && // Yoann 2026-05-03 : stock client, pas dans nos tournées
         !e.archived &&
         e.lat != null &&
         e.lng != null &&
@@ -411,10 +412,10 @@ export default function CartePage() {
             // vue sidebar). Plus rapide pour planifier une tournée.
             setSelectedEntrepotId(id);
             const ep = entrepotsList.find((x) => x.id === id);
-            if (ep && ep.role !== "fournisseur" && !ep.archived && ep.stockCartons + ep.stockVelosMontes > 0) {
+            if (ep && ep.role !== "fournisseur" && ep.role !== "ephemere" && !ep.archived && ep.stockCartons + ep.stockVelosMontes > 0) {
               setQuickSuggestEntrepot(ep);
             } else {
-              // Fournisseur / archivé / vide → ancien comportement (sidebar)
+              // Fournisseur / éphémère / archivé / vide → ancien comportement (sidebar)
               setVue("entrepots");
             }
           }}
@@ -1555,7 +1556,7 @@ function EntrepotsPanel() {
               {/* Yoann 2026-05-01 : suggestion + planificateur journée
                   directement depuis la sidebar Carte, pour visualiser les
                   clients alentours pendant la planif. */}
-              {!isFournisseur && !e.archived && total > 0 && (
+              {!isFournisseur && !isEphemere && !e.archived && total > 0 && (
                 <div className="mt-2">
                   <SuggererTourneePanel
                     entrepotId={e.id}
@@ -1563,6 +1564,13 @@ function EntrepotsPanel() {
                     stockCartons={e.stockCartons}
                     stockVelosMontes={e.stockVelosMontes}
                   />
+                </div>
+              )}
+              {/* Yoann 2026-05-03 : éphémère = stock client (Firat Food etc),
+                  livré par le client à ses propres magasins. Pas dans nos tournées. */}
+              {isEphemere && total > 0 && (
+                <div className="mt-2 bg-purple-50 border border-purple-200 rounded p-1.5 text-[10px] text-purple-900">
+                  🟣 Stock client géré par le groupe — pas dans nos tournées
                 </div>
               )}
             </div>
