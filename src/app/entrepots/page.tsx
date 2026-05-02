@@ -535,7 +535,7 @@ function TransformModal({
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4"
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[2000] p-4"
       onClick={onClose}
     >
       <div className="bg-white rounded-2xl p-5 w-full max-w-sm" onClick={(e) => e.stopPropagation()}>
@@ -1078,7 +1078,7 @@ function CommandeCamionModal({
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4"
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[2000] p-4"
       onClick={onClose}
     >
       <div
@@ -1216,7 +1216,7 @@ function MouvementModal({
 
   return (
     <div
-      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4"
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[2000] p-4"
       onClick={onClose}
     >
       <div
@@ -1915,7 +1915,7 @@ function SessionAtelierModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[2000] p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl p-5 w-full max-w-lg max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-start mb-3">
           <h2 className="text-lg font-semibold">+ Planifier session montage atelier</h2>
@@ -2236,7 +2236,7 @@ export function SuggererTourneeModal({
   };
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[2000] p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl p-5 w-full max-w-2xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-start mb-3">
           <h2 className="text-lg font-semibold">🤖 Suggérer une tournée depuis {entrepotNom}</h2>
@@ -2596,7 +2596,7 @@ function PlanifierJourneeModal({
   const formatMin = (m: number) => `${Math.floor(m / 60)}h${String(Math.round(m % 60)).padStart(2, "0")}`;
 
   return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[80] p-4" onClick={onClose}>
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[2000] p-4" onClick={onClose}>
       <div className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
         <div className="flex justify-between items-start mb-3">
           <h2 className="text-lg font-semibold">📅 Planifier la journée camion · {entrepotNom}</h2>

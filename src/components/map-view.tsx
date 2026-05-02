@@ -186,7 +186,14 @@ export default function MapView({
                 fillOpacity: 0.95,
               }}
               eventHandlers={{
-                click: () => onSelectEntrepot?.(e.id),
+                click: (ev) => {
+                  // Yoann 2026-05-02 : on stoppe la propagation Leaflet pour
+                  // que le click ouvre PROPREMENT le modal (avant : popup
+                  // s ouvrait + onSelectEntrepot ne déclenchait pas re-render
+                  // visible). On garde l ouverture popup native via openPopup.
+                  ev.originalEvent?.stopPropagation?.();
+                  onSelectEntrepot?.(e.id);
+                },
               }}
             >
               <Popup>
