@@ -265,6 +265,9 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "planifierJourneeCamion",
   // Phase 3.1 (Yoann 2026-05-01) : Gemini logisticien stratège.
   "strategieGemini",
+  // Yoann 2026-05-03 : reset stock + suggestion stock cible 100km Paris
+  "resetStockEntrepot",
+  "suggestionStockEntrepot",
   // parcelle cadastrale (vague 3) — APIs publiques, pas de Cloud Function
   "fetchParcelle",
   "autoFetchParcelles",
@@ -4612,9 +4615,23 @@ CONTEXTE OPÉRATIONNEL :
 
 CONTRAINTE CLÉ : tu as ${nbChauffeurs} chauffeur${nbChauffeurs > 1 ? "s" : ""}, donc jusqu à ${nbChauffeurs} tournée${nbChauffeurs > 1 ? "s" : ""} EN PARALLÈLE le même jour. Tu peux aussi enchaîner plusieurs tournées sur 1 chauffeur (matin + après-midi).
 
+⭐ PRÉFÉRENCE STRATÉGIQUE FORTE (Yoann 2026-05-03) :
+Par défaut, **PRIVILÉGIE LE MODE ATELIER (vélos montés)** plutôt que cartons. Raisons :
+- 0 monteur sur place → équipe terrain rentre tôt
+- Arrêts courts (15 min/stop) → plus de tournées par jour
+- Moins de coordination chauffeur/chefs/monteurs
+- Stock montés disponible : ${totalMontes}v (utilise-le en priorité)
+
+Ne propose mode "client" (cartons + montage chez client) QUE si :
+- Volume client > capacité montés du camion (gros camion = 40 montés max, petit = 20)
+- Client a beaucoup d espace de montage ET volume justifie l attente
+- Stock montés trop bas pour couvrir la demande
+
+Au moins 2 plans sur 3 doivent être en mode atelier dominant.
+
 🧠 INTELLIGENCE ATTENDUE :
-1. Si beaucoup de stock vélos montés (${totalMontes}v) + clients petits volumes → tournée "atelier" SANS MONTEURS, plus de stops par jour, finit tôt
-2. Si beaucoup de stock cartons (${totalCartons}v) + clients gros volumes (>30v) avec espace montage → tournée "client" cartons + monteurs sur place
+1. Plan A préféré : tournée atelier multiple (2-3 tournées montés en parallèle si plusieurs chauffeurs, 0 monteur, équipe rentre 14h)
+2. Plan B alternatif : 1 grosse tournée cartons gros volumes + 1 tournée atelier petits volumes en parallèle
 3. **PLAN MIXTE possible** : 1 chauffeur fait tournée atelier le matin (sans monteurs, rentre 11h) + tournée cartons après-midi avec monteurs récupérés
 4. Quand client est à Paris : impose le petit camion (le grand est interdit)
 5. Si peu de monteurs disponibles vs gros volume cartons → préfère mode atelier (rapidité) ou impose des monteurs supplémentaires${nbClientsExclusGroupe > 0 ? `\n\nNOTE : ${nbClientsExclusGroupe} client(s) ont été exclu(s) de cette planif car ils appartiennent à un groupe livré directement par leur entrepôt éphémère (Firat Food et autres groupes). Pas à inclure dans tes plans.` : ""}
@@ -4700,6 +4717,219 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
+    }
+
+    case "resetStockEntrepot": {
+      // Yoann 2026-05-03 — bouton "Reset stock" pour remettre à 0 les stocks
+      // de test. Crée un mouvement traçable (-N cartons / -N montés) puis
+      // pose stockCartons=0 et stockVelosMontes=0.
+      const epIdRst = String(body.entrepotId || "");
+      if (!epIdRst) return { error: "entrepotId requis" };
+      const eRef = doc(db, "entrepots", epIdRst);
+      const eSnap = await getDoc(eRef);
+      if (!eSnap.exists()) return { error: "Entrepôt introuvable" };
+      const eData = eSnap.data() as { nom?: string; stockCartons?: number; stockVelosMontes?: number };
+      const oldCartons = Number(eData.stockCartons || 0);
+      const oldMontes = Number(eData.stockVelosMontes || 0);
+      const today = new Date().toISOString().slice(0, 10);
+      if (oldCartons > 0) {
+        await addDoc(collection(db, "entrepots", epIdRst, "mouvements"), {
+          type: "carton",
+          quantite: -oldCartons,
+          date: today,
+          source: "reset-manuel",
+          notes: "Remise à zéro stock cartons (admin)",
+          createdAt: ts(),
+        });
+      }
+      if (oldMontes > 0) {
+        await addDoc(collection(db, "entrepots", epIdRst, "mouvements"), {
+          type: "monte",
+          quantite: -oldMontes,
+          date: today,
+          source: "reset-manuel",
+          notes: "Remise à zéro stock vélos montés (admin)",
+          createdAt: ts(),
+        });
+      }
+      await updateDoc(eRef, {
+        stockCartons: 0,
+        stockVelosMontes: 0,
+        updatedAt: ts(),
+      });
+      return { ok: true, oldCartons, oldMontes, entrepotNom: eData.nom };
+    }
+
+    case "suggestionStockEntrepot": {
+      // Yoann 2026-05-03 — Pour chaque entrepôt non-fournisseur non-éphémère,
+      // calcule le stock cible cartons/montés pour servir efficacement les
+      // clients dans le rayon (par défaut 100 km autour de Paris).
+      //
+      // Logique :
+      //   1. Charge entrepôts éligibles + clients restants dans rayon
+      //   2. Voronoi : chaque client → entrepôt le + proche
+      //   3. Pour chaque entrepôt, somme demande des clients attribués
+      //   4. Décompose : gros volumes (>30v) → cartons, petits → montés
+      //      (priorité montés selon préférence Yoann 2026-05-03)
+      //   5. +10% buffer sécurité
+      const rayonKm = Number(body.rayonKm || 100);
+      const centerLat = Number(body.centerLat || 48.8566); // Paris par défaut
+      const centerLng = Number(body.centerLng || 2.3522);
+      const seuilGrosVolume = Number(body.seuilGrosVolume || 30);
+
+      // Entrepôts éligibles
+      const eSnap = await getDocs(collection(db, "entrepots"));
+      type Entr = { id: string; nom: string; ville: string; lat: number; lng: number; stockCartons: number; stockVelosMontes: number; capaciteMax: number | null };
+      const entrepots: Entr[] = [];
+      for (const d of eSnap.docs) {
+        const o = d.data() as { nom?: string; ville?: string; lat?: number; lng?: number; stockCartons?: number; stockVelosMontes?: number; role?: string; dateArchivage?: unknown; capaciteMax?: number };
+        if (o.dateArchivage) continue;
+        if (o.role === "fournisseur" || o.role === "ephemere") continue;
+        if (typeof o.lat !== "number" || typeof o.lng !== "number") continue;
+        entrepots.push({
+          id: d.id,
+          nom: String(o.nom || ""),
+          ville: String(o.ville || ""),
+          lat: o.lat,
+          lng: o.lng,
+          stockCartons: Number(o.stockCartons || 0),
+          stockVelosMontes: Number(o.stockVelosMontes || 0),
+          capaciteMax: typeof o.capaciteMax === "number" ? o.capaciteMax : null,
+        });
+      }
+      if (entrepots.length === 0) return { error: "Aucun entrepôt éligible" };
+
+      // Clients restants dans rayon
+      const cSnap = await getDocs(collection(db, "clients"));
+      const lvSnap = await getDocs(collection(db, "livraisons"));
+      const planifies = new Map<string, number>();
+      for (const d of lvSnap.docs) {
+        const o = d.data() as { statut?: string; clientId?: string; nbVelos?: number };
+        if (String(o.statut || "").toLowerCase() !== "planifiee") continue;
+        const cid = String(o.clientId || "");
+        if (!cid) continue;
+        planifies.set(cid, (planifies.get(cid) || 0) + (Number(o.nbVelos) || 0));
+      }
+      type Cli = { id: string; entreprise: string; ville: string; lat: number; lng: number; reste: number; distCenter: number };
+      const clientsDansRayon: Cli[] = [];
+      for (const d of cSnap.docs) {
+        const o = d.data() as { entreprise?: string; ville?: string; latitude?: number; longitude?: number; nbVelosCommandes?: number; stats?: { livres?: number } };
+        if (typeof o.latitude !== "number" || typeof o.longitude !== "number") continue;
+        const reste = Math.max(0, Number(o.nbVelosCommandes || 0) - Number(o.stats?.livres || 0) - (planifies.get(d.id) || 0));
+        if (reste <= 0) continue;
+        const distCenter = haversineKmFs(centerLat, centerLng, o.latitude, o.longitude);
+        if (distCenter > rayonKm) continue;
+        clientsDansRayon.push({
+          id: d.id,
+          entreprise: String(o.entreprise || ""),
+          ville: String(o.ville || ""),
+          lat: o.latitude,
+          lng: o.longitude,
+          reste,
+          distCenter,
+        });
+      }
+
+      // Voronoi : chaque client → entrepôt le + proche
+      type Bucket = { entrepotId: string; nom: string; ville: string; clients: Cli[]; demandeTotale: number; demandeGrosVolumes: number; demandePetitsVolumes: number; nbGros: number; nbPetits: number };
+      const buckets: Map<string, Bucket> = new Map();
+      for (const e of entrepots) {
+        buckets.set(e.id, {
+          entrepotId: e.id,
+          nom: e.nom,
+          ville: e.ville,
+          clients: [],
+          demandeTotale: 0,
+          demandeGrosVolumes: 0,
+          demandePetitsVolumes: 0,
+          nbGros: 0,
+          nbPetits: 0,
+        });
+      }
+      for (const c of clientsDansRayon) {
+        let bestE: Entr | null = null;
+        let bestD = Infinity;
+        for (const e of entrepots) {
+          const d = haversineKmFs(c.lat, c.lng, e.lat, e.lng);
+          if (d < bestD) {
+            bestD = d;
+            bestE = e;
+          }
+        }
+        if (!bestE) continue;
+        const b = buckets.get(bestE.id)!;
+        b.clients.push(c);
+        b.demandeTotale += c.reste;
+        if (c.reste > seuilGrosVolume) {
+          b.demandeGrosVolumes += c.reste;
+          b.nbGros++;
+        } else {
+          b.demandePetitsVolumes += c.reste;
+          b.nbPetits++;
+        }
+      }
+
+      // Pour chaque entrepôt : reco cartons/montés
+      // Préférence montés : on cible montés pour les petits volumes (≤30v)
+      // et cartons pour les gros volumes (>30v).
+      const BUFFER = 1.10;
+      const result = entrepots.map((e) => {
+        const b = buckets.get(e.id)!;
+        const cibleMontes = Math.ceil(b.demandePetitsVolumes * BUFFER);
+        const cibleCartons = Math.ceil(b.demandeGrosVolumes * BUFFER);
+        const cibleTotale = cibleMontes + cibleCartons;
+        const ecartCartons = cibleCartons - e.stockCartons;
+        const ecartMontes = cibleMontes - e.stockVelosMontes;
+        const capaciteAtteinte = e.capaciteMax != null ? cibleTotale > e.capaciteMax : false;
+        return {
+          entrepotId: e.id,
+          nom: e.nom,
+          ville: e.ville,
+          stockActuel: { cartons: e.stockCartons, montes: e.stockVelosMontes, total: e.stockCartons + e.stockVelosMontes },
+          demande: {
+            totale: b.demandeTotale,
+            grosVolumes: b.demandeGrosVolumes,
+            petitsVolumes: b.demandePetitsVolumes,
+            nbClients: b.clients.length,
+            nbGros: b.nbGros,
+            nbPetits: b.nbPetits,
+          },
+          cible: {
+            cartons: cibleCartons,
+            montes: cibleMontes,
+            total: cibleTotale,
+            buffer: `${(BUFFER - 1) * 100}%`,
+          },
+          ecart: {
+            cartons: ecartCartons,
+            montes: ecartMontes,
+            total: ecartCartons + ecartMontes,
+          },
+          capaciteAtteinte,
+          capaciteMax: e.capaciteMax,
+        };
+      });
+
+      // Tri par demande totale décroissante
+      result.sort((a, b) => b.demande.totale - a.demande.totale);
+
+      const totalDemande = result.reduce((s, r) => s + r.demande.totale, 0);
+      const totalCibleCartons = result.reduce((s, r) => s + r.cible.cartons, 0);
+      const totalCibleMontes = result.reduce((s, r) => s + r.cible.montes, 0);
+      const nbClientsRayon = clientsDansRayon.length;
+
+      return {
+        ok: true,
+        rayonKm,
+        center: { lat: centerLat, lng: centerLng, label: "Paris centre" },
+        seuilGrosVolume,
+        nbEntrepots: entrepots.length,
+        nbClientsRayon,
+        totalDemande,
+        totalCibleCartons,
+        totalCibleMontes,
+        entrepots: result,
+      };
     }
 
     default:

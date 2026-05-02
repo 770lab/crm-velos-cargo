@@ -75,6 +75,7 @@ export default function EntrepotsPage() {
   const user = useCurrentUser();
   const [entrepots, setEntrepots] = useState<Entrepot[]>([]);
   const [editing, setEditing] = useState<Entrepot | "new" | null>(null);
+  const [showStockCible, setShowStockCible] = useState(false);
 
   useEffect(() => {
     const q = collection(db, "entrepots");
@@ -140,6 +141,24 @@ export default function EntrepotsPage() {
     await deleteDoc(doc(db, "entrepots", e.id));
   };
 
+  // Yoann 2026-05-03 : remet stock à 0 pour nettoyer les tests (mouvements
+  // traçables conservés pour audit).
+  const resetStockEntrepot = async (e: Entrepot) => {
+    const total = e.stockCartons + e.stockVelosMontes;
+    if (total === 0) {
+      alert("Stock déjà à zéro");
+      return;
+    }
+    if (!confirm(`⚠️ Remettre à 0 le stock de ${e.nom} ?\n\nActuel : ${e.stockCartons} cartons + ${e.stockVelosMontes} montés = ${total} vélos\n\nL historique des mouvements est conservé (2 mouvements négatifs ajoutés).`)) return;
+    try {
+      const { gasPost } = await import("@/lib/gas");
+      const r = (await gasPost("resetStockEntrepot", { entrepotId: e.id })) as { ok?: boolean; error?: string };
+      if (r.error) alert("Erreur : " + r.error);
+    } catch (err) {
+      alert("Erreur : " + (err instanceof Error ? err.message : String(err)));
+    }
+  };
+
   const archiveEntrepot = async (e: Entrepot) => {
     const today = new Date().toISOString().slice(0, 10);
     if (e.stockCartons + e.stockVelosMontes > 0) {
@@ -177,7 +196,14 @@ export default function EntrepotsPage() {
           </p>
         </div>
         {isAdmin && (
-          <div className="flex gap-2">
+          <div className="flex gap-2 flex-wrap">
+            <button
+              onClick={() => setShowStockCible(true)}
+              className="px-3 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-lg text-sm font-medium hover:opacity-90"
+              title="Calcule pour chaque entrepôt le stock cartons + montés à avoir pour servir les clients dans 100 km autour de Paris"
+            >
+              🎯 Stock cible Paris
+            </button>
             <RescanBonsButton />
             <button
               onClick={() => setEditing("new")}
@@ -266,6 +292,17 @@ export default function EntrepotsPage() {
                   >
                     ✏️
                   </button>
+                  {/* Yoann 2026-05-03 : Reset stock à 0 (pour nettoyer les
+                      stocks de test sans perdre l historique des mouvements). */}
+                  {e.role !== "fournisseur" && (e.stockCartons > 0 || e.stockVelosMontes > 0) && (
+                    <button
+                      onClick={() => resetStockEntrepot(e)}
+                      className="text-xs px-2 py-1 bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 rounded"
+                      title={`Remet stockCartons (${e.stockCartons}) et stockVelosMontes (${e.stockVelosMontes}) à 0. Crée 2 mouvements traçables.`}
+                    >
+                      🔄 Reset
+                    </button>
+                  )}
                   {/* Archive/réouverture rapide pour les éphémères */}
                   {e.role === "ephemere" && !e.dateArchivage && (
                     <button
@@ -373,6 +410,7 @@ export default function EntrepotsPage() {
           onClose={() => setEditing(null)}
         />
       )}
+      {showStockCible && <StockCibleModal onClose={() => setShowStockCible(false)} />}
     </div>
   );
 }
@@ -2762,6 +2800,197 @@ function PlanifierJourneeModal({
                 ⚠️ Aucune tournée ne tient dans la journée avec ces paramètres.
                 Augmente la durée de journée OU baisse le mode camion / mode montage.
               </div>
+            )}
+          </div>
+        )}
+
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Fermer</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// StockCibleModal — Yoann 2026-05-03
+// Calcule pour chaque entrepôt le stock cartons + montés cible pour servir
+// les clients dans un rayon (par défaut 100 km autour de Paris). Voronoi :
+// chaque client est attribué à l entrepôt le + proche, puis on décompose
+// la demande en gros volumes (>30v → cartons) et petits volumes (≤30v → montés).
+type StockCibleResult = {
+  ok?: boolean;
+  error?: string;
+  rayonKm?: number;
+  center?: { lat: number; lng: number; label: string };
+  seuilGrosVolume?: number;
+  nbEntrepots?: number;
+  nbClientsRayon?: number;
+  totalDemande?: number;
+  totalCibleCartons?: number;
+  totalCibleMontes?: number;
+  entrepots?: Array<{
+    entrepotId: string;
+    nom: string;
+    ville: string;
+    stockActuel: { cartons: number; montes: number; total: number };
+    demande: { totale: number; grosVolumes: number; petitsVolumes: number; nbClients: number; nbGros: number; nbPetits: number };
+    cible: { cartons: number; montes: number; total: number; buffer: string };
+    ecart: { cartons: number; montes: number; total: number };
+    capaciteAtteinte: boolean;
+    capaciteMax: number | null;
+  }>;
+};
+
+function StockCibleModal({ onClose }: { onClose: () => void }) {
+  const [rayonKm, setRayonKm] = useState(100);
+  const [seuilGrosVolume, setSeuilGrosVolume] = useState(30);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<StockCibleResult | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const { gasPost } = await import("@/lib/gas");
+      const r = (await gasPost("suggestionStockEntrepot", {
+        rayonKm,
+        seuilGrosVolume,
+      })) as StockCibleResult;
+      setResult(r);
+    } catch (e) {
+      setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[2000] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <div>
+            <h2 className="text-lg font-semibold">🎯 Stock cible · Opération Paris</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Pour chaque entrepôt, suggère le stock cartons + montés à avoir pour servir les clients dans le rayon (Voronoi : chaque client → entrepôt le + proche).
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-3 mb-3 bg-emerald-50 border border-emerald-200 rounded p-3">
+          <div>
+            <label className="text-xs text-gray-600">Rayon autour de Paris (km)</label>
+            <input
+              type="number"
+              value={rayonKm}
+              onChange={(e) => setRayonKm(Number(e.target.value))}
+              min={5}
+              max={500}
+              step={10}
+              className="w-full px-2 py-1.5 border rounded text-sm bg-white"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Seuil gros volume (vélos)</label>
+            <input
+              type="number"
+              value={seuilGrosVolume}
+              onChange={(e) => setSeuilGrosVolume(Number(e.target.value))}
+              min={5}
+              max={200}
+              className="w-full px-2 py-1.5 border rounded text-sm bg-white"
+            />
+            <div className="text-[10px] text-gray-500 mt-0.5">
+              {seuilGrosVolume}v+ par client = cartons (montage chez client) ; sinon montés
+            </div>
+          </div>
+        </div>
+
+        <button
+          onClick={run}
+          disabled={busy}
+          className="w-full px-3 py-2 bg-gradient-to-r from-emerald-600 to-teal-600 text-white rounded-lg hover:opacity-90 disabled:opacity-50 font-semibold"
+        >
+          {busy ? "🎯 Calcul..." : "🎯 Calculer le stock cible"}
+        </button>
+
+        {result && (
+          <div className="mt-4">
+            {result.error ? (
+              <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800">❌ {result.error}</div>
+            ) : result.ok && result.entrepots ? (
+              <>
+                <div className="bg-emerald-50 border border-emerald-300 rounded p-3 mb-3">
+                  <div className="text-sm font-bold text-emerald-900">
+                    ✓ {result.nbEntrepots} entrepôts · {result.nbClientsRayon} clients dans {result.rayonKm} km · {result.totalDemande} vélos demandés
+                  </div>
+                  <div className="text-xs text-emerald-800 mt-1">
+                    Stock cible total recommandé : <strong className="text-orange-700">{result.totalCibleCartons} cartons</strong> + <strong className="text-emerald-700">{result.totalCibleMontes} montés</strong>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  {result.entrepots.map((e) => (
+                    <div key={e.entrepotId} className="border rounded-lg overflow-hidden">
+                      <div className="bg-gray-50 border-b px-3 py-2 flex items-center justify-between">
+                        <div>
+                          <div className="text-sm font-bold">{e.nom}</div>
+                          <div className="text-[11px] text-gray-500">{e.ville}</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-sm font-bold text-gray-900">{e.demande.nbClients} clients</div>
+                          <div className="text-[10px] text-gray-500">{e.demande.totale} vélos demandés</div>
+                        </div>
+                      </div>
+                      <div className="p-3 grid grid-cols-3 gap-2 text-xs">
+                        <div className="bg-orange-50 border border-orange-200 rounded p-2">
+                          <div className="text-[10px] text-orange-700 uppercase font-semibold">Cartons (gros vol.)</div>
+                          <div className="flex items-baseline gap-1 mt-1">
+                            <span className="text-base font-bold text-orange-900">{e.cible.cartons}</span>
+                            <span className="text-[10px] text-gray-500">/ {e.stockActuel.cartons} actuel</span>
+                          </div>
+                          {e.ecart.cartons > 0 && (
+                            <div className="text-[10px] text-red-700 font-semibold mt-0.5">↑ +{e.ecart.cartons} à approvisionner</div>
+                          )}
+                          {e.ecart.cartons < 0 && (
+                            <div className="text-[10px] text-emerald-700 mt-0.5">↓ {Math.abs(e.ecart.cartons)} en surstock</div>
+                          )}
+                          <div className="text-[10px] text-gray-500 mt-1">{e.demande.nbGros} clients &gt; {result.seuilGrosVolume}v</div>
+                        </div>
+                        <div className="bg-emerald-50 border border-emerald-200 rounded p-2">
+                          <div className="text-[10px] text-emerald-700 uppercase font-semibold">Montés (petits vol.)</div>
+                          <div className="flex items-baseline gap-1 mt-1">
+                            <span className="text-base font-bold text-emerald-900">{e.cible.montes}</span>
+                            <span className="text-[10px] text-gray-500">/ {e.stockActuel.montes} actuel</span>
+                          </div>
+                          {e.ecart.montes > 0 && (
+                            <div className="text-[10px] text-red-700 font-semibold mt-0.5">↑ +{e.ecart.montes} à monter</div>
+                          )}
+                          {e.ecart.montes < 0 && (
+                            <div className="text-[10px] text-emerald-700 mt-0.5">↓ {Math.abs(e.ecart.montes)} en surstock</div>
+                          )}
+                          <div className="text-[10px] text-gray-500 mt-1">{e.demande.nbPetits} clients ≤ {result.seuilGrosVolume}v</div>
+                        </div>
+                        <div className="bg-gray-100 border rounded p-2">
+                          <div className="text-[10px] text-gray-700 uppercase font-semibold">Total cible</div>
+                          <div className="flex items-baseline gap-1 mt-1">
+                            <span className="text-base font-bold">{e.cible.total}</span>
+                            <span className="text-[10px] text-gray-500">/ {e.stockActuel.total} actuel</span>
+                          </div>
+                          {e.capaciteAtteinte && e.capaciteMax != null && (
+                            <div className="text-[10px] text-red-700 font-semibold mt-0.5">⚠️ &gt; capacité ({e.capaciteMax}v)</div>
+                          )}
+                          <div className="text-[10px] text-gray-500 mt-1">buffer {e.cible.buffer}</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div className="mt-3 text-[11px] text-gray-500 italic">
+                  💡 Voronoi simple : chaque client est attribué à l entrepôt le + proche (Haversine vol d oiseau). Préférence Yoann : montés pour petits volumes (≤ {result.seuilGrosVolume}v), cartons pour gros volumes (montage chez client). Buffer +10% pour absorber les imprévus.
+                </div>
+              </>
+            ) : (
+              <div className="text-sm text-gray-500 italic">Aucun résultat</div>
             )}
           </div>
         )}
