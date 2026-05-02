@@ -4550,6 +4550,53 @@ export async function runFirestoreAction(
       // (ne compte plus les clients du groupe Firat dans le besoin réel)
       const totalVelosRestants = clientsCtx.reduce((s, c) => s + c.velosRestants, 0);
       const nbClientsParis = clientsCtx.filter((c) => c.estParis).length;
+
+      // Pre-prompt contextuel (Yoann 2026-05-03) : météo + jour férié.
+      // Open-Meteo gratuit, sans clé. Failover silencieux si KO.
+      let meteoLine = "";
+      let jourFerie: string | null = null;
+      try {
+        const today = new Date().toISOString().slice(0, 10);
+        // Météo Paris demain (jour de la planif typique)
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        const tDate = tomorrow.toISOString().slice(0, 10);
+        const meteoUrl = `https://api.open-meteo.com/v1/forecast?latitude=48.8566&longitude=2.3522&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,wind_speed_10m_max&timezone=Europe%2FParis&start_date=${tDate}&end_date=${tDate}`;
+        const r = await fetch(meteoUrl);
+        if (r.ok) {
+          const j = (await r.json()) as { daily?: { temperature_2m_max?: number[]; temperature_2m_min?: number[]; precipitation_sum?: number[]; wind_speed_10m_max?: number[] } };
+          const tmax = j.daily?.temperature_2m_max?.[0];
+          const tmin = j.daily?.temperature_2m_min?.[0];
+          const precip = j.daily?.precipitation_sum?.[0];
+          const wind = j.daily?.wind_speed_10m_max?.[0];
+          if (tmax != null) {
+            const conditions: string[] = [];
+            if ((precip ?? 0) > 5) conditions.push(`pluie ${precip}mm`);
+            if ((wind ?? 0) > 50) conditions.push(`vent fort ${wind}km/h`);
+            if ((tmin ?? 100) < 0) conditions.push("gel matinal");
+            if ((tmax ?? 0) > 35) conditions.push("canicule");
+            meteoLine = `Météo demain Paris : ${tmin}-${tmax}°C${conditions.length > 0 ? ", " + conditions.join(" + ") : ", conditions normales"}.`;
+          }
+        }
+        // Jours fériés FR (table statique 2026)
+        const feries2026: Record<string, string> = {
+          "2026-01-01": "Jour de l An",
+          "2026-04-06": "Lundi de Pâques",
+          "2026-05-01": "Fête du Travail",
+          "2026-05-08": "Victoire 1945",
+          "2026-05-14": "Ascension",
+          "2026-05-25": "Lundi de Pentecôte",
+          "2026-07-14": "Fête nationale",
+          "2026-08-15": "Assomption",
+          "2026-11-01": "Toussaint",
+          "2026-11-11": "Armistice",
+          "2026-12-25": "Noël",
+        };
+        if (feries2026[tDate]) jourFerie = feries2026[tDate];
+        if (feries2026[today]) jourFerie = (jourFerie ? jourFerie + " (et hier)" : feries2026[today] + " (aujourd hui)");
+      } catch {
+        // failover silencieux : pas de météo dispo
+      }
       const totalCartons = entrepotsCtx.reduce((s, e) => s + e.stockCartons, 0);
       const totalMontes = entrepotsCtx.reduce((s, e) => s + e.stockVelosMontes, 0);
 
@@ -4591,6 +4638,8 @@ export async function runFirestoreAction(
       const nbCamions = overrideCamions ?? camionsList.length;
 
       const prompt = `Tu es un logisticien expert en VRP (Vehicle Routing Problem) multi-véhicules multi-dépôts. Tu planifies les tournées de livraison de vélos cargo en région Île-de-France et alentours.
+${meteoLine ? `\n🌤 ${meteoLine}` : ""}${jourFerie ? `\n📅 Jour férié : ${jourFerie} → trafic potentiellement allégé OU clients fermés (à arbitrer dans la stratégie).` : ""}
+${nbClientsParis > 0 ? `🚦 ${nbClientsParis} client${nbClientsParis > 1 ? "s" : ""} en Paris intra-muros (CP 75XXX) → contraintes camion poids lourd à respecter.\n` : ""}
 
 RESSOURCES HUMAINES & MATÉRIELLES (réelles, à respecter) :
 - Chauffeurs disponibles : ${nbChauffeurs} (= nb de tournées en parallèle max)
@@ -4614,6 +4663,16 @@ CONTEXTE OPÉRATIONNEL :
 - Si client en Paris (CP 75XXX) → forcer petit camion. Si volume > 44 cartons sur Paris → soit splitter en 2 tournées petit camion soit livrer en montés (plus compact)
 
 CONTRAINTE CLÉ : tu as ${nbChauffeurs} chauffeur${nbChauffeurs > 1 ? "s" : ""}, donc jusqu à ${nbChauffeurs} tournée${nbChauffeurs > 1 ? "s" : ""} EN PARALLÈLE le même jour. Tu peux aussi enchaîner plusieurs tournées sur 1 chauffeur (matin + après-midi).
+
+📦 RÈGLE MÉTIER CRITIQUE (1 client = 1 jour) :
+Un client ne peut PAS être livré en plusieurs jours. TOUTE la commande tombe sur 1 même date.
+MAIS si volume client > capacité d un seul camion (gros = 40 montés / 77 cartons ; petit = 20 montés / 44 cartons), tu DOIS proposer 2 camions en parallèle le même jour vers ce client (multi-camions OK).
+Exemple : client commande 60 vélos montés → tournée 1 grand camion (40v) + tournée 2 petit camion (20v) le même jour, vers ce même client.
+${(() => {
+  const clientsGrosVolume = clientsForPrompt.filter((c) => c.velosRestants > 40);
+  if (clientsGrosVolume.length === 0) return "Aucun client > 40v aujourd hui (cas standard, 1 camion suffit par client).";
+  return `⚠️ ${clientsGrosVolume.length} client${clientsGrosVolume.length > 1 ? "s" : ""} avec volume > 40v (capa max grand camion en montés) : ${clientsGrosVolume.slice(0, 5).map((c) => `${c.entreprise} ${c.velosRestants}v`).join(", ")}${clientsGrosVolume.length > 5 ? "..." : ""} → multi-camions requis.`;
+})()}
 
 ⭐ PRÉFÉRENCE STRATÉGIQUE FORTE (Yoann 2026-05-03) :
 Par défaut, **PRIVILÉGIE LE MODE ATELIER (vélos montés)** plutôt que cartons. Raisons :

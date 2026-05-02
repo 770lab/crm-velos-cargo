@@ -2656,27 +2656,36 @@ type JourneeResult = {
   tournees?: JourneeTournee[];
 };
 
-function PlanifierJourneeModal({
+// Yoann 2026-05-03 : exporté + accepte initialParams pour pré-remplir depuis
+// l action "Adopter ce plan" du modal Stratégie Gemini.
+export function PlanifierJourneeModal({
   entrepotId,
   entrepotNom,
   stockCartons,
   stockVelosMontes,
+  initialParams,
   onClose,
 }: {
   entrepotId: string;
   entrepotNom: string;
   stockCartons: number;
   stockVelosMontes: number;
+  initialParams?: {
+    mode?: "gros" | "moyen" | "petit" | "camionnette";
+    modeMontage?: "client" | "atelier" | "client_redistribue";
+    maxTournees?: number;
+    monteursParTournee?: number;
+  };
   onClose: () => void;
 }) {
-  const [mode, setMode] = useState<"gros" | "moyen" | "petit" | "camionnette">("moyen");
+  const [mode, setMode] = useState<"gros" | "moyen" | "petit" | "camionnette">(initialParams?.mode || "moyen");
   const [modeMontage, setModeMontage] = useState<"client" | "atelier" | "client_redistribue">(
-    stockVelosMontes > 0 ? "atelier" : "client",
+    initialParams?.modeMontage || (stockVelosMontes > 0 ? "atelier" : "client"),
   );
   const [maxDistance, setMaxDistance] = useState(50);
-  const [maxTournees, setMaxTournees] = useState(3);
+  const [maxTournees, setMaxTournees] = useState(initialParams?.maxTournees || 3);
   const [dureeJourneeMin, setDureeJourneeMin] = useState(510); // 8h30
-  const [monteursParTournee, setMonteursParTournee] = useState(2);
+  const [monteursParTournee, setMonteursParTournee] = useState(initialParams?.monteursParTournee || 2);
   const [useMaps, setUseMaps] = useState(true); // par défaut Maps activé pour cette planif (durées route critiques)
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<JourneeResult | null>(null);

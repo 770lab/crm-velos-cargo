@@ -11,7 +11,7 @@ import AddClientModal from "@/components/add-client-modal";
 // Yoann 2026-05-01 : suggestion depuis /carte (voir clients alentours
 // pendant la planif). Le panneau encapsule le bouton + les 2 modals
 // (suggestion 1 tournée + planificateur journée).
-import { SuggererTourneePanel, SuggererTourneeModal } from "@/app/entrepots/page";
+import { SuggererTourneePanel, SuggererTourneeModal, PlanifierJourneeModal } from "@/app/entrepots/page";
 
 const MapView = dynamic(() => import("@/components/map-view"), { ssr: false });
 
@@ -1634,6 +1634,36 @@ function StrategieGeminiModal({ onClose }: { onClose: () => void }) {
   const [result, setResult] = useState<StrategieResult | null>(null);
   const [dureeJourneeMin, setDureeJourneeMin] = useState(510);
   const [monteursParTournee, setMonteursParTournee] = useState(2);
+  // Yoann 2026-05-03 : "Adopter ce plan" — ouvre PlanifierJourneeModal préfix
+  const [adoptedPlan, setAdoptedPlan] = useState<GeminiPlan | null>(null);
+  const [adoptedEntrepot, setAdoptedEntrepot] = useState<{ id: string; nom: string; stockCartons: number; stockVelosMontes: number } | null>(null);
+
+  const adoptPlan = async (p: GeminiPlan) => {
+    if (!p.params.entrepotId) {
+      alert("Plan sans entrepôt — impossible d adopter");
+      return;
+    }
+    try {
+      const { collection, getDocs } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const snap = await getDocs(collection(db, "entrepots"));
+      const found = snap.docs.find((d) => d.id === p.params.entrepotId);
+      if (!found) {
+        alert(`Entrepôt ${p.params.entrepotId} introuvable`);
+        return;
+      }
+      const d = found.data() as { nom?: string; stockCartons?: number; stockVelosMontes?: number };
+      setAdoptedEntrepot({
+        id: found.id,
+        nom: String(d.nom || p.params.entrepotNom),
+        stockCartons: Number(d.stockCartons || 0),
+        stockVelosMontes: Number(d.stockVelosMontes || 0),
+      });
+      setAdoptedPlan(p);
+    } catch (e) {
+      alert("Erreur : " + (e instanceof Error ? e.message : String(e)));
+    }
+  };
   // Yoann 2026-05-02 : ressources réelles auto-chargées (équipe + flotte)
   // avec possibilité de override pour les absences du jour.
   const [nbChauffeurs, setNbChauffeurs] = useState<number>(0);
@@ -1875,10 +1905,19 @@ function StrategieGeminiModal({ onClose }: { onClose: () => void }) {
                           )}
                         </div>
                       )}
-                      <div className="text-[10px] text-gray-500 italic pt-1 border-t flex flex-wrap gap-3">
-                        <span>🤖 {p.params.maxTournees} tournée{p.params.maxTournees > 1 ? "s" : ""}</span>
-                        <span>⚡ {p.estimation?.scoreVelosParHeure} v/h chauffeur</span>
-                        {p.estimation?.scoreVelosParPersonne != null && <span>👤 {p.estimation.scoreVelosParPersonne} v/personne</span>}
+                      <div className="text-[10px] text-gray-500 italic pt-1 border-t flex flex-wrap gap-3 items-center justify-between">
+                        <div className="flex flex-wrap gap-3">
+                          <span>🤖 {p.params.maxTournees} tournée{p.params.maxTournees > 1 ? "s" : ""}</span>
+                          <span>⚡ {p.estimation?.scoreVelosParHeure} v/h chauffeur</span>
+                          {p.estimation?.scoreVelosParPersonne != null && <span>👤 {p.estimation.scoreVelosParPersonne} v/personne</span>}
+                        </div>
+                        <button
+                          onClick={() => adoptPlan(p)}
+                          className="px-2 py-1 text-[10px] bg-emerald-600 text-white rounded hover:bg-emerald-700 font-semibold not-italic"
+                          title="Ouvre le planificateur journée pré-rempli avec les paramètres de ce plan"
+                        >
+                          ✓ Adopter ce plan
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -1897,6 +1936,27 @@ function StrategieGeminiModal({ onClose }: { onClose: () => void }) {
           <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Fermer</button>
         </div>
       </div>
+      {adoptedPlan && adoptedEntrepot && (
+        <PlanifierJourneeModal
+          entrepotId={adoptedEntrepot.id}
+          entrepotNom={adoptedEntrepot.nom}
+          stockCartons={adoptedEntrepot.stockCartons}
+          stockVelosMontes={adoptedEntrepot.stockVelosMontes}
+          initialParams={{
+            mode: adoptedPlan.params.modeCamion as "gros" | "moyen" | "petit" | "camionnette",
+            modeMontage: (["client", "atelier", "client_redistribue"].includes(adoptedPlan.params.modeMontage)
+              ? adoptedPlan.params.modeMontage
+              : "atelier") as "client" | "atelier" | "client_redistribue",
+            maxTournees: adoptedPlan.params.maxTournees,
+            monteursParTournee: adoptedPlan.params.monteursParTournee,
+          }}
+          onClose={() => {
+            setAdoptedPlan(null);
+            setAdoptedEntrepot(null);
+            onClose(); // ferme aussi le modal Stratégie
+          }}
+        />
+      )}
     </div>
   );
 }
