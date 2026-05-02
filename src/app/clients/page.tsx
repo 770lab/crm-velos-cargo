@@ -1748,8 +1748,19 @@ function SyncDriveModal({ onClose }: { onClose: () => void }) {
     setLoading(true);
     setAi(null);
     try {
-      const data = await gasPost("syncDrive", {});
-      setReport(data);
+      // Yoann 2026-05-03 : migré du call gasPost("syncDrive") direct vers la
+      // Cloud Function syncFromGasNow qui pull les bons depuis GAS et les
+      // écrit dans Firestore. Le flux Gmail/Drive de velos-cargo@ reste
+      // sur GAS (lecture mails Tiffany + sauvegarde PJ Drive) → cette CF
+      // s en sert pour ramener les données.
+      const { httpsCallable, getFunctions } = await import("firebase/functions");
+      const { firebaseApp } = await import("@/lib/firebase");
+      const fn = httpsCallable<Record<string, never>, unknown>(
+        getFunctions(firebaseApp, "europe-west1"),
+        "syncFromGasNow",
+      );
+      const r = await fn({});
+      setReport(r.data as Record<string, unknown>);
     } catch (err) {
       setReport({ error: err instanceof Error ? err.message : "Erreur inconnue" });
     }

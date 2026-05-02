@@ -1059,10 +1059,6 @@ function ClientMontageView({
   );
 }
 
-// Helper non utilisé mais conservé pour compat éventuelle si on revient à un
-// flow scan QR Strich + 1 photo (markVeloMonte legacy). Désactivé en TS pour
-// rester silencieux à l'unused-vars.
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-async function _legacyMarkVeloMonteOnePhoto(fnuci: string, photoData: string, monteurId: string) {
-  return gasPost("markVeloMonte", { fnuci, photoData, mimeType: "image/jpeg", monteurId });
-}
+// Yoann 2026-05-03 : helper legacy supprimé (markVeloMonte sur GAS, jamais
+// rappelé). Si besoin d un flow scan QR Strich + 1 photo unique, utiliser
+// markVeloMontePhoto migré côté Firestore.
