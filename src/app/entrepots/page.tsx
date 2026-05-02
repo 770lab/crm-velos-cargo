@@ -77,6 +77,7 @@ export default function EntrepotsPage() {
   const [editing, setEditing] = useState<Entrepot | "new" | null>(null);
   const [showStockCible, setShowStockCible] = useState(false);
   const [showFlotte, setShowFlotte] = useState(false);
+  const [showSimulation, setShowSimulation] = useState(false);
 
   useEffect(() => {
     const q = collection(db, "entrepots");
@@ -211,6 +212,13 @@ export default function EntrepotsPage() {
               title="Calcule pour chaque entrepôt le stock cartons + montés à avoir pour servir les clients dans 100 km autour de Paris"
             >
               🎯 Stock cible Paris
+            </button>
+            <button
+              onClick={() => setShowSimulation(true)}
+              className="px-3 py-2 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white rounded-lg text-sm font-medium hover:opacity-90"
+              title="Simulation macro : tous clients dans 130km Paris → stock cible par entrepôt + nb tournées + nb jours nécessaires"
+            >
+              🚀 Simulation Opération
             </button>
             <RescanBonsButton />
             <button
@@ -420,6 +428,7 @@ export default function EntrepotsPage() {
       )}
       {showStockCible && <StockCibleModal onClose={() => setShowStockCible(false)} />}
       {showFlotte && <FlotteModal onClose={() => setShowFlotte(false)} />}
+      {showSimulation && <SimulationOperationModal onClose={() => setShowSimulation(false)} />}
     </div>
   );
 }
@@ -3373,6 +3382,233 @@ function CamionEditModal({ camion, onClose }: { camion: CamionFlotte | null; onC
           >
             {busy ? "..." : "✓ Sauvegarder"}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// SimulationOperationModal — Yoann 2026-05-03
+// Simulation macro 1 clic : tous clients dans 130km Paris → calcul stock
+// cible par entrepôt + nb tournées requises + nb jours pour livrer le tout
+// avec la flotte et l équipe disponibles.
+type SimulationResult = {
+  ok?: boolean;
+  error?: string;
+  rayonKm?: number;
+  seuilGrosVolume?: number;
+  nbEntrepots?: number;
+  nbCamions?: number;
+  nbChauffeurs?: number;
+  nbVehiculesParJour?: number;
+  capMontesMoyenne?: number;
+  capCartonsMoyenne?: number;
+  totalClients?: number;
+  totalVelos?: number;
+  totalTournees?: number;
+  totalTourneesMontes?: number;
+  totalTourneesCartons?: number;
+  joursEstimes?: number;
+  joursPourMontes?: number;
+  joursPourCartons?: number;
+  totalCibleCartons?: number;
+  totalCibleMontes?: number;
+  entrepots?: Array<{
+    entrepotId: string;
+    nom: string;
+    ville: string;
+    stockActuel: { cartons: number; montes: number; total: number };
+    cibleStock: { cartons: number; montes: number; total: number };
+    ecartStock: { cartons: number; montes: number };
+    demande: { totale: number; grosVolumes: number; petitsVolumes: number; nbClients: number; nbClientsParis: number };
+    tournees: { montes: number; cartons: number; total: number };
+  }>;
+};
+
+function SimulationOperationModal({ onClose }: { onClose: () => void }) {
+  const [rayonKm, setRayonKm] = useState(130);
+  const [seuilGrosVolume, setSeuilGrosVolume] = useState(30);
+  const [nbChauffeurs, setNbChauffeurs] = useState<number | "">("");
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<SimulationResult | null>(null);
+
+  const run = async () => {
+    setBusy(true);
+    setResult(null);
+    try {
+      const { gasPost } = await import("@/lib/gas");
+      const r = (await gasPost("simulationOperationComplete", {
+        rayonKm,
+        seuilGrosVolume,
+        nbChauffeurs: nbChauffeurs === "" ? undefined : nbChauffeurs,
+      })) as SimulationResult;
+      setResult(r);
+    } catch (e) {
+      setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[2000] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-4xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <div>
+            <h2 className="text-lg font-semibold">🚀 Simulation Opération Paris</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              En 1 clic : pour tous les clients dans le rayon, calcule stock cible par entrepôt + nb tournées requises + nb jours pour boucler l opération avec ta flotte et ton équipe actuelles.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+
+        <div className="grid grid-cols-3 gap-3 mb-3 bg-violet-50 border border-violet-200 rounded p-3">
+          <div>
+            <label className="text-xs text-gray-600">Rayon Paris (km)</label>
+            <input
+              type="number"
+              value={rayonKm}
+              onChange={(e) => setRayonKm(Number(e.target.value))}
+              min={5}
+              max={500}
+              step={10}
+              className="w-full px-2 py-1.5 border rounded text-sm bg-white"
+            />
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Seuil gros vol. (vélos)</label>
+            <input
+              type="number"
+              value={seuilGrosVolume}
+              onChange={(e) => setSeuilGrosVolume(Number(e.target.value))}
+              min={5}
+              max={200}
+              className="w-full px-2 py-1.5 border rounded text-sm bg-white"
+            />
+            <div className="text-[10px] text-gray-500 mt-0.5">{seuilGrosVolume}v+ = cartons (montage chez client)</div>
+          </div>
+          <div>
+            <label className="text-xs text-gray-600">Nb chauffeurs (override)</label>
+            <input
+              type="number"
+              value={nbChauffeurs}
+              onChange={(e) => setNbChauffeurs(e.target.value === "" ? "" : Number(e.target.value))}
+              placeholder="auto = équipe Firestore"
+              min={0}
+              max={20}
+              className="w-full px-2 py-1.5 border rounded text-sm bg-white"
+            />
+          </div>
+        </div>
+
+        <button
+          onClick={run}
+          disabled={busy}
+          className="w-full px-3 py-2 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white rounded-lg hover:opacity-90 disabled:opacity-50 font-semibold"
+        >
+          {busy ? "🚀 Simulation..." : "🚀 Lancer la simulation complète"}
+        </button>
+
+        {result && (
+          <div className="mt-4">
+            {result.error ? (
+              <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800">❌ {result.error}</div>
+            ) : result.ok && result.entrepots ? (
+              <>
+                {/* Synthèse globale */}
+                <div className="bg-gradient-to-r from-violet-50 to-fuchsia-50 border-2 border-violet-300 rounded-lg p-4 mb-4">
+                  <div className="text-base font-bold text-violet-900 mb-2">
+                    📊 Synthèse · {result.totalClients} clients dans {result.rayonKm} km
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    <div className="bg-white border border-violet-200 rounded p-2 text-center">
+                      <div className="text-2xl font-bold text-violet-900">{result.totalVelos}</div>
+                      <div className="text-[10px] uppercase text-violet-600">Vélos à livrer</div>
+                    </div>
+                    <div className="bg-white border border-fuchsia-200 rounded p-2 text-center">
+                      <div className="text-2xl font-bold text-fuchsia-900">{result.totalTournees}</div>
+                      <div className="text-[10px] uppercase text-fuchsia-600">Tournées totales</div>
+                      <div className="text-[9px] text-gray-500 mt-0.5">{result.totalTourneesMontes} montés · {result.totalTourneesCartons} cartons</div>
+                    </div>
+                    <div className="bg-white border border-blue-200 rounded p-2 text-center">
+                      <div className="text-2xl font-bold text-blue-900">{result.joursEstimes}</div>
+                      <div className="text-[10px] uppercase text-blue-600">Jours estimés</div>
+                      <div className="text-[9px] text-gray-500 mt-0.5">avec {result.nbVehiculesParJour} véh./jour</div>
+                    </div>
+                    <div className="bg-white border border-emerald-200 rounded p-2 text-center">
+                      <div className="text-2xl font-bold text-emerald-900">
+                        {result.totalCibleCartons! + result.totalCibleMontes!}
+                      </div>
+                      <div className="text-[10px] uppercase text-emerald-600">Stock total cible</div>
+                      <div className="text-[9px] text-gray-500 mt-0.5">
+                        {result.totalCibleCartons} cartons + {result.totalCibleMontes} montés
+                      </div>
+                    </div>
+                  </div>
+                  <div className="text-[11px] text-violet-700 mt-2 italic">
+                    💡 {result.nbChauffeurs} chauffeur{(result.nbChauffeurs ?? 0) > 1 ? "s" : ""} · {result.nbCamions} camion{(result.nbCamions ?? 0) > 1 ? "s" : ""}.
+                    Capacités moyennes : {result.capMontesMoyenne}v montés / {result.capCartonsMoyenne}v cartons.
+                    Hypothèse : 1 véh. = ~1.5 tournée montés/jour OU 1 tournée cartons/jour.
+                  </div>
+                </div>
+
+                {/* Détail par entrepôt */}
+                <div className="space-y-2">
+                  {result.entrepots.map((e) => (
+                    <div key={e.entrepotId} className="border rounded-lg overflow-hidden">
+                      <div className="bg-gray-50 border-b px-3 py-2 flex items-center justify-between">
+                        <div>
+                          <div className="text-sm font-bold">{e.nom}</div>
+                          <div className="text-[11px] text-gray-500">{e.ville}{e.demande.nbClientsParis > 0 ? ` · ${e.demande.nbClientsParis} client${e.demande.nbClientsParis > 1 ? "s" : ""} Paris ⚠️` : ""}</div>
+                        </div>
+                        <div className="text-right">
+                          <div className="text-sm font-bold">{e.demande.nbClients} clients · {e.demande.totale}v</div>
+                          <div className="text-[10px] text-gray-500">
+                            <strong>{e.tournees.total} tournées</strong> ({e.tournees.montes}m + {e.tournees.cartons}c)
+                          </div>
+                        </div>
+                      </div>
+                      <div className="p-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+                        <div className="bg-orange-50 border border-orange-200 rounded p-2">
+                          <div className="text-[9px] text-orange-700 uppercase font-semibold">Cartons cible</div>
+                          <div className="text-base font-bold text-orange-900 mt-0.5">{e.cibleStock.cartons}</div>
+                          <div className="text-[10px] text-gray-500">/ {e.stockActuel.cartons} actuel</div>
+                          {e.ecartStock.cartons > 0 && <div className="text-[10px] text-red-700 font-semibold">↑ +{e.ecartStock.cartons}</div>}
+                        </div>
+                        <div className="bg-emerald-50 border border-emerald-200 rounded p-2">
+                          <div className="text-[9px] text-emerald-700 uppercase font-semibold">Montés cible</div>
+                          <div className="text-base font-bold text-emerald-900 mt-0.5">{e.cibleStock.montes}</div>
+                          <div className="text-[10px] text-gray-500">/ {e.stockActuel.montes} actuel</div>
+                          {e.ecartStock.montes > 0 && <div className="text-[10px] text-red-700 font-semibold">↑ +{e.ecartStock.montes} à monter</div>}
+                        </div>
+                        <div className="bg-fuchsia-50 border border-fuchsia-200 rounded p-2">
+                          <div className="text-[9px] text-fuchsia-700 uppercase font-semibold">Tournées</div>
+                          <div className="text-base font-bold text-fuchsia-900 mt-0.5">{e.tournees.total}</div>
+                          <div className="text-[10px] text-gray-500">{e.tournees.montes}m · {e.tournees.cartons}c</div>
+                        </div>
+                        <div className="bg-blue-50 border border-blue-200 rounded p-2">
+                          <div className="text-[9px] text-blue-700 uppercase font-semibold">Demande</div>
+                          <div className="text-base font-bold text-blue-900 mt-0.5">{e.demande.totale}v</div>
+                          <div className="text-[10px] text-gray-500">{e.demande.petitsVolumes}m + {e.demande.grosVolumes}c</div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="mt-3 text-[11px] text-gray-500 italic">
+                  💡 Voronoi : chaque client → entrepôt le + proche. Volumes &gt; {result.seuilGrosVolume}v → cartons (gros, montage chez client) ; sinon montés (rapide). Hypothèse capacités moyennes flotte.
+                </div>
+              </>
+            ) : (
+              <div className="text-sm text-gray-500 italic">Aucun résultat</div>
+            )}
+          </div>
+        )}
+
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Fermer</button>
         </div>
       </div>
     </div>
