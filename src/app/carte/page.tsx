@@ -1598,10 +1598,18 @@ type GeminiPlan = {
     maxTournees: number;
     monteursParTournee: number;
   };
+  allocation?: {
+    nbChauffeursUtilises?: number;
+    nbChefsUtilises?: number;
+    nbMonteursUtilises?: number;
+    nbCamionsUtilises?: number;
+    repartition?: string;
+  };
   estimation: {
     velosLivresEstime: number;
     dureeJourneeEstime: number;
     scoreVelosParHeure: number;
+    scoreVelosParPersonne?: number;
   };
 };
 type StrategieResult = {
@@ -1618,6 +1626,53 @@ function StrategieGeminiModal({ onClose }: { onClose: () => void }) {
   const [result, setResult] = useState<StrategieResult | null>(null);
   const [dureeJourneeMin, setDureeJourneeMin] = useState(510);
   const [monteursParTournee, setMonteursParTournee] = useState(2);
+  // Yoann 2026-05-02 : ressources réelles auto-chargées (équipe + flotte)
+  // avec possibilité de override pour les absences du jour.
+  const [nbChauffeurs, setNbChauffeurs] = useState<number>(0);
+  const [nbChefs, setNbChefs] = useState<number>(0);
+  const [nbMonteurs, setNbMonteurs] = useState<number>(0);
+  const [nbCamions, setNbCamions] = useState<number>(0);
+  const [autoLoaded, setAutoLoaded] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, getDocs } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      let chauf = 0;
+      let chefs = 0;
+      let mont = 0;
+      try {
+        const eqSnap = await getDocs(collection(db, "equipe"));
+        for (const d of eqSnap.docs) {
+          const o = d.data() as { role?: string; actif?: boolean; aussiMonteur?: boolean };
+          if (o.actif === false) continue;
+          if (o.role === "chauffeur") chauf++;
+          if (o.role === "chef") {
+            chefs++;
+            if (o.aussiMonteur) mont++;
+          }
+          if (o.role === "monteur") mont++;
+        }
+      } catch {}
+      let cam = 0;
+      try {
+        const flSnap = await getDocs(collection(db, "flotte"));
+        for (const d of flSnap.docs) {
+          const o = d.data() as { actif?: boolean };
+          if (o.actif === false) continue;
+          cam++;
+        }
+      } catch {}
+      if (!alive) return;
+      setNbChauffeurs(chauf);
+      setNbChefs(chefs);
+      setNbMonteurs(mont);
+      setNbCamions(cam);
+      setAutoLoaded(true);
+    })();
+    return () => { alive = false; };
+  }, []);
 
   const run = async () => {
     setBusy(true);
@@ -1626,6 +1681,10 @@ function StrategieGeminiModal({ onClose }: { onClose: () => void }) {
       const r = (await gasPost("strategieGemini", {
         dureeJourneeMin,
         monteursParTournee,
+        nbChauffeurs,
+        nbChefs,
+        nbMonteurs,
+        nbCamions,
       })) as StrategieResult;
       setResult(r);
     } catch (e) {
@@ -1650,6 +1709,60 @@ function StrategieGeminiModal({ onClose }: { onClose: () => void }) {
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
         </div>
 
+        {/* Ressources réelles du jour (Yoann 2026-05-02) — auto-chargées
+            depuis Firestore equipe + flotte, ajustables pour les absences. */}
+        <div className="bg-indigo-50 border border-indigo-200 rounded p-3 mb-3">
+          <div className="text-xs font-semibold text-indigo-900 mb-2">
+            👥 Ressources du jour {autoLoaded && <span className="text-[10px] font-normal text-indigo-600">(auto-chargées · ajustables si absences)</span>}
+          </div>
+          <div className="grid grid-cols-4 gap-2">
+            <div>
+              <label className="text-[10px] text-gray-600 block">🚐 Chauffeurs</label>
+              <input
+                type="number"
+                value={nbChauffeurs}
+                onChange={(e) => setNbChauffeurs(Number(e.target.value))}
+                min={0}
+                max={20}
+                className="w-full px-2 py-1.5 border rounded text-sm bg-white text-center font-bold"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-gray-600 block">👷 Chefs</label>
+              <input
+                type="number"
+                value={nbChefs}
+                onChange={(e) => setNbChefs(Number(e.target.value))}
+                min={0}
+                max={20}
+                className="w-full px-2 py-1.5 border rounded text-sm bg-white text-center font-bold"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-gray-600 block">🔧 Monteurs</label>
+              <input
+                type="number"
+                value={nbMonteurs}
+                onChange={(e) => setNbMonteurs(Number(e.target.value))}
+                min={0}
+                max={50}
+                className="w-full px-2 py-1.5 border rounded text-sm bg-white text-center font-bold"
+              />
+            </div>
+            <div>
+              <label className="text-[10px] text-gray-600 block">🚛 Camions</label>
+              <input
+                type="number"
+                value={nbCamions}
+                onChange={(e) => setNbCamions(Number(e.target.value))}
+                min={0}
+                max={20}
+                className="w-full px-2 py-1.5 border rounded text-sm bg-white text-center font-bold"
+              />
+            </div>
+          </div>
+        </div>
+
         <div className="grid grid-cols-2 gap-3 mb-3 bg-purple-50 border border-purple-200 rounded p-3">
           <div>
             <label className="text-xs text-gray-600">Journée chauffeur (min)</label>
@@ -1665,7 +1778,7 @@ function StrategieGeminiModal({ onClose }: { onClose: () => void }) {
             <div className="text-[10px] text-gray-500 mt-0.5">{formatMin(dureeJourneeMin)}</div>
           </div>
           <div>
-            <label className="text-xs text-gray-600">Monteurs / tournée</label>
+            <label className="text-xs text-gray-600">Monteurs / tournée (préférence)</label>
             <input
               type="number"
               value={monteursParTournee}
@@ -1674,6 +1787,9 @@ function StrategieGeminiModal({ onClose }: { onClose: () => void }) {
               max={10}
               className="w-full px-2 py-1.5 border rounded text-sm bg-white"
             />
+            <div className="text-[10px] text-gray-500 mt-0.5">
+              {nbChauffeurs > 0 && nbMonteurs > 0 && `${nbChauffeurs} chauffeurs × ${monteursParTournee} = ${nbChauffeurs * monteursParTournee} monteurs requis (dispo : ${nbMonteurs})`}
+            </div>
           </div>
         </div>
 
@@ -1736,8 +1852,25 @@ function StrategieGeminiModal({ onClose }: { onClose: () => void }) {
                           <div className="font-bold text-blue-900">{formatMin(p.estimation?.dureeJourneeEstime || 0)}</div>
                         </div>
                       </div>
-                      <div className="text-[10px] text-gray-500 italic pt-1 border-t">
-                        🤖 {p.params.maxTournees} tournée{p.params.maxTournees > 1 ? "s" : ""} · {p.estimation?.scoreVelosParHeure} v/h chauffeur
+                      {/* Allocation ressources (Yoann 2026-05-02) */}
+                      {p.allocation && (
+                        <div className="bg-indigo-50 border border-indigo-200 rounded p-2 text-[11px]">
+                          <div className="font-semibold text-indigo-900 mb-1 text-[10px] uppercase">👥 Allocation ressources</div>
+                          <div className="flex flex-wrap gap-2 mb-1">
+                            {p.allocation.nbChauffeursUtilises != null && <span>🚐 <strong>{p.allocation.nbChauffeursUtilises}</strong> chauffeur{p.allocation.nbChauffeursUtilises > 1 ? "s" : ""}</span>}
+                            {p.allocation.nbChefsUtilises != null && <span>👷 <strong>{p.allocation.nbChefsUtilises}</strong> chef{p.allocation.nbChefsUtilises > 1 ? "s" : ""}</span>}
+                            {p.allocation.nbMonteursUtilises != null && <span>🔧 <strong>{p.allocation.nbMonteursUtilises}</strong> monteur{p.allocation.nbMonteursUtilises > 1 ? "s" : ""}</span>}
+                            {p.allocation.nbCamionsUtilises != null && <span>🚛 <strong>{p.allocation.nbCamionsUtilises}</strong> camion{p.allocation.nbCamionsUtilises > 1 ? "s" : ""}</span>}
+                          </div>
+                          {p.allocation.repartition && (
+                            <div className="text-indigo-800 italic leading-snug">{p.allocation.repartition}</div>
+                          )}
+                        </div>
+                      )}
+                      <div className="text-[10px] text-gray-500 italic pt-1 border-t flex flex-wrap gap-3">
+                        <span>🤖 {p.params.maxTournees} tournée{p.params.maxTournees > 1 ? "s" : ""}</span>
+                        <span>⚡ {p.estimation?.scoreVelosParHeure} v/h chauffeur</span>
+                        {p.estimation?.scoreVelosParPersonne != null && <span>👤 {p.estimation.scoreVelosParPersonne} v/personne</span>}
                       </div>
                     </div>
                   </div>

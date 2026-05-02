@@ -4448,8 +4448,17 @@ export async function runFirestoreAction(
       // alternatifs avec narratif et tradeoffs. Aide le user à arbitrer
       // selon le contexte (urgence, météo, fatigue équipe, jour férié,
       // priorités client...).
+      //
+      // Yoann 2026-05-02 : on charge automatiquement équipe + flotte pour
+      // que Gemini connaisse les ressources réelles (chauffeurs/chefs/
+      // monteurs/camions). Sans ça il optimisait à l aveugle sur 1 camion.
       const dureeJourneeMinG = Number(body.dureeJourneeMin || 510);
       const monteursParTourneeG = Math.max(1, Number(body.monteursParTournee || 2));
+      // Overrides manuels possibles (cas absences ce jour-là)
+      const overrideChauffeurs = body.nbChauffeurs != null ? Number(body.nbChauffeurs) : null;
+      const overrideChefs = body.nbChefs != null ? Number(body.nbChefs) : null;
+      const overrideMonteurs = body.nbMonteurs != null ? Number(body.nbMonteurs) : null;
+      const overrideCamions = body.nbCamions != null ? Number(body.nbCamions) : null;
 
       // Charge entrepôts non-fournisseur non-archivés avec stock > 0
       const eSnap = await getDocs(collection(db, "entrepots"));
@@ -4513,15 +4522,62 @@ export async function runFirestoreAction(
       const totalCartons = entrepotsCtx.reduce((s, e) => s + e.stockCartons, 0);
       const totalMontes = entrepotsCtx.reduce((s, e) => s + e.stockVelosMontes, 0);
 
-      const prompt = `Tu es un logisticien expert en VRP (Vehicle Routing Problem). Tu planifies des tournées de livraison de vélos cargo en région Île-de-France et alentours.
+      // Charge équipe active (Yoann 2026-05-02)
+      const eqSnap = await getDocs(collection(db, "equipe"));
+      type Membre = { id: string; nom: string; role: string; aussiMonteur?: boolean };
+      const chauffeursList: Membre[] = [];
+      const chefsList: Membre[] = [];
+      const monteursList: Membre[] = [];
+      for (const d of eqSnap.docs) {
+        const o = d.data() as { nom?: string; role?: string; actif?: boolean; aussiMonteur?: boolean };
+        if (o.actif === false) continue;
+        const m: Membre = { id: d.id, nom: String(o.nom || ""), role: String(o.role || ""), aussiMonteur: o.aussiMonteur === true };
+        if (m.role === "chauffeur") chauffeursList.push(m);
+        if (m.role === "chef") {
+          chefsList.push(m);
+          if (m.aussiMonteur) monteursList.push(m); // chef polyvalent
+        }
+        if (m.role === "monteur") monteursList.push(m);
+      }
+      const nbChauffeurs = overrideChauffeurs ?? chauffeursList.length;
+      const nbChefs = overrideChefs ?? chefsList.length;
+      const nbMonteurs = overrideMonteurs ?? monteursList.length;
+
+      // Charge flotte active
+      const flSnap = await getDocs(collection(db, "flotte"));
+      type CamionFlotte = { id: string; nom: string; type: string; capaciteVelos: number };
+      const camionsList: CamionFlotte[] = [];
+      for (const d of flSnap.docs) {
+        const o = d.data() as { nom?: string; type?: string; capaciteVelos?: number; actif?: boolean };
+        if (o.actif === false) continue;
+        camionsList.push({
+          id: d.id,
+          nom: String(o.nom || ""),
+          type: String(o.type || "moyen"),
+          capaciteVelos: Number(o.capaciteVelos || 0),
+        });
+      }
+      const nbCamions = overrideCamions ?? camionsList.length;
+
+      const prompt = `Tu es un logisticien expert en VRP (Vehicle Routing Problem) multi-véhicules multi-dépôts. Tu planifies les tournées de livraison de vélos cargo en région Île-de-France et alentours.
+
+RESSOURCES HUMAINES & MATÉRIELLES (réelles, à respecter) :
+- Chauffeurs disponibles : ${nbChauffeurs} (= nb de tournées en parallèle max)
+- Chefs d équipe : ${nbChefs} (1 chef accompagne idéalement chaque tournée mode "client" pour superviser le montage)
+- Monteurs disponibles au total dans la journée : ${nbMonteurs}
+  → à RÉPARTIR entre tournées (pas par tournée). Ex : 6 monteurs + 3 chauffeurs = 2 monteurs/tournée. Ou 1 grosse tournée avec 4 + 2 petites avec 1 chacune.
+- Camions actifs : ${nbCamions}${camionsList.length > 0 ? `\n  Détail flotte : ${camionsList.map((c) => `${c.nom} (${c.type}, ${c.capaciteVelos}v)`).join(" · ")}` : ""}
 
 CONTEXTE OPÉRATIONNEL :
-- Durée journée chauffeur : ${dureeJourneeMinG} minutes (${Math.round(dureeJourneeMinG / 60 * 10) / 10}h)
-- Monteurs par tournée disponibles : ${monteursParTourneeG}
-- Temps d arrêt en mode "client" (livre cartons + monte sur place) : 12 min × nbVélos / nbMonteurs
-- Temps d arrêt en mode "atelier" (vélos déjà montés) : 15 min/stop fixe
-- Recharge entrepôt entre 2 tournées : 10 min
-- Camions disponibles : Grand (132 cartons / 40 montés), Moyen (54/30), Petit/Camionnette (20/20)
+- Durée journée chauffeur : ${dureeJourneeMinG} minutes (${Math.round(dureeJourneeMinG / 60 * 10) / 10}h) — CHAQUE chauffeur peut faire 1 ou plusieurs tournées dans cette fenêtre
+- Préférence par défaut monteurs/tournée : ${monteursParTourneeG} (mais tu peux dévier si la stratégie le justifie)
+- Temps d arrêt en mode "client" (cartons + montage chez client) : 12 min × nbVélos / nbMonteurs sur place
+  → moins de monteurs = arrêts plus longs. Ex : 10v à 1 monteur = 120 min. À 4 monteurs = 30 min.
+- Temps d arrêt en mode "atelier" (vélos pré-montés à livrer) : ~15 min/stop fixe (déchargement seul, pas de montage)
+- Recharge entrepôt entre 2 tournées du même chauffeur : 10 min
+- Capacités camions par mode : Grand 132 cartons / 40 montés · Moyen 54/30 · Petit/Camionnette 20/20
+
+CONTRAINTE CLÉ : tu as ${nbChauffeurs} chauffeur${nbChauffeurs > 1 ? "s" : ""}, donc tu peux faire jusqu à ${nbChauffeurs} tournée${nbChauffeurs > 1 ? "s" : ""} EN PARALLÈLE le même jour (chacune avec son camion + monteurs). Une stratégie peut allouer 1, 2 ou 3 tournées simultanées.
 
 ENTREPÔTS DISPONIBLES (${entrepotsCtx.length}) :
 ${entrepotsCtx.map((e) => `- ${e.id} | ${e.nom} (${e.ville}) | lat=${e.lat.toFixed(4)},lng=${e.lng.toFixed(4)} | ${e.stockCartons} cartons + ${e.stockVelosMontes} montés`).join("\n")}
@@ -4532,9 +4588,19 @@ ${clientsForPrompt.map((c) => `- ${c.id} | ${c.entreprise} (${c.ville}) | lat=${
 STOCK GLOBAL : ${totalCartons} cartons + ${totalMontes} montés = ${totalCartons + totalMontes} vélos disponibles.
 
 DEMANDE :
-Propose 3 stratégies de planification de la JOURNÉE pour 1 chauffeur + ${monteursParTourneeG} monteurs. Chaque stratégie doit être réaliste et tenir dans la fenêtre journée.
+Propose 3 stratégies de planification de la JOURNÉE qui RESPECTENT les ressources réelles ci-dessus (${nbChauffeurs} chauffeur${nbChauffeurs > 1 ? "s" : ""}, ${nbChefs} chef${nbChefs > 1 ? "s" : ""}, ${nbMonteurs} monteur${nbMonteurs > 1 ? "s" : ""}, ${nbCamions} camion${nbCamions > 1 ? "s" : ""}).
 
-Tradeoff principal : mode "client" (cartons) = camion bien rempli (132 max) mais arrêts longs (12 min/vélo) → 1 grosse tournée. Mode "atelier" (montés) = camion plus petit (40 max) mais arrêts courts (15 min/stop) → 2-3 tournées rapides possibles.
+Tradeoffs à exploiter :
+- Mode "client" (cartons) : camion bien rempli (132 max) mais arrêts longs (12 min/vélo / nbMonteurs) → souvent 1 grosse tournée par chauffeur
+- Mode "atelier" (montés) : camion plus petit (40 max) mais arrêts courts (15 min/stop) → 2-3 tournées rapides possibles
+- Allocation humaine : concentrer monteurs sur 1 grosse tournée vs étaler sur plusieurs petites
+- Multi-chauffeurs : si N>1 chauffeurs, tournées EN PARALLÈLE (depuis entrepôts différents idéalement) → divise le temps total par N
+
+Les 3 plans doivent vraiment ÊTRE différents (pas variantes d un même plan) :
+  - Plan A : maximise vélos livrés (peu importe la durée)
+  - Plan B : maximise rapidité (finir tôt, équipe rentre tôt)
+  - Plan C : équilibre intelligent (compromis vélos/temps/utilisation équipe)
+(Mais tu peux dévier si une autre logique fait + de sens vu le contexte.)
 
 Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
 
@@ -4543,25 +4609,33 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
     {
       "titre": "string court (max 60 chars)",
       "strategie": "string : description en 1 phrase",
-      "narratif": "string : pourquoi cette stratégie, tradeoffs, 2-4 phrases",
+      "narratif": "string : pourquoi cette stratégie, tradeoffs, comment les ressources sont allouées, 2-4 phrases",
       "params": {
-        "entrepotId": "string parmi les ids ci-dessus",
+        "entrepotId": "string parmi les ids (entrepôt principal — laisse libre pour multi-dépôt)",
         "entrepotNom": "string",
         "modeCamion": "gros | moyen | petit | camionnette",
-        "modeMontage": "client | atelier | client_redistribue",
-        "maxTournees": number (1-3),
-        "monteursParTournee": number
+        "modeMontage": "client | atelier | client_redistribue | mixte",
+        "maxTournees": number (total tournées sur la journée, tous chauffeurs confondus),
+        "monteursParTournee": number (moyenne)
+      },
+      "allocation": {
+        "nbChauffeursUtilises": number,
+        "nbChefsUtilises": number,
+        "nbMonteursUtilises": number,
+        "nbCamionsUtilises": number,
+        "repartition": "string : description courte de qui fait quoi, ex: 'Chauffeur 1 : grosse tournée 132v depuis AXDIS avec 4 monteurs ; Chauffeur 2 : petite tournée 30v depuis Lisses montés avec 1 monteur'"
       },
       "estimation": {
         "velosLivresEstime": number,
-        "dureeJourneeEstime": number (minutes),
-        "scoreVelosParHeure": number
+        "dureeJourneeEstime": number (minutes — tournée la + longue si en parallèle),
+        "scoreVelosParHeure": number,
+        "scoreVelosParPersonne": number
       }
     },
     ... 2 autres plans ...
   ],
   "recommandation": "string : quelle stratégie est la meilleure aujourd hui et pourquoi (2-3 phrases)",
-  "alertes": ["string : alerte ou opportunité non évidente, par ex stock faible / client urgent / etc"]
+  "alertes": ["string : alerte ou opportunité non évidente, par ex sous-utilisation chauffeur / stock faible / client urgent / etc"]
 }`;
 
       try {
