@@ -352,10 +352,20 @@ export default function EntrepotsPage() {
             </div>
 
             {e.role === "fournisseur" ? (
-              <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-[12px] text-gray-600">
-                <strong>📋 Pas de gestion de stock</strong> — c&apos;est l&apos;inventaire
-                du fournisseur. Yoann prépare les commandes directement depuis
-                leur stock, pas besoin de tracker les cartons ici.
+              <div className="space-y-3">
+                <div className="bg-gray-50 border border-gray-200 rounded-lg p-3 text-[12px] text-gray-600">
+                  <strong>📋 Pas de gestion de stock</strong> — c&apos;est l&apos;inventaire
+                  du fournisseur. Yoann prépare les commandes directement depuis
+                  leur stock, pas besoin de tracker les cartons ici.
+                </div>
+                {/* Yoann 2026-05-03 : sessions atelier autorisées chez AXDIS
+                    (montage sur place avant chargement). Stock cartons illimité
+                    côté fournisseur, pas de contrainte de capacité. */}
+                <SessionsAtelierPanel
+                  entrepotId={e.id}
+                  entrepotNom={e.nom}
+                  editable={isAdmin}
+                />
               </div>
             ) : (
               <>
