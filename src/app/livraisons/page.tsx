@@ -5492,6 +5492,21 @@ function BriefJourneeModal({
     };
   }, []);
 
+  // Yoann 2026-05-03 — Réécriture du brief par Gemini à partir de la note.
+  // Why: la note dictée contient les cascades inter-équipes (qui finit où, qui
+  // rejoint qui, à quelle heure). Plutôt que de l'afficher brute en tête, on
+  // demande à Gemini d'intégrer ces infos dans le corps du brief (annotations
+  // par tournée/client) tout en gardant strictement les données structurelles
+  // (clients, vélos, adresses, horaires de base).
+  const [briefRewritten, setBriefRewritten] = useState<string | null>(null);
+  const [rewriting, setRewriting] = useState(false);
+  const [rewriteError, setRewriteError] = useState<string | null>(null);
+  // Reset la version réécrite si la date change — le brief sous-jacent a changé.
+  useEffect(() => {
+    setBriefRewritten(null);
+    setRewriteError(null);
+  }, [selectedDate]);
+
   const findName = (id: string | null | undefined) =>
     id ? equipe.find((m) => m.id === id)?.nom || "?" : null;
   const fmtHM = (mins: number) => {
@@ -5571,8 +5586,11 @@ function BriefJourneeModal({
       if (c) allChauffeurs.add(c);
     }
     lines.push(`${sorted.length} tournée${sorted.length > 1 ? "s" : ""} · ${totalVelos} vélos · ${allChauffeurs.size} chauffeur${allChauffeurs.size > 1 ? "s" : ""}`);
-    // Yoann 2026-05-03 — Notes logistique du jour injectées en tête de brief
-    // si non vides (cascades inter-équipes, navettes, enchaînements…).
+    // Yoann 2026-05-03 — Note du jour : on l'affiche brute UNIQUEMENT si pas
+    // de réécriture Gemini en cours (le bouton "Appliquer au brief" intègre
+    // la note dans le corps du brief). Cette logique est gérée côté affichage
+    // via briefDisplayed, mais on garde la version brute en tête comme
+    // fallback si l'utilisateur ne lance pas la réécriture.
     const notesTrim = notesJour.trim();
     if (notesTrim) {
       lines.push("");
@@ -5644,10 +5662,74 @@ function BriefJourneeModal({
   }, [briefDate, tournees, equipe, clientInfo, tourneeDepartures, notesJour]);
   void findName;
 
+  // Brief affiché : version Gemini si présente, sinon brief auto.
+  const briefDisplayed = briefRewritten ?? text;
+
+  // Yoann 2026-05-03 — Demande à Gemini de réécrire le brief en intégrant la
+  // note dictée (cascades, horaires, qui rejoint qui). Contraintes strictes :
+  // ne JAMAIS inventer client/vélo/adresse/horaire ; garder le format WhatsApp ;
+  // peut ajouter une section narrative + annotations par tournée/client.
+  const rewriteBriefFromNotes = useCallback(async () => {
+    const note = notesJour.trim();
+    if (!note) {
+      alert("Ajoute d'abord ta note (texte ou dictée) puis clique sur Appliquer.");
+      return;
+    }
+    if (!text || text.startsWith("Aucune tournée")) {
+      alert("Pas de tournée planifiée pour ce jour.");
+      return;
+    }
+    setRewriting(true);
+    setRewriteError(null);
+    try {
+      const prompt = [
+        "Tu es l'assistant logistique de Vélos Cargo (Artisans Verts Energy).",
+        "Tu reçois deux entrées :",
+        "1) Le BRIEF AUTO d'un jour (planning généré par le CRM, format WhatsApp).",
+        "2) Une NOTE dictée par Yoann (le boss) qui complète le brief : cascades inter-équipes, qui rejoint qui, qui finit où, navettes, horaires précis, etc.",
+        "",
+        "Ta tâche : RÉÉCRIRE le brief en intégrant la note de Yoann directement dans le corps du brief.",
+        "",
+        "RÈGLES STRICTES (zéro tolérance) :",
+        "- Tu NE PEUX PAS inventer ou modifier : noms de clients, adresses, téléphones, nb de vélos, statuts validation. Recopie-les à l'identique.",
+        "- Tu PEUX modifier/ajouter : horaires si la note les précise, affectations chauffeur/chef/monteurs si la note le dit, annotations par tournée/client (cascades, navettes, points d'attention).",
+        "- Garde le format WhatsApp : titres en *gras*, emojis (🚛 📍 🚐 🚦 🔧 📦 ⏰ 🚲 ⚠ 📧 📞 🤝), séparateurs ═══.",
+        "- Garde la même structure (en-tête puis 1 bloc par tournée puis liste des arrêts).",
+        "- Si la note évoque une cascade qui touche plusieurs tournées, ajoute une ligne 🔄 *Cascade :* sous le bloc concerné.",
+        "- Si la note est confuse ou contradictoire avec le brief auto, INTERPRÈTE prudemment et ajoute ⚠ à la ligne concernée.",
+        "- Corrige les fautes de dictée évidentes (Naomie → Naomi, etc.) en t'aidant des noms déjà présents dans le brief.",
+        "- N'ajoute AUCUN commentaire de ta part hors du brief lui-même (pas de 'voici le brief', pas de meta).",
+        "- Réponds UNIQUEMENT par le brief réécrit, prêt à coller dans WhatsApp.",
+        "",
+        "=== BRIEF AUTO ===",
+        text,
+        "",
+        "=== NOTE DE YOANN ===",
+        note,
+        "",
+        "=== BRIEF RÉÉCRIT ===",
+      ].join("\n");
+      const r = await callGemini(prompt);
+      if (r.ok && r.text) {
+        let out = r.text.trim();
+        if (out.startsWith("```")) {
+          out = out.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
+        }
+        setBriefRewritten(out);
+      } else {
+        setRewriteError(r.ok ? "Réponse Gemini vide" : (r.error || "Erreur Gemini"));
+      }
+    } catch (e) {
+      setRewriteError(e instanceof Error ? e.message : "Erreur réseau");
+    } finally {
+      setRewriting(false);
+    }
+  }, [notesJour, text]);
+
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
-      await navigator.clipboard.writeText(text);
+      await navigator.clipboard.writeText(briefDisplayed);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {}
@@ -5749,11 +5831,52 @@ function BriefJourneeModal({
               </span>
             </div>
           )}
+          <div className="mt-2 flex items-center gap-2 flex-wrap">
+            <button
+              onClick={() => void rewriteBriefFromNotes()}
+              disabled={rewriting || !notesJour.trim()}
+              className={`text-[11px] px-3 py-1.5 rounded font-semibold flex items-center gap-1 ${
+                rewriting || !notesJour.trim()
+                  ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                  : "bg-purple-600 text-white hover:bg-purple-700"
+              }`}
+              title="Réécrit le brief avec Gemini en intégrant tes notes (cascades, horaires, qui fait quoi)"
+            >
+              <span>🤖</span>
+              <span>{rewriting ? "Réécriture en cours…" : "Appliquer au brief (Gemini)"}</span>
+            </button>
+            {briefRewritten && (
+              <button
+                onClick={() => setBriefRewritten(null)}
+                className="text-[11px] px-2 py-1.5 rounded font-medium bg-white text-gray-600 border border-gray-300 hover:bg-gray-50"
+                title="Revenir au brief auto-calculé"
+              >
+                ↺ Brief auto
+              </button>
+            )}
+            {rewriteError && (
+              <span className="text-[10px] text-red-600">⚠ {rewriteError}</span>
+            )}
+          </div>
         </div>
+        {briefRewritten && (
+          <div className="mb-2 px-3 py-1.5 bg-purple-50 border border-purple-200 rounded text-[11px] text-purple-800 flex items-center gap-2">
+            <span>🤖</span>
+            <span><strong>Brief réécrit par Gemini</strong> à partir de tes notes — relis avant d&apos;envoyer.</span>
+          </div>
+        )}
         <textarea
-          value={text}
-          readOnly
-          className="w-full h-[50vh] px-3 py-2 border rounded-lg font-mono text-xs whitespace-pre overflow-auto"
+          value={briefDisplayed}
+          onChange={(e) => {
+            // Si l'utilisateur édite manuellement le brief réécrit, on garde
+            // sa version éditée. Sinon (brief auto), on ignore l'édition (cohérent
+            // avec le comportement initial readOnly).
+            if (briefRewritten !== null) setBriefRewritten(e.target.value);
+          }}
+          readOnly={briefRewritten === null}
+          className={`w-full h-[50vh] px-3 py-2 border rounded-lg font-mono text-xs whitespace-pre overflow-auto ${
+            briefRewritten ? "border-purple-300 bg-purple-50/30" : ""
+          }`}
         />
         <div className="mt-3 flex justify-end gap-2">
           <button
