@@ -5685,19 +5685,58 @@ function BriefJourneeModal({
     if (s.startsWith("```")) {
       s = s.replace(/^```[a-zA-Z]*\n?/, "").replace(/```\s*$/, "").trim();
     }
-    // 2) Si la réponse est une string JSON ("..." avec \n échappés), la parser
+    // 2) Si Gemini renvoie un OBJET JSON {"brief": "..."} ou similaire,
+    // extraire la première string sous une clé sémantique (brief/text/output/...)
+    // ou la première string trouvée. Réessaie avec parse récursif.
+    if (s.startsWith("{") || s.startsWith("[")) {
+      try {
+        const parsed: unknown = JSON.parse(s);
+        const findString = (v: unknown): string | null => {
+          if (typeof v === "string") return v;
+          if (Array.isArray(v)) {
+            for (const item of v) {
+              const r = findString(item);
+              if (r) return r;
+            }
+            return null;
+          }
+          if (v && typeof v === "object") {
+            const obj = v as Record<string, unknown>;
+            const keys = ["brief", "text", "output", "result", "content", "message"];
+            for (const k of keys) {
+              if (typeof obj[k] === "string") return obj[k] as string;
+            }
+            for (const k of Object.keys(obj)) {
+              const r = findString(obj[k]);
+              if (r) return r;
+            }
+          }
+          return null;
+        };
+        const found = findString(parsed);
+        if (found) s = found;
+      } catch {
+        // pas du JSON valide, on continue avec la string brute
+      }
+    }
+    // 3) Si la réponse est une string JSON quotée ("..." avec \n échappés), la parser
     if (s.startsWith('"') && s.endsWith('"') && s.length > 1) {
       try {
         const parsed = JSON.parse(s);
         if (typeof parsed === "string") s = parsed;
       } catch {
-        // fallback : retire juste les guillemets externes
         s = s.slice(1, -1);
       }
     }
-    // 3) Si pas de vrais newlines mais des \n littéraux → décoder
-    if (!s.includes("\n") && s.includes("\\n")) {
-      s = s.replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    // 4) Décoder les \n littéraux (backslash+n) — artefact d'encodage fréquent.
+    // Personne n'écrit "\n" volontairement dans un brief WhatsApp.
+    if (s.includes("\\n") || s.includes("\\t")) {
+      s = s
+        .replace(/\\r\\n/g, "\n")
+        .replace(/\\n/g, "\n")
+        .replace(/\\t/g, "\t")
+        .replace(/\\"/g, '"')
+        .replace(/\\\\/g, "\\");
     }
     return s.trim();
   };
@@ -5742,10 +5781,14 @@ function BriefJourneeModal({
         "- Corrige les fautes de dictée évidentes (avecsur → avec sur, garsils → Gursil, monteur von → monteurs vont, etc.) en t'aidant des noms réels déjà présents dans le brief.",
         "- Format WhatsApp : `*gras*`, emojis (🚛 📍 🚐 🚦 🔧 📦 ⏰ 🚲 ⚠ 📧 📞 🤝 🎯 🔄 ✏️), séparateur `═══`.",
         "",
-        "FORMAT DE SORTIE (CRITIQUE) :",
-        "- Réponds UNIQUEMENT en TEXTE BRUT, AVEC de vrais retours à la ligne (touche Entrée).",
-        "- INTERDIT : encadrer la réponse de guillemets `\"...\"`, encadrer en bloc markdown ```...```, échapper les retours à la ligne en `\\n` littéraux.",
-        "- INTERDIT : ajouter le moindre commentaire avant/après le brief (pas de \"Voici le brief\", pas de note de bas de page).",
+        "FORMAT DE SORTIE (CRITIQUE — VIOLATION = REJET) :",
+        "- Réponds UNIQUEMENT en TEXTE BRUT pur.",
+        "- Ta réponse DOIT commencer par le caractère 📅 et finir par le caractère 🚴‍♂️ — RIEN avant, RIEN après.",
+        "- INTERDIT ABSOLU : envelopper en JSON (`{\"brief\": \"...\"}`, `{\"text\": \"...\"}`, etc.).",
+        "- INTERDIT ABSOLU : envelopper en string quotée (`\"...\"`).",
+        "- INTERDIT ABSOLU : envelopper en bloc markdown (```...```).",
+        "- INTERDIT ABSOLU : échapper les retours à la ligne en `\\n` littéraux. Utilise de VRAIS retours à la ligne (caractère ASCII 0x0A).",
+        "- INTERDIT : ajouter un commentaire ou intro avant le brief, ou une signature après.",
         "",
         "=== BRIEF AUTO ===",
         textBare,
@@ -5753,7 +5796,7 @@ function BriefJourneeModal({
         "=== NOTE DE YOANN ===",
         note,
         "",
-        "=== BRIEF UNIFIÉ (texte brut, retours à la ligne réels) ===",
+        "=== BRIEF UNIFIÉ (commence par 📅, finit par 🚴‍♂️, texte brut sans wrap) ===",
       ].join("\n");
       const r = await callGemini(prompt);
       if (r.ok && r.text) {
