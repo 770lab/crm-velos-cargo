@@ -338,6 +338,11 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
 
   // Snapshots temps réel
   useEffect(() => {
+    // Yoann 2026-05-03 : reset bootError à chaque (re)login. Sinon une
+    // erreur transitoire d un précédent user (ex apporteur bloqué sur
+    // bonsEnlevement) reste affichée pour le user suivant (admin) qui
+    // a pourtant les bons droits.
+    setBootError(null);
     const handleClients = (snap: QuerySnapshot) => {
       const rows: ClientRow[] = [];
       const points: ClientPoint[] = [];
