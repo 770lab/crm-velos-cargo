@@ -3758,6 +3758,16 @@ type ClientMultiCamion = {
   ville: string;
   reste: number;
 };
+type TransfertSuggere = {
+  deEntrepotId: string;
+  deEntrepotNom: string;
+  versEntrepotId: string;
+  versEntrepotNom: string;
+  type: "carton" | "monte";
+  quantite: number;
+  distanceKm: number;
+  beneficeJours: number;
+};
 type ReapproEntrepot = {
   entrepotId: string;
   entrepotNom: string;
@@ -3804,6 +3814,7 @@ type GenererPlanningResult = {
   erreurs?: string[];
   camionsUtilises?: CamionUtilise[];
   reappros?: ReapproEntrepot[];
+  transferts?: TransfertSuggere[];
   clientsBloques?: ClientBloque[];
   clientsMultiCamion?: ClientMultiCamion[];
   capaMaxMontes?: number;
@@ -4091,6 +4102,30 @@ function GenererPlanningModal({ rayonKm, seuilGrosVolume, camionIds, nbChauffeur
                           </div>
                         );
                       })}
+                    </div>
+                  </div>
+                )}
+
+                {/* Yoann 2026-05-03 : suggestions équilibrage cross-dépôt */}
+                {result.transferts && result.transferts.length > 0 && (
+                  <div className="bg-cyan-50 border border-cyan-300 rounded p-3 mb-3">
+                    <div className="text-sm font-bold text-cyan-900 mb-1">
+                      💡 {result.transferts.length} transfert{result.transferts.length > 1 ? "s" : ""} cross-dépôt suggéré{result.transferts.length > 1 ? "s" : ""}
+                    </div>
+                    <div className="text-[11px] text-cyan-800 mb-2">
+                      Plutôt que de commander Tiffany (lead time {result.leadTimeJours}j), un transfert depuis un entrepôt voisin avec stock résiduel comble la rupture immédiatement.
+                    </div>
+                    <div className="space-y-0.5 text-[11px]">
+                      {result.transferts.map((t, i) => (
+                        <div key={i} className="flex items-center gap-2">
+                          <span className="font-bold text-cyan-700">{t.quantite} {t.type === "carton" ? "📦 cartons" : "🔧 montés"}</span>
+                          <span>{t.deEntrepotNom}</span>
+                          <span className="text-cyan-500">→</span>
+                          <span className="font-semibold">{t.versEntrepotNom}</span>
+                          <span className="text-gray-500">({t.distanceKm} km)</span>
+                          <span className="text-emerald-700 italic">économise {t.beneficeJours}j vs Tiffany</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
                 )}

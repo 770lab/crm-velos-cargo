@@ -5724,6 +5724,71 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
         };
       }).filter((r) => r.consommationCartons > 0 || r.consommationMontes > 0 || r.besoinReapproCartons > 0 || r.besoinReapproMontes > 0);
 
+      // Yoann 2026-05-03 — suggestion équilibrage cross-dépôt :
+      // Si entrepôt A est en rupture (besoinReappro > 0) et entrepôt B
+      // (à moins de 100 km) a du stock résiduel disponible, suggère un
+      // transfert plutôt que de commander Tiffany. Plus rapide, gratuit.
+      type Transfert = {
+        deEntrepotId: string;
+        deEntrepotNom: string;
+        versEntrepotId: string;
+        versEntrepotNom: string;
+        type: "carton" | "monte";
+        quantite: number;
+        distanceKm: number;
+        beneficeJours: number; // gain vs commande Tiffany (= leadTime)
+      };
+      const transferts: Transfert[] = [];
+      // Map entrepôtId → reste après planning (pour candidats donateurs)
+      const restes = new Map<string, { cartons: number; montes: number }>();
+      for (const r of reappros) {
+        restes.set(r.entrepotId, { cartons: r.stockApresCartons, montes: r.stockApresMontes });
+      }
+      // Aussi inclure les entrepôts non-utilisés (dans entrepotsG mais pas dans reappros)
+      for (const e of entrepotsG) {
+        if (!restes.has(e.id)) restes.set(e.id, { cartons: e.stockCartons, montes: e.stockVelosMontes });
+      }
+      for (const r of reappros) {
+        if (r.besoinReapproCartons === 0 && r.besoinReapproMontes === 0) continue;
+        const entReceveur = entrepotsG.find((e) => e.id === r.entrepotId);
+        if (!entReceveur) continue;
+        // Trouver donateurs proches avec stock résiduel
+        for (const eD of entrepotsG) {
+          if (eD.id === r.entrepotId) continue;
+          const dist = haversineKmFs(entReceveur.lat, entReceveur.lng, eD.lat, eD.lng);
+          if (dist > 100) continue;
+          const resteD = restes.get(eD.id) || { cartons: 0, montes: 0 };
+          if (r.besoinReapproCartons > 0 && resteD.cartons > 0) {
+            const q = Math.min(r.besoinReapproCartons, resteD.cartons);
+            transferts.push({
+              deEntrepotId: eD.id,
+              deEntrepotNom: eD.nom,
+              versEntrepotId: r.entrepotId,
+              versEntrepotNom: r.entrepotNom,
+              type: "carton",
+              quantite: q,
+              distanceKm: Math.round(dist * 10) / 10,
+              beneficeJours: leadTimeJours,
+            });
+            resteD.cartons -= q;
+          }
+          if (r.besoinReapproMontes > 0 && resteD.montes > 0) {
+            const q = Math.min(r.besoinReapproMontes, resteD.montes);
+            transferts.push({
+              deEntrepotId: eD.id,
+              deEntrepotNom: eD.nom,
+              versEntrepotId: r.entrepotId,
+              versEntrepotNom: r.entrepotNom,
+              type: "monte",
+              quantite: q,
+              distanceKm: Math.round(dist * 10) / 10,
+              beneficeJours: leadTimeJours,
+            });
+            resteD.montes -= q;
+          }
+        }
+      }
+
       // Si apply=true : crée les tournées + livraisons en base
       let tourneesCreees = 0;
       let livraisonsCreees = 0;
@@ -5809,6 +5874,7 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
         erreurs,
         camionsUtilises: camionsG.map((c) => ({ id: c.id, nom: c.nom, capaciteCartons: c.capaciteCartons, capaciteVelosMontes: c.capaciteVelosMontes, peutEntrerParis: c.peutEntrerParis })),
         reappros, // Yoann 2026-05-03 : suggestion réappro par entrepôt
+        transferts, // Yoann 2026-05-03 : suggestion équilibrage cross-dépôt
         clientsBloques, // Yoann 2026-05-03 : clients non plannifiés faute de stock
         clientsMultiCamion: clientsMultiCamion.map((c) => ({ clientId: c.id, entreprise: c.entreprise, ville: c.ville, reste: c.reste })),
         capaMaxMontes,
