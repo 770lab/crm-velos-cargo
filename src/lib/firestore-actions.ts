@@ -6582,11 +6582,21 @@ export async function runFirestoreGet(
         datePrevue: string | null;
         dateEffective: string | null;
         urlBlSigne: string | null;
+        // Yoann 2026-05-03 : statuts admin exposés à la fiche client pour
+        // sync bidir avec /livraisons (Dossier complet, Déposé, validation
+        // contact client).
+        dossierConfirmeAt: string | null;
+        dossierConfirmePar: string | null;
+        deposeAt: string | null;
+        deposePar: string | null;
+        validationClient: { status: string; par: string | null; at: string | null; note: string | null } | null;
+        blFranckEnvoyeAt: string | null;
       };
       const livraisonsByTournee: Record<string, Liv> = {};
       for (const ld of livSnap.docs) {
         const l = ld.data() as Record<string, unknown>;
         const tId = String(l.tourneeId || "");
+        const vc = l.validationClient as Record<string, unknown> | undefined;
         livraisonsByTournee[tId] = {
           id: ld.id,
           tourneeId: tId,
@@ -6594,6 +6604,19 @@ export async function runFirestoreGet(
           datePrevue: isoOrNull(l.datePrevue),
           dateEffective: isoOrNull(l.dateEffective),
           urlBlSigne: asUrl(l.urlBlSigne),
+          dossierConfirmeAt: isoOrNull(l.dossierConfirmeAt),
+          dossierConfirmePar: typeof l.dossierConfirmePar === "string" ? l.dossierConfirmePar : null,
+          deposeAt: isoOrNull(l.deposeAt),
+          deposePar: typeof l.deposePar === "string" ? l.deposePar : null,
+          validationClient: vc
+            ? {
+                status: String(vc.status || ""),
+                par: typeof vc.par === "string" ? vc.par : null,
+                at: isoOrNull(vc.at),
+                note: typeof vc.note === "string" ? vc.note : null,
+              }
+            : null,
+          blFranckEnvoyeAt: isoOrNull(l.blFranckEnvoyeAt),
         };
       }
       const livKeys = Object.keys(livraisonsByTournee);

@@ -45,6 +45,19 @@ interface Velo {
     statut: string;
     dateEffective?: string | null;
     urlBlSigne?: string | null;
+    // Yoann 2026-05-03 : statuts admin pour sync bidir avec /livraisons
+    dossierConfirmeAt?: string | null;
+    dossierConfirmePar?: string | null;
+    deposeAt?: string | null;
+    deposePar?: string | null;
+    validationClient?: {
+      status: string;
+      par?: string | null;
+      at?: string | null;
+      note?: string | null;
+    } | null;
+    blFranckEnvoyeAt?: string | null;
+    tourneeId?: string;
   } | null;
 }
 
@@ -570,6 +583,11 @@ function ClientDetailPage() {
           />
         )}
       </div>
+
+      {/* Yoann 2026-05-03 : sync bidir avec /livraisons. Mêmes boutons
+          (Validé téléphone, Dossier complet, À déposer, BL à Franck) ici
+          pour pouvoir gérer l administratif depuis la fiche client. */}
+      <ValidationsAdminSection velos={client.velos} clientId={id} clientNom={client.entreprise} onChanged={load} />
 
       {/* Bons de livraison signes par le client. Le chauffeur les prend en
           photo a la livraison ; il y en a 1 par tournee (un meme client peut
@@ -1203,5 +1221,187 @@ function DocPastille({
         </div>
       )}
     </>
+  );
+}
+
+// ValidationsAdminSection — Yoann 2026-05-03
+// Affiche les statuts admin (validation contact client, dossier complet,
+// déposé, BL Franck) PAR LIVRAISON du client. Sync bidir avec /livraisons :
+// les actions appellent les mêmes endpoints (updateLivraison +
+// setLivraisonValidation) → toute modif d un côté reflète immédiatement
+// de l autre.
+function ValidationsAdminSection({
+  velos,
+  clientId,
+  clientNom,
+  onChanged,
+}: {
+  velos: Velo[];
+  clientId: string;
+  clientNom: string;
+  onChanged: () => void;
+}) {
+  const seen = new Set<string>();
+  const livs: NonNullable<Velo["livraison"]>[] = [];
+  for (const v of velos) {
+    const liv = v.livraison;
+    if (!liv) continue;
+    if (seen.has(liv.id)) continue;
+    seen.add(liv.id);
+    if (liv.statut === "annulee") continue;
+    livs.push(liv);
+  }
+  const [busy, setBusy] = useState<string | null>(null);
+
+  if (livs.length === 0) return null;
+
+  const toggleDossierConfirme = async (livId: string, current: string | null | undefined) => {
+    setBusy(livId);
+    try {
+      const now = new Date().toISOString();
+      const data = current
+        ? { dossierConfirmeAt: null, dossierConfirmePar: null }
+        : { dossierConfirmeAt: now, dossierConfirmePar: "yoann" };
+      await gasPost("updateLivraison", { id: livId, data });
+      onChanged();
+    } finally {
+      setBusy(null);
+    }
+  };
+  const toggleDepose = async (livId: string, current: string | null | undefined) => {
+    setBusy(livId);
+    try {
+      const now = new Date().toISOString();
+      const data = current
+        ? { deposeAt: null, deposePar: null }
+        : { deposeAt: now, deposePar: "yoann" };
+      await gasPost("updateLivraison", { id: livId, data });
+      onChanged();
+    } finally {
+      setBusy(null);
+    }
+  };
+  const validerTelephone = async (livId: string, current: string | undefined) => {
+    setBusy(livId);
+    try {
+      if (current === "validee_orale" || current === "validee_mail") {
+        await gasPost("setLivraisonValidation", { id: livId, status: "non_contacte", par: null, note: null });
+      } else {
+        const who = prompt("Qui a contacté le client ?", "");
+        if (who === null) {
+          setBusy(null);
+          return;
+        }
+        const note = prompt("Note (optionnelle) :", "") || null;
+        await gasPost("setLivraisonValidation", { id: livId, status: "validee_orale", par: who.trim() || null, note });
+      }
+      onChanged();
+    } finally {
+      setBusy(null);
+    }
+  };
+  const sendBlFranck = async (livId: string) => {
+    if (!confirm(`Envoyer le BL de ${clientNom} à Franck ?`)) return;
+    setBusy(livId);
+    try {
+      const data = { blFranckEnvoyeAt: new Date().toISOString() };
+      await gasPost("updateLivraison", { id: livId, data });
+      onChanged();
+    } finally {
+      setBusy(null);
+    }
+  };
+
+  return (
+    <div className="bg-white rounded-xl border p-4 mb-6">
+      <h2 className="font-semibold text-gray-900 mb-3">📋 Suivi administratif</h2>
+      <div className="space-y-3">
+        {livs.map((l) => {
+          const v = l.validationClient;
+          const isValidContact = v?.status === "validee_orale" || v?.status === "validee_mail";
+          return (
+            <div key={l.id} className="border rounded-lg p-3 bg-gray-50">
+              <div className="text-xs text-gray-500 mb-2">
+                Livraison {l.datePrevue ? new Date(l.datePrevue).toLocaleDateString("fr-FR") : "—"} ·{" "}
+                <span className="font-mono text-[10px]">{l.id.slice(0, 8)}</span>
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {/* Validation contact */}
+                <button
+                  onClick={() => validerTelephone(l.id, v?.status)}
+                  disabled={busy === l.id}
+                  className={`px-2 py-1 text-xs rounded border ${
+                    isValidContact
+                      ? "bg-emerald-100 border-emerald-400 text-emerald-800"
+                      : "bg-white border-gray-300 text-gray-700 hover:bg-gray-100"
+                  }`}
+                  title={
+                    isValidContact
+                      ? `Contacté par ${v?.par || "?"}${v?.at ? " · " + new Date(v.at).toLocaleDateString("fr-FR") : ""} (clic pour annuler)`
+                      : "Marquer le client comme contacté/validé pour la livraison"
+                  }
+                >
+                  {isValidContact ? "📞 Validé téléphone" : "📞 Valider téléphone"}
+                </button>
+                {/* Dossier complet */}
+                <button
+                  onClick={() => toggleDossierConfirme(l.id, l.dossierConfirmeAt)}
+                  disabled={busy === l.id}
+                  className={`px-2 py-1 text-xs rounded border ${
+                    l.dossierConfirmeAt
+                      ? "bg-emerald-100 border-emerald-400 text-emerald-800"
+                      : "bg-white border-gray-300 text-gray-700 hover:bg-gray-100"
+                  }`}
+                  title={
+                    l.dossierConfirmeAt
+                      ? `Confirmé par ${l.dossierConfirmePar || "?"} (clic pour retirer)`
+                      : "Marquer le dossier CEE comme complet"
+                  }
+                >
+                  {l.dossierConfirmeAt ? "✅ Dossier complet" : "☐ Dossier complet"}
+                </button>
+                {/* À déposer */}
+                <button
+                  onClick={() => toggleDepose(l.id, l.deposeAt)}
+                  disabled={busy === l.id}
+                  className={`px-2 py-1 text-xs rounded border ${
+                    l.deposeAt
+                      ? "bg-emerald-100 border-emerald-400 text-emerald-800"
+                      : "bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100"
+                  }`}
+                  title={
+                    l.deposeAt
+                      ? `Déposé par ${l.deposePar || "?"} (clic pour retirer)`
+                      : "Marquer le dossier comme déposé pour remboursement CEE"
+                  }
+                >
+                  {l.deposeAt ? "📥 Déposé" : "💰 À déposer"}
+                </button>
+                {/* BL à Franck */}
+                <button
+                  onClick={() => sendBlFranck(l.id)}
+                  disabled={busy === l.id || !!l.blFranckEnvoyeAt}
+                  className={`px-2 py-1 text-xs rounded border ${
+                    l.blFranckEnvoyeAt
+                      ? "bg-emerald-100 border-emerald-400 text-emerald-800"
+                      : "bg-white border-purple-300 text-purple-700 hover:bg-purple-50"
+                  }`}
+                  title={
+                    l.blFranckEnvoyeAt
+                      ? `Envoyé le ${new Date(l.blFranckEnvoyeAt).toLocaleDateString("fr-FR")}`
+                      : "Marquer le BL comme envoyé à Franck (compta)"
+                  }
+                >
+                  {l.blFranckEnvoyeAt ? "✅ BL Franck envoyé" : "📤 BL à Franck"}
+                </button>
+              </div>
+              {v?.note && (
+                <div className="text-[11px] text-gray-600 italic mt-1">📝 {v.note}</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
