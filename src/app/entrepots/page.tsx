@@ -2352,6 +2352,36 @@ export function SessionAtelierModal({
               Tournées préparées par cette session ({tourneeIds.length} sélectionnée{tourneeIds.length > 1 ? "s" : ""})
               <span className="ml-1 text-[10px] text-gray-400">— à partir du {date}, jours suivants compris</span>
             </label>
+            {(() => {
+              // Yoann 2026-05-04 : compteur live total vélos sélectionnés
+              // vs quantité prévue de la session. Couleur selon écart.
+              const totalSelectionne = tourneesDuJour
+                .filter((t) => tourneeIds.includes(t.id))
+                .reduce((s, t) => s + t.nbVelos, 0);
+              const prevu = parseInt(quantitePrevue, 10);
+              const hasPrevu = !isNaN(prevu) && prevu > 0;
+              if (!hasPrevu && totalSelectionne === 0) return null;
+              const ecart = hasPrevu ? totalSelectionne - prevu : 0;
+              const colorClass = !hasPrevu
+                ? "bg-blue-50 text-blue-800 border-blue-200"
+                : ecart === 0
+                  ? "bg-emerald-50 text-emerald-800 border-emerald-200"
+                  : ecart < 0
+                    ? "bg-amber-50 text-amber-800 border-amber-200"
+                    : "bg-red-50 text-red-800 border-red-200";
+              const detail = !hasPrevu
+                ? `${totalSelectionne} vélo${totalSelectionne > 1 ? "s" : ""} sélectionné${totalSelectionne > 1 ? "s" : ""}`
+                : ecart === 0
+                  ? `✓ ${totalSelectionne} / ${prevu} vélos — pile poil`
+                  : ecart < 0
+                    ? `${totalSelectionne} / ${prevu} vélos — reste ${Math.abs(ecart)}v à placer`
+                    : `${totalSelectionne} / ${prevu} vélos — ${ecart}v de trop (dépasse la quantité prévue)`;
+              return (
+                <div className={`mt-1 px-2 py-1 rounded border text-xs font-medium ${colorClass}`}>
+                  {detail}
+                </div>
+              );
+            })()}
             <div className="mt-1 max-h-60 overflow-y-auto border rounded p-2 bg-gray-50">
               {tourneesDuJour.length === 0 ? (
                 <div className="text-[11px] text-gray-400 italic text-center py-2">
