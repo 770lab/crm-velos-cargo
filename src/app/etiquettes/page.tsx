@@ -1,7 +1,32 @@
 "use client";
-import { Suspense, useEffect, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { gasGet, gasPost } from "@/lib/gas";
+import JsBarcode from "jsbarcode";
+
+// Code-barres CODE128 du FNUCI rendu en SVG inline. Permet à la scannette
+// de relire le FNUCI directement depuis l étiquette papier (utile si le
+// sticker BicyCode d origine est abîmé / illisible).
+function FnuciBarcode({ fnuci }: { fnuci: string }) {
+  const ref = useRef<SVGSVGElement | null>(null);
+  useEffect(() => {
+    if (!ref.current || !fnuci) return;
+    try {
+      JsBarcode(ref.current, fnuci, {
+        format: "CODE128",
+        width: 1.6,
+        height: 38,
+        displayValue: false,
+        margin: 0,
+        background: "#ffffff",
+        lineColor: "#000000",
+      });
+    } catch {
+      // FNUCI invalide pour CODE128 — on laisse le SVG vide
+    }
+  }, [fnuci]);
+  return <svg ref={ref} style={{ width: "100%", height: "16mm" }} />;
+}
 
 type Velo = { veloId: string; fnuci: string | null; cartonToken?: string | null };
 type Client = { clientId: string; entreprise: string; ville: string; adresse: string; codePostal: string; velos: Velo[] };
@@ -404,6 +429,28 @@ function EtiquettesPage() {
                     {client.adresse}<br />
                     {client.codePostal} {client.ville}
                   </div>
+                  {/* FNUCI en gros + code-barres CODE128.
+                      Yoann 2026-05-03 : permet à la scannette de relire
+                      le FNUCI direct depuis l étiquette papier si le
+                      sticker BicyCode d origine est abîmé. */}
+                  {velo.fnuci && (
+                    <div style={{ marginTop: "4mm", textAlign: "center" }}>
+                      <div
+                        style={{
+                          fontFamily: "ui-monospace, Menlo, Consolas, monospace",
+                          fontWeight: 800,
+                          fontSize: "22px",
+                          letterSpacing: "1px",
+                          color: "#000",
+                        }}
+                      >
+                        {velo.fnuci}
+                      </div>
+                      <div style={{ marginTop: "1.5mm" }}>
+                        <FnuciBarcode fnuci={velo.fnuci} />
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })}
