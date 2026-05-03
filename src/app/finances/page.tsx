@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { gasGet } from "@/lib/gas";
 import { useCurrentUser } from "@/lib/current-user";
 import type { EquipeRole } from "@/lib/data-context";
@@ -229,43 +229,7 @@ export default function FinancesPage() {
       {data?.ok && (
         <>
           {/* === Pointeuse monteurs (compact, click pour détail) === */}
-          {(() => {
-            const monteurs = (data.byMember || [])
-              .filter((m) => m.role === "monteur")
-              .sort((a, b) => b.coutTotal - a.coutTotal);
-            if (monteurs.length === 0) return null;
-            const totalMonteurs = monteurs.reduce((s, m) => s + m.coutTotal, 0);
-            const totalVelosMontes = monteurs.reduce((s, m) => s + (m.velosPrimes || 0), 0);
-            return (
-              <div className="mb-6 bg-white rounded-xl border overflow-hidden">
-                <div className="px-4 py-2.5 border-b bg-emerald-50 flex items-baseline justify-between">
-                  <h2 className="text-sm font-semibold flex items-center gap-2">
-                    🔧 Pointeuse monteurs
-                  </h2>
-                  <span className="text-[11px] text-emerald-700">
-                    {totalVelosMontes} vélos · {monteurs.length} monteur{monteurs.length > 1 ? "s" : ""} · <span className="font-semibold">{fmt(totalMonteurs)}</span>
-                  </span>
-                </div>
-                <table className="w-full text-sm">
-                  <thead className="bg-gray-50 border-b text-[11px] text-gray-600">
-                    <tr>
-                      <th className="text-left px-3 py-1.5 font-medium w-8"></th>
-                      <th className="text-left px-3 py-1.5 font-medium">Monteur</th>
-                      <th className="text-right px-3 py-1.5 font-medium">Jours</th>
-                      <th className="text-right px-3 py-1.5 font-medium">Vélos montés</th>
-                      <th className="text-right px-3 py-1.5 font-medium">€/vélo</th>
-                      <th className="text-right px-3 py-1.5 font-medium">À régler</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y">
-                    {monteurs.map((m) => (
-                      <MonteurPointeuseRow key={m.id} m={m} from={from} to={to} />
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            );
-          })()}
+          <PointeuseMonteurs data={data} from={from} to={to} fmt={fmt} />
 
           {isChefMonteurView ? null : (
           <>
@@ -892,6 +856,152 @@ function PaiementModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+// PointeuseMonteurs — Yoann 2026-05-03
+// Section pointeuse avec toggle "Grouper par équipe (chef)". Les monteurs
+// sont groupés par chefId (depuis equipe.chefId), affiché en sections
+// "Équipe Ricky", "Équipe NORDINE", etc. + Sans équipe pour les isolés.
+function PointeuseMonteurs({
+  data,
+  from,
+  to,
+  fmt,
+}: {
+  data: FinancesResponse;
+  from: string;
+  to: string;
+  fmt: (n: number) => string;
+}) {
+  type EqLite = { id: string; nom: string; chefId: string | null };
+  const [equipeAll, setEquipeAll] = useState<EqLite[]>([]);
+  const [grouper, setGrouper] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, onSnapshot } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const unsub = onSnapshot(collection(db, "equipe"), (snap) => {
+        if (!alive) return;
+        const rows: EqLite[] = [];
+        for (const d of snap.docs) {
+          const data = d.data() as { nom?: string; chefId?: string };
+          rows.push({
+            id: d.id,
+            nom: String(data.nom || ""),
+            chefId: typeof data.chefId === "string" && data.chefId ? data.chefId : null,
+          });
+        }
+        setEquipeAll(rows);
+      });
+      return () => unsub();
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const monteurs = (data.byMember || [])
+    .filter((m) => m.role === "monteur")
+    .sort((a, b) => b.coutTotal - a.coutTotal);
+  if (monteurs.length === 0) return null;
+  const totalMonteurs = monteurs.reduce((s, m) => s + m.coutTotal, 0);
+  const totalVelosMontes = monteurs.reduce((s, m) => s + (m.velosPrimes || 0), 0);
+
+  // Mapping monteurId → chef (id + nom)
+  const eqById = new Map(equipeAll.map((e) => [e.id, e]));
+  const chefByMonteur = (mid: string): { id: string; nom: string } | null => {
+    const eq = eqById.get(mid);
+    if (!eq?.chefId) return null;
+    const chef = eqById.get(eq.chefId);
+    return chef ? { id: chef.id, nom: chef.nom } : null;
+  };
+
+  // Grouping
+  type Group = { key: string; label: string; rows: MemberRow[] };
+  let groups: Group[];
+  if (grouper) {
+    const map = new Map<string, Group>();
+    for (const m of monteurs) {
+      const chef = chefByMonteur(m.id);
+      const key = chef?.id || "_aucun";
+      const label = chef ? `Équipe ${chef.nom}` : "Sans équipe";
+      if (!map.has(key)) map.set(key, { key, label, rows: [] });
+      map.get(key)!.rows.push(m);
+    }
+    // Ordre : groupes avec le plus gros total d abord, "Sans équipe" en dernier
+    groups = Array.from(map.values()).sort((a, b) => {
+      if (a.key === "_aucun") return 1;
+      if (b.key === "_aucun") return -1;
+      const ta = a.rows.reduce((s, r) => s + r.coutTotal, 0);
+      const tb = b.rows.reduce((s, r) => s + r.coutTotal, 0);
+      return tb - ta;
+    });
+  } else {
+    groups = [{ key: "all", label: "", rows: monteurs }];
+  }
+
+  return (
+    <div className="mb-6 bg-white rounded-xl border overflow-hidden">
+      <div className="px-4 py-2.5 border-b bg-emerald-50 flex items-baseline justify-between gap-2 flex-wrap">
+        <h2 className="text-sm font-semibold flex items-center gap-2">🔧 Pointeuse monteurs</h2>
+        <div className="flex items-center gap-3">
+          <label className="flex items-center gap-1 text-[11px] text-emerald-900 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={grouper}
+              onChange={(e) => setGrouper(e.target.checked)}
+              className="w-3 h-3"
+            />
+            Grouper par équipe
+          </label>
+          <span className="text-[11px] text-emerald-700">
+            {totalVelosMontes} vélos · {monteurs.length} monteur{monteurs.length > 1 ? "s" : ""} ·{" "}
+            <span className="font-semibold">{fmt(totalMonteurs)}</span>
+          </span>
+        </div>
+      </div>
+      <table className="w-full text-sm">
+        <thead className="bg-gray-50 border-b text-[11px] text-gray-600">
+          <tr>
+            <th className="text-left px-3 py-1.5 font-medium w-8"></th>
+            <th className="text-left px-3 py-1.5 font-medium">Monteur</th>
+            <th className="text-right px-3 py-1.5 font-medium">Jours</th>
+            <th className="text-right px-3 py-1.5 font-medium">Vélos montés</th>
+            <th className="text-right px-3 py-1.5 font-medium">€/vélo</th>
+            <th className="text-right px-3 py-1.5 font-medium">À régler</th>
+          </tr>
+        </thead>
+        <tbody className="divide-y">
+          {groups.map((g) => {
+            const total = g.rows.reduce((s, r) => s + r.coutTotal, 0);
+            const totalV = g.rows.reduce((s, r) => s + (r.velosPrimes || 0), 0);
+            return (
+              <React.Fragment key={g.key}>
+                {grouper && (
+                  <tr className="bg-emerald-50/50 border-y border-emerald-100">
+                    <td colSpan={2} className="px-3 py-1.5 text-[11px] font-semibold text-emerald-900 uppercase tracking-wide">
+                      👷 {g.label} <span className="opacity-60 normal-case font-normal">· {g.rows.length} monteur{g.rows.length > 1 ? "s" : ""}</span>
+                    </td>
+                    <td colSpan={2} className="text-right px-3 py-1.5 text-[11px] text-emerald-800">
+                      {totalV} vélos
+                    </td>
+                    <td colSpan={2} className="text-right px-3 py-1.5 text-[11px] font-semibold text-emerald-900">
+                      {fmt(total)}
+                    </td>
+                  </tr>
+                )}
+                {g.rows.map((m) => (
+                  <MonteurPointeuseRow key={m.id} m={m} from={from} to={to} />
+                ))}
+              </React.Fragment>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
