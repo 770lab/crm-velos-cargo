@@ -198,6 +198,10 @@ interface EquipeMember {
    *  monteur sur une tournée en plus de son rôle de chef. Salaire compté
    *  une seule fois (sur le rôle principal chef). */
   aussiMonteur?: boolean;
+  /** Yoann 2026-05-03 : distingue chef monteur (Ricky/Nordine, restrictions
+   *  lecture seule + équipe monteurs) vs chef admin terrain (Julia/Ethan,
+   *  permissions admin). Uniquement pertinent pour role=chef. */
+  chefDeMonteurs?: boolean;
   /** Taux horaire en EUR/h (Yoann 2026-05-01). Si défini, prioritaire
    *  sur salaireJournalier pour le calcul de salaire. Surtout utilisé
    *  pour Naomi (préparation) : heures = max(datePreparation) -

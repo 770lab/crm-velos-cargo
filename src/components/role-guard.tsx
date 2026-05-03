@@ -39,9 +39,13 @@ const FALLBACK: Record<EquipeRole, string> = {
   apporteur: "/",
 };
 
-function isAllowed(role: EquipeRole, path: string): boolean {
+function isAllowed(role: EquipeRole, path: string, chefDeMonteurs?: boolean): boolean {
+  // Yoann 2026-05-03 : chef admin terrain (chefDeMonteurs !== true) =
+  // wildcard comme admin. Seul le chef monteur (Ricky/Nordine) garde
+  // les routes restreintes.
+  if (role === "chef" && chefDeMonteurs !== true) return true;
   const list = ALLOWED[role];
-  if (list[0] === "/") return true; // wildcard pour admin/superadmin
+  if (list[0] === "/") return true;
   return list.some((p) => path === p || path.startsWith(p + "/") || path.startsWith(p + "?"));
 }
 
@@ -52,7 +56,7 @@ export function RoleGuard({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     if (!user) return;
-    if (!isAllowed(user.role, pathname)) {
+    if (!isAllowed(user.role, pathname, user.chefDeMonteurs)) {
       router.replace(FALLBACK[user.role]);
     }
   }, [user, pathname, router]);

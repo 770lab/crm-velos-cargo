@@ -45,15 +45,22 @@ export default function EquipePage() {
   const [inactifs, setInactifs] = useState<EquipeMember[]>([]);
   const [loadingInactifs, setLoadingInactifs] = useState(false);
 
-  const isChefTerrain = currentUser?.role === "chef";
+  // Yoann 2026-05-03 : chef admin terrain (chefDeMonteurs !== true) → vue
+  // admin complète. Seul chef monteur (Ricky/Nordine) garde la vue
+  // restreinte (sa fiche + ses monteurs).
+  const isChefAdminTerrain =
+    currentUser?.role === "chef" && currentUser?.chefDeMonteurs !== true;
+  const isChefTerrain = currentUser?.role === "chef" && currentUser?.chefDeMonteurs === true;
+  const fullAccess = isAdmin || isChefAdminTerrain;
   const byRole = useMemo(() => {
     const groups: Record<EquipeRole, EquipeMember[]> = { superadmin: [], admin: [], chauffeur: [], chef: [], monteur: [], preparateur: [], apporteur: [] };
     for (const m of equipe) {
       if (m.actif === false) continue;
-      if (!isAdmin) {
-        // Yoann 2026-05-03 : chef d équipe (Ricky/ETHAN/...) voit
-        // sa propre fiche + tous ses monteurs (chefId = his id).
-        // Les autres rôles non-admin voient seulement leur fiche.
+      if (!fullAccess) {
+        // Yoann 2026-05-03 : chef monteur (Ricky/Nordine, chefDeMonteurs)
+        // voit sa propre fiche + ses monteurs. Chef admin terrain voit
+        // tout (cf fullAccess). Autres rôles non-admin = seulement
+        // leur fiche.
         if (isChefTerrain) {
           const isSelf = m.id === currentUser?.id;
           const isMyMonteur = m.role === "monteur" && m.chefId === currentUser?.id;
@@ -289,6 +296,9 @@ function MembreModal({
   const [chefId, setChefId] = useState(member?.chefId || "");
   // Toggle polyvalence chef → monteur (Yoann 2026-05-01).
   const [aussiMonteur, setAussiMonteur] = useState(member?.aussiMonteur === true);
+  // Yoann 2026-05-03 : chef monteur (Ricky/Nordine, gère équipe monteurs,
+  // restrictions) vs chef admin terrain (Julia/Ethan, permissions admin).
+  const [chefDeMonteurs, setChefDeMonteurs] = useState(member?.chefDeMonteurs === true);
   // Taux horaire (Yoann 2026-05-01) : surtout pour les préparateurs
   // (Naomi), paie à l heure (premiere/derniere prepa du jour).
   const [tauxHoraire, setTauxHoraire] = useState(
@@ -342,6 +352,7 @@ function MembreModal({
         chefId: role === "monteur" ? (chefId || null) : null,
         // aussiMonteur pertinent uniquement pour les chefs.
         aussiMonteur: role === "chef" ? aussiMonteur : false,
+        chefDeMonteurs: role === "chef" ? chefDeMonteurs : false,
         // tauxHoraire : tous rôles (mais surtout préparateur).
         tauxHoraire: tauxHoraire.trim() ? Number(tauxHoraire.replace(",", ".")) : null,
       };
@@ -561,22 +572,41 @@ function MembreModal({
               </div>
             )}
             {role === "chef" && (
-              <label className="flex items-start gap-2 text-sm cursor-pointer pt-1">
-                <input
-                  type="checkbox"
-                  checked={aussiMonteur}
-                  onChange={(e) => setAussiMonteur(e.target.checked)}
-                  className="mt-0.5"
-                />
-                <span>
-                  <strong>🔧 Aussi monteur</strong> — chef polyvalent qui peut monter sur place
-                  <div className="text-[10px] text-gray-500 mt-0.5">
-                    Coché : ce chef apparaît aussi dans la liste des monteurs
-                    sélectionnables sur une tournée. Salaire compté une seule
-                    fois (sur le rôle principal chef).
-                  </div>
-                </span>
-              </label>
+              <>
+                <label className="flex items-start gap-2 text-sm cursor-pointer pt-1">
+                  <input
+                    type="checkbox"
+                    checked={aussiMonteur}
+                    onChange={(e) => setAussiMonteur(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <strong>🔧 Aussi monteur</strong> — chef polyvalent qui peut monter sur place
+                    <div className="text-[10px] text-gray-500 mt-0.5">
+                      Coché : ce chef apparaît aussi dans la liste des monteurs
+                      sélectionnables sur une tournée. Salaire compté une seule
+                      fois (sur le rôle principal chef).
+                    </div>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 text-sm cursor-pointer pt-1">
+                  <input
+                    type="checkbox"
+                    checked={chefDeMonteurs}
+                    onChange={(e) => setChefDeMonteurs(e.target.checked)}
+                    className="mt-0.5"
+                  />
+                  <span>
+                    <strong>👷 Chef d&apos;équipe MONTEURS</strong> (Ricky / Nordine)
+                    <div className="text-[10px] text-gray-500 mt-0.5">
+                      Coché : ce chef gère une équipe de monteurs. Vue restreinte
+                      (lecture seule sur le planning + son équipe + sa pointeuse).
+                      Décoché : chef admin terrain (Julia / Ethan), permissions
+                      admin complètes.
+                    </div>
+                  </span>
+                </label>
+              </>
             )}
             {role === "monteur" && (
               <div>

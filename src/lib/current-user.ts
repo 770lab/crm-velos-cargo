@@ -12,6 +12,10 @@ export type CurrentUser = {
    *  voit TOUTES les livraisons où des monteurs sont affectés (pas seulement
    *  les siennes). Utilisé pour ricky qui pilote les autres monteurs. */
   estChefMonteur?: boolean;
+  /** Yoann 2026-05-03 : distinction chef monteur (Ricky/Nordine, gèrent une
+   *  équipe de monteurs, lecture seule sur le reste) vs chef admin terrain
+   *  (Julia/Ethan, permissions admin). chefDeMonteurs=true → restrictions. */
+  chefDeMonteurs?: boolean;
 };
 
 export function getCurrentUser(): CurrentUser | null {

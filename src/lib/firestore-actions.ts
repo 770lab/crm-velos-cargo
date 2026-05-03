@@ -2247,6 +2247,10 @@ export async function runFirestoreAction(
         chefId: body.role === "monteur" ? (body.chefId || null) : null,
         // aussiMonteur : pour les chefs polyvalents (Yoann 2026-05-01).
         aussiMonteur: body.role === "chef" ? (body.aussiMonteur === true) : false,
+        // chefDeMonteurs : Yoann 2026-05-03. Distingue chef monteur (gère
+        // une équipe de monteurs, restrictions) vs chef admin terrain
+        // (permissions admin). Uniquement pour role=chef.
+        chefDeMonteurs: body.role === "chef" ? (body.chefDeMonteurs === true) : false,
         // tauxHoraire : Yoann 2026-05-01. Surtout utilisé pour Naomi
         // (paie a l heure depuis premiere/derniere préparation du jour).
         tauxHoraire: body.tauxHoraire != null ? Number(body.tauxHoraire) : null,

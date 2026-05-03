@@ -772,6 +772,7 @@ export default function LivraisonsPage() {
           sessionsByDate={sessionsByDate}
           onOpen={setOpenTournee}
           onBatchAxdis={(d, ts) => setBatchAxdis({ date: d, tournees: ts })}
+          canBatchAxdis={currentUser?.role !== "chef" && currentUser?.role !== "apporteur"}
         />
       )}
       {view === "3jours" && (
@@ -782,6 +783,7 @@ export default function LivraisonsPage() {
           onOpen={setOpenTournee}
           nbDays={3}
           onBatchAxdis={(d, ts) => setBatchAxdis({ date: d, tournees: ts })}
+          canBatchAxdis={currentUser?.role !== "chef" && currentUser?.role !== "apporteur"}
         />
       )}
       {view === "semaine" && (
@@ -791,6 +793,7 @@ export default function LivraisonsPage() {
           sessionsByDate={sessionsByDate}
           onOpen={setOpenTournee}
           onBatchAxdis={(d, ts) => setBatchAxdis({ date: d, tournees: ts })}
+          canBatchAxdis={currentUser?.role !== "chef" && currentUser?.role !== "apporteur"}
         />
       )}
       {view === "mois" && (
@@ -1017,12 +1020,14 @@ function DayView({
   sessionsByDate,
   onOpen,
   onBatchAxdis,
+  canBatchAxdis = true,
 }: {
   refDate: Date;
   tourneesByDate: Map<string, Tournee[]>;
   sessionsByDate?: SessionsByDate;
   onOpen: (t: Tournee) => void;
   onBatchAxdis: (date: Date, tournees: Tournee[]) => void;
+  canBatchAxdis?: boolean;
 }) {
   const iso = isoDate(refDate);
   const list = tourneesByDate.get(iso) || [];
@@ -1052,7 +1057,7 @@ function DayView({
             ) : null;
           })()}
         </div>
-        {list.length > 0 && (() => {
+        {canBatchAxdis && list.length > 0 && (() => {
           const allSent = list.every((t) => !!t.bonCommandeEnvoyeAt);
           return (
             <button
@@ -1102,6 +1107,7 @@ function MultiDayView({
   onOpen,
   nbDays,
   onBatchAxdis,
+  canBatchAxdis = true,
 }: {
   refDate: Date;
   tourneesByDate: Map<string, Tournee[]>;
@@ -1109,6 +1115,7 @@ function MultiDayView({
   onOpen: (t: Tournee) => void;
   nbDays: number;
   onBatchAxdis: (date: Date, tournees: Tournee[]) => void;
+  canBatchAxdis?: boolean;
 }) {
   const days = Array.from({ length: nbDays }, (_, i) => {
     const d = new Date(refDate);
@@ -1148,6 +1155,7 @@ function MultiDayView({
                         🚲 {nbVelos} vélo{nbVelos > 1 ? "s" : ""}
                       </div>
                     )}
+                    {canBatchAxdis && (
                     <button
                       onClick={() => onBatchAxdis(new Date(d), list)}
                       className={`mt-1 w-full px-1.5 py-0.5 text-[10px] text-white rounded ${
@@ -1157,6 +1165,7 @@ function MultiDayView({
                     >
                       {allSent ? "✅" : "📧"} {list.length} AXDIS
                     </button>
+                    )}
                   </>
                 );
               })()}
@@ -1191,12 +1200,14 @@ function WeekView({
   sessionsByDate,
   onOpen,
   onBatchAxdis,
+  canBatchAxdis = true,
 }: {
   refDate: Date;
   tourneesByDate: Map<string, Tournee[]>;
   sessionsByDate?: SessionsByDate;
   onOpen: (t: Tournee) => void;
   onBatchAxdis: (date: Date, tournees: Tournee[]) => void;
+  canBatchAxdis?: boolean;
 }) {
   const start = startOfWeek(refDate);
   const days = Array.from({ length: 7 }, (_, i) => {
@@ -1236,6 +1247,7 @@ function WeekView({
                         🚲 {nbVelos} vélo{nbVelos > 1 ? "s" : ""}
                       </div>
                     )}
+                    {canBatchAxdis && (
                     <button
                       onClick={() => onBatchAxdis(new Date(d), list)}
                       className={`mt-1 w-full px-1.5 py-0.5 text-[10px] text-white rounded ${
@@ -1245,6 +1257,7 @@ function WeekView({
                     >
                       {allSent ? "✅" : "📧"} {list.length} AXDIS
                     </button>
+                    )}
                   </>
                 );
               })()}
@@ -2008,20 +2021,20 @@ function TourneeModal({
     const role = currentUser?.role;
     const isApporteurLocal = role === "apporteur";
     const isChefMonteurLocal = role === "monteur" && currentUser?.estChefMonteur === true;
-    // Yoann 2026-05-03 : "chef" terrain (Ricky/ETHAN/etc.) ne fait plus
-    // partie de isFullAdmin. Seuls admin/superadmin gardent les boutons
-    // d édition globale (annuler livraison, reporter, marquer chargé,
-    // validation client, BL Franck...). Le chef garde uniquement le
-    // droit de modifier l équipe (canEditEquipe) sur ses tournées.
+    // Yoann 2026-05-03 : distinction chef monteur (Ricky/Nordine,
+    // chefDeMonteurs=true → restrictions) vs chef admin terrain (Julia/
+    // Ethan, chefDeMonteurs=false ou null → permissions admin terrain).
     const isFullAdmin = role === "admin" || role === "superadmin";
-    const isChefTerrain = role === "chef";
-    // Apporteur ET chef terrain en lecture seule (sauf équipe pour le chef).
-    const canSeeAdminBlocs = !isApporteurLocal && !isChefTerrain && (isFullAdmin || role === "preparateur");
-    const canSeeBonAxdis = !isApporteurLocal && !isChefTerrain && (canSeeAdminBlocs || role === "chauffeur");
-    const canEditEquipe = !isApporteurLocal && (isFullAdmin || isChefMonteurLocal || isChefTerrain);
+    const isChefMonteurEquipe = role === "chef" && currentUser?.chefDeMonteurs === true;
+    const isChefAdminTerrain = role === "chef" && currentUser?.chefDeMonteurs !== true;
+    // Chef monteur restreint : aucun bouton admin, juste son équipe.
+    // Chef admin terrain : presque comme un admin (boutons admin OK).
+    const canSeeAdminBlocs = !isApporteurLocal && !isChefMonteurEquipe && (isFullAdmin || isChefAdminTerrain || role === "preparateur");
+    const canSeeBonAxdis = !isApporteurLocal && !isChefMonteurEquipe && (canSeeAdminBlocs || role === "chauffeur");
+    const canEditEquipe = !isApporteurLocal && (isFullAdmin || isChefMonteurLocal || role === "chef");
     const canSeeEquipeRecap = !isApporteurLocal && (canEditEquipe || role === "chauffeur" || role === "preparateur");
-    return { canSeeAdminBlocs, canSeeBonAxdis, canEditEquipe, canSeeEquipeRecap, isApporteurLocal, isChefTerrain };
-  }, [currentUser?.role, currentUser?.estChefMonteur]);
+    return { canSeeAdminBlocs, canSeeBonAxdis, canEditEquipe, canSeeEquipeRecap, isApporteurLocal, isChefTerrain: isChefMonteurEquipe };
+  }, [currentUser?.role, currentUser?.estChefMonteur, currentUser?.chefDeMonteurs]);
   const [showRappel, setShowRappel] = useState(false);
   const [showBrief, setShowBrief] = useState(false);
   const clientInfo = useMemo(() => {
@@ -3414,7 +3427,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                   )}
                   {/* Validation préalable client (téléphone / mail). Sans ça,
                       on n'envoie pas l'équipe — bandeau rouge si non validé. */}
-                  {l.statut !== "annulee" && (() => {
+                  {l.statut !== "annulee" && perms.canSeeAdminBlocs && (() => {
                     const v = l.validationClient;
                     if (v?.status === "validee_orale" || v?.status === "validee_mail") {
                       const dt = v.at ? new Date(v.at).toLocaleDateString("fr-FR") : "";
@@ -3462,7 +3475,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                       - 📁 Dossier complet : bureau a vérifié les docs CEE
                       - 💰 À déposer / 📥 Déposé : dossier remis pour
                         remboursement CEE (= prise de paiement) */}
-                  {l.statut !== "annulee" && (
+                  {l.statut !== "annulee" && perms.canSeeAdminBlocs && (
                     <div className="mt-1 flex flex-wrap gap-1.5">
                       <button
                         onClick={(e) => { e.stopPropagation(); toggleDossierConfirme(l.id, l.dossierConfirmeAt); }}
@@ -4574,12 +4587,15 @@ function EquipeAssignBlock({
 
       {!isRetrait && (
         <div className="mb-3">
-          <label className="block text-xs text-gray-500 mb-1">🚚 Chauffeur</label>
+          <label className="block text-xs text-gray-500 mb-1">
+            🚚 Chauffeur
+            {currentUser?.role === "chef" && <span className="ml-1 text-[10px] text-gray-400">(lecture seule)</span>}
+          </label>
           <select
             value={chauffeurId}
             onChange={(e) => setChauffeurId(e.target.value)}
-            className="w-full px-3 py-2 border rounded-lg text-sm bg-white"
-            disabled={!hasEquipe}
+            className="w-full px-3 py-2 border rounded-lg text-sm bg-white disabled:bg-gray-50 disabled:text-gray-500"
+            disabled={!hasEquipe || currentUser?.role === "chef"}
           >
             <option value="">— non affecté —</option>
             <option value="__client__">🚚 Chauffeur du client (camion client)</option>
@@ -4598,9 +4614,13 @@ function EquipeAssignBlock({
         </div>
       )}
 
+      {/* Yoann 2026-05-03 : chef d équipe (Ricky/Nordine) ne peut PAS
+          modifier les chefs / préparateurs / chauffeur, seulement ses
+          monteurs. Les pills sont visibles mais grisées + non cliquables. */}
       <div className="mb-3">
         <label className="block text-xs text-gray-500 mb-1">
           👷 Chef{chefEquipeIds.length > 1 ? "s" : ""} d&apos;équipe <span className="text-gray-400">({chefEquipeIds.length} sélectionné{chefEquipeIds.length > 1 ? "s" : ""})</span>
+          {currentUser?.role === "chef" && <span className="ml-1 text-[10px] text-gray-400">(lecture seule)</span>}
         </label>
         {chefs.length === 0 ? (
           <div className="text-xs text-gray-400 italic">Aucun chef enregistré</div>
@@ -4608,15 +4628,19 @@ function EquipeAssignBlock({
           <div className="flex flex-wrap gap-1.5">
             {chefs.map((m) => {
               const on = chefEquipeIds.includes(m.id);
+              const lock = currentUser?.role === "chef";
               return (
                 <button
                   key={m.id}
                   type="button"
-                  onClick={() => toggleChef(m.id)}
+                  onClick={() => { if (!lock) toggleChef(m.id); }}
+                  disabled={lock}
                   className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
-                    on
-                      ? "bg-blue-600 text-white border-blue-600"
-                      : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                    lock && !on
+                      ? "bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed"
+                      : on
+                        ? "bg-blue-600 text-white border-blue-600"
+                        : "border-gray-300 text-gray-700 hover:bg-gray-50"
                   }`}
                 >
                   {on ? "✓ " : ""}
@@ -4631,6 +4655,7 @@ function EquipeAssignBlock({
       <div className="mb-3">
         <label className="block text-xs text-gray-500 mb-1">
           📦 Préparateurs <span className="text-gray-400">({preparateurIds.length} sélectionné{preparateurIds.length > 1 ? "s" : ""})</span>
+          {currentUser?.role === "chef" && <span className="ml-1 text-[10px] text-gray-400">(lecture seule)</span>}
         </label>
         {preparateurs.length === 0 ? (
           <div className="text-xs text-gray-400 italic">Aucun préparateur enregistré</div>
@@ -4638,15 +4663,19 @@ function EquipeAssignBlock({
           <div className="flex flex-wrap gap-1.5">
             {preparateurs.map((m) => {
               const on = preparateurIds.includes(m.id);
+              const lock = currentUser?.role === "chef";
               return (
                 <button
                   key={m.id}
                   type="button"
-                  onClick={() => togglePreparateur(m.id)}
+                  onClick={() => { if (!lock) togglePreparateur(m.id); }}
+                  disabled={lock}
                   className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
-                    on
-                      ? "bg-orange-600 text-white border-orange-600"
-                      : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                    lock && !on
+                      ? "bg-gray-50 border-gray-200 text-gray-400 cursor-not-allowed"
+                      : on
+                        ? "bg-orange-600 text-white border-orange-600"
+                        : "border-gray-300 text-gray-700 hover:bg-gray-50"
                   }`}
                 >
                   {on ? "✓ " : ""}

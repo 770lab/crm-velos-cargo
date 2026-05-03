@@ -108,14 +108,21 @@ export default function FinancesPage() {
   // restreinte aux règlements de SES monteurs (pas la masse salariale globale,
   // pas les chauffeurs/préparateurs/apporteurs). Les admins standards et les
   // autres rôles n'ont pas accès du tout.
-  // Yoann 2026-05-03 : chef d équipe (Ricky/ETHAN/...) voit la même vue
-  // restreinte que les chef-monteurs : pointeuse de SES monteurs +
-  // grand livre paiements (pas la masse salariale globale, pas les
-  // chauffeurs/préparateurs/apporteurs, pas les charges opé).
+  // Yoann 2026-05-03 :
+  // - chef monteur (chefDeMonteurs===true, Ricky/Nordine) → vue restreinte
+  //   (pointeuse de SES monteurs + grand livre paiements)
+  // - chef admin terrain (chefDeMonteurs!==true, Julia/Ethan) → vue admin
+  //   complète (comme superadmin)
+  const isChefAdminTerrain = user?.role === "chef" && user?.chefDeMonteurs !== true;
   const isChefMonteurView =
     (user?.role === "monteur" && user?.estChefMonteur === true) ||
-    user?.role === "chef";
-  if (user && user.role !== "superadmin" && !isChefMonteurView) {
+    (user?.role === "chef" && user?.chefDeMonteurs === true);
+  if (
+    user &&
+    user.role !== "superadmin" &&
+    !isChefAdminTerrain &&
+    !isChefMonteurView
+  ) {
     return (
       <div className="max-w-2xl mx-auto bg-amber-50 border border-amber-200 rounded-xl p-6 text-amber-800">
         Cette page est réservée au super-admin (accès aux salaires/primes).
@@ -224,7 +231,7 @@ export default function FinancesPage() {
           pour avoir un "coût / vélo all-in" qui inclut salaires + primes +
           commissions apporteurs (demande Yoann 2026-05-01). Si data n'est
           pas encore chargé, on passe 0 et la carte all-in est masquée. */}
-      {(user?.role === "superadmin" || user?.role === "admin") && (
+      {(user?.role === "superadmin" || user?.role === "admin" || isChefAdminTerrain) && (
         <ChargesOperationnellesSection
           from={from}
           to={to}
@@ -235,7 +242,13 @@ export default function FinancesPage() {
       {data?.ok && (
         <>
           {/* === Pointeuse monteurs (compact, click pour détail) === */}
-          <PointeuseMonteurs data={data} from={from} to={to} fmt={fmt} filterChefId={user?.role === "chef" ? user.id : null} />
+          <PointeuseMonteurs
+            data={data}
+            from={from}
+            to={to}
+            fmt={fmt}
+            filterChefId={user?.role === "chef" && user?.chefDeMonteurs === true ? user.id : null}
+          />
 
           {isChefMonteurView ? null : (
           <>
