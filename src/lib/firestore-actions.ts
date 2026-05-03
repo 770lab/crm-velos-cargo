@@ -6498,6 +6498,24 @@ export async function runFirestoreGet(
       if (!snap.exists()) return { error: "Client introuvable" };
       const c = snap.data() as Record<string, unknown>;
 
+      // Yoann 2026-05-03 : RBAC apporteur — Firestore exige que la query
+      // include where("apporteurLower","==", X) pour valider la rule
+      // (isApporteur() && resource.data.apporteurLower == apporteurNameLower()).
+      // Sans ce where, getDocs sur livraisons/velos plante "permission-
+      // denied" pour un apporteur (fiche client bloquée sur "Chargement…").
+      // On lit le rôle depuis equipe via auth.currentUser.uid.
+      let apporteurLowerForQuery: string | null = null;
+      const uid = auth.currentUser?.uid;
+      if (uid) {
+        const eqDoc = await getDoc(doc(db, "equipe", uid));
+        if (eqDoc.exists()) {
+          const eq = eqDoc.data() as { role?: string; nom?: string };
+          if (eq.role === "apporteur") {
+            apporteurLowerForQuery = (eq.nom || "").trim().toLowerCase() || null;
+          }
+        }
+      }
+
       const isoOrNull = (x: unknown): string | null => {
         if (!x) return null;
         if (x instanceof Date) return x.toISOString();
@@ -6549,7 +6567,13 @@ export async function runFirestoreGet(
       // livraison (et son urlBlSigne). Multi-tournées : on rattache via
       // tourneeIdScan ; mono-tournée : fallback sur la seule livraison.
       const livSnap = await getDocs(
-        query(collection(db, "livraisons"), where("clientId", "==", id)),
+        apporteurLowerForQuery
+          ? query(
+              collection(db, "livraisons"),
+              where("clientId", "==", id),
+              where("apporteurLower", "==", apporteurLowerForQuery),
+            )
+          : query(collection(db, "livraisons"), where("clientId", "==", id)),
       );
       type Liv = {
         id: string;
@@ -6575,7 +6599,13 @@ export async function runFirestoreGet(
       const livKeys = Object.keys(livraisonsByTournee);
 
       const vSnap = await getDocs(
-        query(collection(db, "velos"), where("clientId", "==", id)),
+        apporteurLowerForQuery
+          ? query(
+              collection(db, "velos"),
+              where("clientId", "==", id),
+              where("apporteurLower", "==", apporteurLowerForQuery),
+            )
+          : query(collection(db, "velos"), where("clientId", "==", id)),
       );
       const velos = vSnap.docs
         .filter((d) => !(d.data() as { annule?: boolean }).annule)
