@@ -411,94 +411,83 @@ export async function runFirestoreAction(
           console.error("[updateClient] geocode KO", e);
         }
       }
-      // Yoann 2026-05-03 : propagation du changement nbVelosCommandes vers
-      // les livraisons planifiées non livrées non annulées. Lecture de
-      // l'ancienne valeur AVANT updateDoc pour calculer le delta.
-      let newNbVelosCmd: number | null = null;
-      let oldNbVelosCmd: number | null = null;
-      if ("nbVelosCommandes" in data) {
-        newNbVelosCmd = Math.max(0, Number(data.nbVelosCommandes) || 0);
-        try {
-          const cur = await getDoc(doc(db, "clients", id));
-          if (cur.exists()) {
-            oldNbVelosCmd = Number((cur.data() as { nbVelosCommandes?: number }).nbVelosCommandes || 0);
-          }
-        } catch (e) {
-          console.error("[updateClient] lecture nbVelosCommandes KO", e);
-        }
-      }
+      // Yoann 2026-05-03 : avant updateDoc on capture si nbVelosCommandes
+      // change pour déclencher la réconciliation des livraisons.
+      const willChangeNbVelos = "nbVelosCommandes" in data;
       await updateDoc(doc(db, "clients", id), updates);
 
-      // Propagation : si le total commandé a bougé, ajuster la livraison
-      // ajustable la plus tardive (non annulée, non livrée). Si la baisse
-      // dépasse ce qu'on peut retirer (vélos déjà préparés/chargés/montés/
-      // livrés sur cette livraison), descend sur la livraison précédente.
-      // La hausse va sur la livraison la plus tardive (plus de marge avant
-      // qu'elle ne soit chargée).
+      // Réconciliation forcée des livraisons : on calcule la valeur cible
+      // (nbVelosCommandes - velosLivres) et on aligne la somme nbVelos des
+      // livraisons non annulées non livrées. Approche "force align" plus
+      // robuste qu'un calcul de delta — fonctionne même si oldNb avait été
+      // déjà écrit lors d'une tentative précédente.
       let livAdjustments: Array<{ livraisonId: string; oldNb: number; newNb: number }> = [];
       let livAdjustWarning: string | null = null;
-      if (
-        newNbVelosCmd !== null &&
-        oldNbVelosCmd !== null &&
-        newNbVelosCmd !== oldNbVelosCmd
-      ) {
+      if (willChangeNbVelos) {
         try {
-          const livSnap = await getDocs(query(
-            collection(db, "livraisons"),
-            where("clientId", "==", id),
-          ));
-          type LivShape = {
-            nbVelos?: number;
-            statut?: string;
-            statutGlobal?: string;
-            annule?: boolean;
-            datePrevue?: { toDate?: () => Date } | string | null;
-            counts?: { prepares?: number; charges?: number; livres?: number; montes?: number };
-          };
-          const tsOf = (x: LivShape["datePrevue"]): number => {
-            if (!x) return 0;
-            if (typeof x === "string") return new Date(x).getTime() || 0;
-            const t = x as { toDate?: () => Date };
-            return t?.toDate?.()?.getTime() || 0;
-          };
-          const adjustables = livSnap.docs
-            .map((d) => ({ id: d.id, data: d.data() as LivShape }))
-            .filter((l) => {
-              const st = l.data.statut || l.data.statutGlobal;
-              return l.data.annule !== true && st !== "annulee" && st !== "livree";
-            })
-            .sort((a, b) => tsOf(b.data.datePrevue) - tsOf(a.data.datePrevue));
+          // Lecture du client APRÈS update pour avoir la valeur cible à jour.
+          const cSnap = await getDoc(doc(db, "clients", id));
+          if (cSnap.exists()) {
+            const cd = cSnap.data() as { nbVelosCommandes?: number; stats?: { livres?: number } };
+            const nbCmd = Math.max(0, Number(cd.nbVelosCommandes || 0));
+            const livres = Math.max(0, Number(cd.stats?.livres || 0));
+            const expected = Math.max(0, nbCmd - livres);
 
-          let delta = newNbVelosCmd - oldNbVelosCmd;
-          for (const liv of adjustables) {
-            if (delta === 0) break;
-            const cur = Number(liv.data.nbVelos || 0);
-            const c = liv.data.counts || {};
-            const minRequired = Math.max(
-              Number(c.prepares || 0),
-              Number(c.charges || 0),
-              Number(c.livres || 0),
-              Number(c.montes || 0),
-            );
-            let target = cur + delta;
-            target = Math.max(minRequired, target);
-            if (target === cur) continue;
-            const applied = target - cur; // peut être négatif
-            await updateDoc(doc(db, "livraisons", liv.id), {
-              nbVelos: target,
-              updatedAt: ts(),
-            });
-            livAdjustments.push({ livraisonId: liv.id, oldNb: cur, newNb: target });
-            delta -= applied;
-          }
-          if (delta !== 0) {
-            // delta résiduel : pas pu tout absorber (vélos déjà préparés ou
-            // pas assez de livraisons ajustables). Le client est mis à jour
-            // mais somme livraisons ≠ nbVelosCommandes — à savoir.
-            livAdjustWarning =
-              delta > 0
-                ? `${delta} vélo(s) en plus non assigné(s) — crée/édite une livraison pour les caler.`
-                : `${Math.abs(delta)} vélo(s) en moins non absorbé(s) — vélos déjà préparés/chargés sur les livraisons en cours.`;
+            const livSnap = await getDocs(query(
+              collection(db, "livraisons"),
+              where("clientId", "==", id),
+            ));
+            type LivShape = {
+              nbVelos?: number;
+              statut?: string;
+              statutGlobal?: string;
+              annule?: boolean;
+              datePrevue?: { toDate?: () => Date } | string | null;
+              counts?: { prepares?: number; charges?: number; livres?: number; montes?: number };
+            };
+            const tsOf = (x: LivShape["datePrevue"]): number => {
+              if (!x) return 0;
+              if (typeof x === "string") return new Date(x).getTime() || 0;
+              const t = x as { toDate?: () => Date };
+              return t?.toDate?.()?.getTime() || 0;
+            };
+            const adjustables = livSnap.docs
+              .map((d) => ({ id: d.id, data: d.data() as LivShape }))
+              .filter((l) => {
+                const st = l.data.statut || l.data.statutGlobal;
+                return l.data.annule !== true && st !== "annulee" && st !== "livree";
+              })
+              .sort((a, b) => tsOf(b.data.datePrevue) - tsOf(a.data.datePrevue));
+            const sumLiv = adjustables.reduce((s, l) => s + Number(l.data.nbVelos || 0), 0);
+            let delta = expected - sumLiv; // > 0 = il manque, < 0 = trop
+
+            for (const liv of adjustables) {
+              if (delta === 0) break;
+              const cur = Number(liv.data.nbVelos || 0);
+              const c = liv.data.counts || {};
+              const minRequired = Math.max(
+                Number(c.prepares || 0),
+                Number(c.charges || 0),
+                Number(c.livres || 0),
+                Number(c.montes || 0),
+              );
+              let target = cur + delta;
+              target = Math.max(minRequired, target);
+              if (target === cur) continue;
+              const applied = target - cur;
+              await updateDoc(doc(db, "livraisons", liv.id), {
+                nbVelos: target,
+                updatedAt: ts(),
+              });
+              livAdjustments.push({ livraisonId: liv.id, oldNb: cur, newNb: target });
+              delta -= applied;
+            }
+            if (delta !== 0) {
+              livAdjustWarning =
+                delta > 0
+                  ? `${delta} vélo(s) en plus non assigné(s) — crée/édite une livraison pour les caler.`
+                  : `${Math.abs(delta)} vélo(s) en moins non absorbé(s) — vélos déjà préparés/chargés sur les livraisons en cours.`;
+            }
           }
         } catch (e) {
           console.error("[updateClient] propagation livraisons KO", e);
