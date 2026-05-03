@@ -6974,6 +6974,13 @@ export async function runFirestoreGet(
       > = {};
       const isoOrNull = (x: unknown): string | null => {
         if (!x) return null;
+        // Yoann 2026-05-03 : la date peut être stockée soit comme Timestamp
+        // Firestore (.toDate()), soit comme string ISO (cas des migrations
+        // legacy / scripts admin SDK). Sans ce fallback, le compteur Prép./
+        // Charg. ignorait silencieusement les vélos avec date string —
+        // ex BATISOLE CONSTRUCTION : Prép. 0/1 alors que vélo BC389NJ4B9
+        // chargé 30/04, date stockée comme string.
+        if (typeof x === "string") return x;
         const t = x as { toDate?: () => Date };
         return t?.toDate ? t.toDate().toISOString() : null;
       };
