@@ -1701,10 +1701,15 @@ function TourneeCard({
   const missing: string[] = [];
   if (ref) {
     const isRetrait = tournee.mode === "retrait";
+    // Yoann 2026-05-03 : modeMontage="atelier" = vélos pré-assemblés en
+    // session atelier d'entrepôt. Pas de monteur sur la tournée → ne pas
+    // signaler "Manque monteur" (faux positif). Préparateur reste requis
+    // (sortie/chargement matin).
+    const isAtelier = ref.modeMontage === "atelier";
     if (!isRetrait && !ref.chauffeurId) missing.push("chauffeur");
     const hasChef = !!ref.chefEquipeId || (ref.chefEquipeIds && ref.chefEquipeIds.length > 0);
     if (!hasChef) missing.push("chef");
-    if (!ref.monteurIds || ref.monteurIds.length === 0) missing.push("monteur");
+    if (!isAtelier && (!ref.monteurIds || ref.monteurIds.length === 0)) missing.push("monteur");
     if (!ref.preparateurIds || ref.preparateurIds.length === 0) missing.push("préparateur");
   }
   const affectIncomplete = missing.length > 0 && tournee.statutGlobal !== "livree" && tournee.statutGlobal !== "annulee";
