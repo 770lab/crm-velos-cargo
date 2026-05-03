@@ -110,18 +110,24 @@ service cloud.firestore {
       allow create, delete: if isAdmin();
     }
 
+    // Yoann 2026-05-03 : RBAC apporteur durci — un apporteur n a aucun
+    // besoin opérationnel de lire les tournées / camions / bons retrait
+    // AXDIS / dispos / entrepôts / flotte / commandes camion / sessions
+    // atelier / sessions sur site. On exclut les apporteurs en lecture
+    // sur toutes ces collections (ils restent autorisés à lire leurs
+    // clients / vélos / livraisons via le filtre apporteurLower).
     match /tournees/{id} {
-      allow read: if isStaff();
+      allow read: if isStaff() && !isApporteur();
       allow write: if isAdmin();
     }
 
     match /camions/{id} {
-      allow read: if isStaff();
+      allow read: if isStaff() && !isApporteur();
       allow write: if isAdmin();
     }
 
     match /bonsEnlevement/{id} {
-      allow read: if isStaff();
+      allow read: if isStaff() && !isApporteur();
       allow write: if isAdmin();
     }
 
@@ -138,16 +144,17 @@ service cloud.firestore {
 
     // Disponibilités d'une journée (camions / chauffeurs / chefs / monteurs).
     // Écrites par setDisponibilites (admin via day-planner-modal), lues par
-    // tout le staff (proposeTournee, vues planning).
+    // tout le staff non-apporteur.
     match /disponibilites/{id} {
-      allow read: if isStaff();
+      allow read: if isStaff() && !isApporteur();
       allow write: if isAdmin();
     }
 
     // Compteurs séquentiels (ex : counters/bl-2026 pour numéros BL).
-    // Lus + incrémentés en transaction par getBlForTournee.
+    // Lus + incrémentés en transaction par getBlForTournee. Apporteur
+    // exclu : il n'imprime pas de BL et ne devrait pas pouvoir incrémenter.
     match /counters/{id} {
-      allow read, write: if isStaff();
+      allow read, write: if isStaff() && !isApporteur();
     }
 
     // Frais opérationnels (saisie manuelle page /finances).
@@ -166,28 +173,27 @@ service cloud.firestore {
     // Lecture par tout le staff (chauffeurs / monteurs / chefs ont besoin de
     // voir les stocks pour la logistique). Écriture admin uniquement.
     match /entrepots/{id} {
-      allow read: if isStaff();
+      allow read: if isStaff() && !isApporteur();
       allow write: if isAdmin();
       // Mouvements de stock (entrées datées, manuelles ou auto)
       match /mouvements/{mvtId} {
-        allow read: if isStaff();
+        allow read: if isStaff() && !isApporteur();
         allow write: if isAdmin();
       }
     }
 
     // Flotte de camions (Yoann 2026-05-03) : capacités cartons/montés,
-    // restrictions Paris. Lecture staff (utilisé par planificateur côté
-    // client), écriture admin uniquement.
+    // restrictions Paris. Lecture staff non-apporteur, écriture admin.
     match /flotte/{id} {
-      allow read: if isStaff();
+      allow read: if isStaff() && !isApporteur();
       allow write: if isAdmin();
     }
 
     // Commandes de camions complets passées à Tiffany (Yoann 2026-05-01).
     // Numéro incrémental "VELO CARGO - COMMANDE N" pour matching avec les
-    // bons de retour AXDIS.
+    // bons de retour AXDIS. Sensible (volumes commandés = stratégique).
     match /commandesCamion/{id} {
-      allow read: if isStaff();
+      allow read: if isStaff() && !isApporteur();
       allow write: if isAdmin();
     }
 
@@ -204,7 +210,15 @@ service cloud.firestore {
     // Lecture par tout le staff (les monteurs voient leur planning),
     // écriture admin uniquement.
     match /sessionsMontageAtelier/{id} {
-      allow read: if isStaff();
+      allow read: if isStaff() && !isApporteur();
+      allow write: if isAdmin();
+    }
+
+    // Sessions sur site client (Yoann 2026-05-03) : pour groupes type
+    // Firat où le camion client distribue ses propres magasins. Lecture
+    // staff non-apporteur, écriture admin.
+    match /sessionsSurSite/{id} {
+      allow read: if isStaff() && !isApporteur();
       allow write: if isAdmin();
     }
 

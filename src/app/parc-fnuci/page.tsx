@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { gasPost } from "@/lib/gas";
+import { useCurrentUser } from "@/lib/current-user";
 
 type VeloRow = {
   id: string;
@@ -40,6 +41,7 @@ function isoOrNull(x: unknown): string | null {
 }
 
 export default function ParcFnuciPage() {
+  const currentUser = useCurrentUser();
   const [rows, setRows] = useState<VeloRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -105,7 +107,18 @@ export default function ParcFnuciPage() {
 
   const filtered = useMemo(() => {
     const q = search.trim().toUpperCase();
+    // Yoann 2026-05-03 : RBAC apporteur — un apporteur ne voit QUE ses
+    // propres FNUCI (jointure case-insensitive sur le nom). Cohérent
+    // avec /clients et /clients/detail. Sans ce filtre, un apporteur
+    // pouvait voir le parc complet (commissions sensibles).
+    const meApporteur =
+      currentUser?.role === "apporteur"
+        ? (currentUser.nom || "").trim().toLowerCase()
+        : null;
     return rows.filter((r) => {
+      if (meApporteur !== null) {
+        if ((r.apporteur || "").trim().toLowerCase() !== meApporteur) return false;
+      }
       if (q) {
         const matchFnuci = r.fnuci.includes(q);
         const matchClient = r.clientNom.toUpperCase().includes(q);
@@ -119,7 +132,7 @@ export default function ParcFnuciPage() {
       if (filterStatut === "prepare" && (!r.datePreparation || r.dateChargement || r.annule)) return false;
       return true;
     });
-  }, [rows, search, filterApporteur, filterStatut]);
+  }, [rows, search, filterApporteur, filterStatut, currentUser?.role, currentUser?.nom]);
 
   const stats = useMemo(() => {
     let total = 0, prepares = 0, charges = 0, livres = 0, annules = 0;
