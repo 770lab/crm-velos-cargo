@@ -12,6 +12,7 @@
 // - Export CSV pour archivage CEE
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { gasPost } from "@/lib/gas";
 
 type VeloRow = {
   id: string;
@@ -261,6 +262,7 @@ export default function ParcFnuciPage() {
               <th className="text-center px-2 py-2 font-medium">Chargé</th>
               <th className="text-center px-2 py-2 font-medium">Livré</th>
               <th className="text-center px-2 py-2 font-medium">Statut</th>
+              <th className="text-center px-2 py-2 font-medium w-12">Action</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -301,6 +303,34 @@ export default function ParcFnuciPage() {
                       <div className="text-[9px] text-rose-600 italic mt-0.5" title={r.annuleReason}>
                         {r.annuleReason.slice(0, 30)}{r.annuleReason.length > 30 ? "…" : ""}
                       </div>
+                    )}
+                  </td>
+                  {/* Yoann 2026-05-03 : bouton suppression manuelle.
+                      Reset le FNUCI (vélo gardé, slot client libéré) →
+                      désaffilie automatiquement. Visible uniquement si
+                      pas déjà annulé ET pas livré (sinon trop risqué). */}
+                  <td className="px-2 py-1 text-center">
+                    {!r.annule && !r.dateLivraisonScan && (
+                      <button
+                        onClick={async () => {
+                          if (!confirm(`Supprimer le FNUCI ${r.fnuci} ?\n\nLe vélo sera désaffilié (slot client libéré pour ré-affiliation). Le client ${r.clientNom} retrouvera 1 vélo à scanner.`)) return;
+                          try {
+                            const res = await gasPost("resetVeloFnuci", { veloId: r.id }) as { ok?: boolean; error?: string };
+                            if (!res || res.ok === false) {
+                              alert("Erreur : " + (res?.error || "inconnue"));
+                              return;
+                            }
+                            // Force le refresh
+                            location.reload();
+                          } catch (e) {
+                            alert("Erreur : " + (e instanceof Error ? e.message : String(e)));
+                          }
+                        }}
+                        className="text-rose-600 hover:bg-rose-50 px-1.5 py-0.5 rounded text-xs"
+                        title="Supprimer ce FNUCI (désaffilie le vélo, garde le slot client)"
+                      >
+                        🗑️
+                      </button>
                     )}
                   </td>
                 </tr>

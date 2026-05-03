@@ -31,6 +31,7 @@ import {
   runTransaction,
   Timestamp,
   increment,
+  deleteField,
   type FieldValue,
 } from "firebase/firestore";
 import { ref, uploadBytes, getDownloadURL } from "firebase/storage";
@@ -274,6 +275,9 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "createSessionSurSite",
   "updateSessionSurSite",
   "cancelSessionSurSite",
+  // Yoann 2026-05-03 : reset FNUCI sur un vélo (libère le slot pour
+  // ré-affilier). Garde le vélo, retire fnuci/datePreparation/preparateurId.
+  "resetVeloFnuci",
   // Yoann 2026-05-03 : Gemini scanne les anomalies clients
   "detectAnomaliesClients",
   // Yoann 2026-05-03 : simulation macro Opération Paris (1 bouton, full plan)
@@ -1201,6 +1205,21 @@ export async function runFirestoreAction(
       const veloId = getRequired(body, "veloId");
       const fnuci = getString(body, "fnuci") || null;
       await updateDoc(doc(db, "velos", veloId), { fnuci, updatedAt: ts() });
+      return { ok: true };
+    }
+
+    case "resetVeloFnuci": {
+      // Yoann 2026-05-03 : retire le FNUCI d un vélo et reset l état préparé.
+      // Le vélo est gardé (slot client libéré), mais l affiliation est
+      // annulée. Utilisé pour corriger une erreur d affiliation sans avoir
+      // à supprimer le vélo entier.
+      const veloId = getRequired(body, "veloId");
+      await updateDoc(doc(db, "velos", veloId), {
+        fnuci: null,
+        datePreparation: null,
+        preparateurId: deleteField(),
+        updatedAt: ts(),
+      });
       return { ok: true };
     }
 
