@@ -1826,6 +1826,10 @@ export function SessionAtelierModal({
   // mais désactivés (grisés, non cliquables).
   const isChefRestricted = currentUser?.role === "chef";
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
+  // Yoann 2026-05-03 : créneau horaire optionnel pour la session atelier.
+  // HH:MM strings (vides = pas d'heure imposée → "toute la journée").
+  const [heureDebut, setHeureDebut] = useState("");
+  const [heureFin, setHeureFin] = useState("");
   const [chefId, setChefId] = useState("");
   const [monteurIds, setMonteurIds] = useState<string[]>([]);
   const [quantitePrevue, setQuantitePrevue] = useState("");
@@ -1849,6 +1853,8 @@ export function SessionAtelierModal({
       }
       const d = snap.data() as Record<string, unknown>;
       setDate(String(d.date || ""));
+      setHeureDebut(typeof d.heureDebut === "string" ? d.heureDebut : "");
+      setHeureFin(typeof d.heureFin === "string" ? d.heureFin : "");
       setChefId(typeof d.chefId === "string" ? d.chefId : "");
       setMonteurIds(Array.isArray(d.monteurIds) ? d.monteurIds : []);
       setQuantitePrevue(d.quantitePrevue != null ? String(d.quantitePrevue) : "");
@@ -2001,6 +2007,8 @@ export function SessionAtelierModal({
         entrepotId,
         entrepotNom,
         date,
+        heureDebut: /^\d{2}:\d{2}$/.test(heureDebut) ? heureDebut : null,
+        heureFin: /^\d{2}:\d{2}$/.test(heureFin) ? heureFin : null,
         monteurIds,
         monteurNoms,
         chefId: chef?.id || null,
@@ -2080,6 +2088,26 @@ export function SessionAtelierModal({
               onChange={(e) => setDate(e.target.value)}
               className="w-full px-2 py-1.5 border rounded text-sm"
             />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs text-gray-600">Heure début (optionnel)</label>
+              <input
+                type="time"
+                value={heureDebut}
+                onChange={(e) => setHeureDebut(e.target.value)}
+                className="w-full px-2 py-1.5 border rounded text-sm"
+              />
+            </div>
+            <div>
+              <label className="text-xs text-gray-600">Heure fin (optionnel)</label>
+              <input
+                type="time"
+                value={heureFin}
+                onChange={(e) => setHeureFin(e.target.value)}
+                className="w-full px-2 py-1.5 border rounded text-sm"
+              />
+            </div>
           </div>
           <div>
             <label className="text-xs text-gray-600">Chef d&apos;équipe (optionnel)</label>

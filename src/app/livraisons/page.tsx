@@ -492,6 +492,8 @@ export default function LivraisonsPage() {
   type SessionAtelierMini = {
     id: string;
     date: string;
+    heureDebut?: string | null;
+    heureFin?: string | null;
     entrepotId: string;
     entrepotNom: string;
     monteurIds: string[];
@@ -515,6 +517,8 @@ export default function LivraisonsPage() {
         rows.push({
           id: d.id,
           date: String(data.date || ""),
+          heureDebut: typeof data.heureDebut === "string" ? data.heureDebut : null,
+          heureFin: typeof data.heureFin === "string" ? data.heureFin : null,
           entrepotId: String(data.entrepotId || ""),
           entrepotNom: String(data.entrepotNom || "?"),
           monteurIds: Array.isArray(data.monteurIds) ? data.monteurIds : [],
@@ -978,6 +982,8 @@ type SessionAtelierItem = {
   entrepotId: string;
   entrepotNom: string;
   statut: string;
+  heureDebut?: string | null;
+  heureFin?: string | null;
   quantitePrevue?: number | null;
   monteurNoms: string[];
 };
@@ -988,15 +994,33 @@ function SessionAtelierCard({ s }: { s: SessionAtelierItem }) {
   // chef, statut, quantité, notes). Le modal est exporté depuis /entrepots
   // (mode édition via existingSessionId).
   const [showEdit, setShowEdit] = useState(false);
+  // Format créneau "HH:MM-HH:MM" → "HhMM-HhMM" pour cohérence affichage tournée.
+  const fmtH = (s: string | null | undefined): string => {
+    if (!s) return "";
+    const m = /^(\d{2}):(\d{2})$/.exec(s);
+    if (!m) return s;
+    const h = parseInt(m[1], 10);
+    const mn = m[2];
+    return `${h}h${mn === "00" ? "" : mn}`;
+  };
+  const creneau = (() => {
+    if (s.heureDebut && s.heureFin) return `${fmtH(s.heureDebut)}-${fmtH(s.heureFin)}`;
+    if (s.heureDebut) return `dès ${fmtH(s.heureDebut)}`;
+    if (s.heureFin) return `jusqu'à ${fmtH(s.heureFin)}`;
+    return "";
+  })();
   return (
     <>
     <div
       role="button"
       onClick={(e) => { e.stopPropagation(); setShowEdit(true); }}
       className="bg-amber-50 border border-amber-300 rounded px-1.5 py-1 text-[10px] leading-tight cursor-pointer hover:bg-amber-100 hover:border-amber-400"
-      title={`Atelier ${s.entrepotNom} · ${s.monteurNoms.length} monteurs : ${s.monteurNoms.join(", ")} — clique pour gérer le personnel`}
+      title={`Atelier ${s.entrepotNom}${creneau ? ` · ${creneau}` : ""} · ${s.monteurNoms.length} monteurs : ${s.monteurNoms.join(", ")} — clique pour gérer`}
     >
-      <div className="font-semibold text-amber-900 truncate">🔧 Atelier {s.entrepotNom}</div>
+      <div className="font-semibold text-amber-900 truncate">
+        🔧 Atelier {s.entrepotNom}
+        {creneau && <span className="ml-1 font-normal opacity-90">· {creneau}</span>}
+      </div>
       <div className="text-amber-700 opacity-80 truncate">
         {s.monteurNoms.length} monteur{s.monteurNoms.length > 1 ? "s" : ""}
         {s.quantitePrevue ? ` · ${s.quantitePrevue}v` : ""}
