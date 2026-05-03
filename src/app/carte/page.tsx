@@ -534,8 +534,12 @@ export default function CartePage() {
                 // tournée — ça change la capacité passée à suggestTournee.
                 // Type côté UI : `camionnette` = `petit` côté flotte (legacy).
                 const typeForUI = (t: string) => (t === "petit" ? "camionnette" : t);
+                // Yoann 2026-05-03 : on n affiche QUE les Moyens et Grands.
+                // Petits/camionnettes ne sont plus utilisés en planif (Paris
+                // intra-muros = on peut prendre un Moyen, ça passe).
                 const buttons = flotte
                   .filter((c) => c.actif)
+                  .filter((c) => c.type === "gros" || c.type === "moyen")
                   .map((c) => ({
                     id: c.id,
                     type: typeForUI(c.type) as "gros" | "moyen" | "camionnette" | "retrait",

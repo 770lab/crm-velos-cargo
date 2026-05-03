@@ -2431,10 +2431,8 @@ export function SuggererTourneeModal({
               onChange={(e) => setMode(e.target.value as typeof mode)}
               className="w-full px-2 py-1.5 border rounded text-sm bg-white"
             >
-              <option value="gros">Grand (77 cartons / 40 montés) — interdit Paris</option>
-              <option value="petit">Petit (44 cartons / 20 montés) — accès Paris</option>
               <option value="moyen">Moyen (54 cartons / 30 montés)</option>
-              <option value="camionnette">Camionnette (44 cartons / 20 montés)</option>
+              <option value="gros">Grand (77 cartons / 40 montés)</option>
             </select>
           </div>
           <div>
@@ -2803,10 +2801,8 @@ export function PlanifierJourneeModal({
           <div>
             <label className="text-xs text-gray-600">Camion</label>
             <select value={mode} onChange={(e) => setMode(e.target.value as typeof mode)} className="w-full px-2 py-1.5 border rounded text-sm bg-white">
-              <option value="gros">Grand</option>
               <option value="moyen">Moyen</option>
-              <option value="petit">Petit</option>
-              <option value="camionnette">Camionnette</option>
+              <option value="gros">Grand</option>
             </select>
           </div>
           <div>
@@ -3332,10 +3328,8 @@ function CamionEditModal({ camion, onClose }: { camion: CamionFlotte | null; onC
               onChange={(e) => setType(e.target.value)}
               className="w-full px-2 py-1.5 border rounded text-sm bg-white"
             >
-              <option value="petit">Petit</option>
               <option value="moyen">Moyen</option>
               <option value="gros">Gros</option>
-              <option value="camionnette">Camionnette</option>
             </select>
           </div>
           <div className="grid grid-cols-2 gap-2">
