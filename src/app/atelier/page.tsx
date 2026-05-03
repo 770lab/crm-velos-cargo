@@ -210,17 +210,11 @@ function AtelierPage() {
         c.reste = Math.max(0, c.nbVelosCommandes - c.velosAffilies);
       }
 
-      // Yoann 2026-05-03 : exclut les clients déjà ≥ 90 % livrés.
-      // Cas typique : ANADOLU 28/30 livrés (commande montée à 30 par
-      // anticipation mais 2 vélos jamais arrivés). Yoann a "marqué livré"
-      // → considère terminé. On exclut tout client dont velosLivres atteint
-      // 90 % de nbVelosCommandes (tolérance pour les écarts de saisie).
+      // Yoann 2026-05-03 : tolérance 0 %. Si reste = 0 → exclu. Sinon listé.
+      // Si nbVelosCommandes saisi à tort (ex 30 au lieu de 28), corriger
+      // dans la fiche client (pas via tolérance).
       const candidats = Array.from(clientsMap.values())
-        .filter((c) => {
-          if (c.reste <= 0) return false;
-          if (c.nbVelosCommandes > 0 && c.velosLivres / c.nbVelosCommandes >= 0.9) return false;
-          return true;
-        })
+        .filter((c) => c.reste > 0)
         .sort((a, b) => a.distance - b.distance);
       if (alive) setClients(candidats);
       if (alive) setLoading(false);
