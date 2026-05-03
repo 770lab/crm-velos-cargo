@@ -5387,9 +5387,15 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
       }
       if (overrideChauffeursG != null) nbChauffeursG = overrideChauffeursG;
       const nbVehicJourG = Math.min(nbChauffeursG, camionsG.length) || 1;
-      // Tournées par jour : 1.5 montés (rapide) ou 1 cartons (long)
-      // Mix : on applique 1.25 par véhicule en moyenne (compromis)
-      const tourneesParJour = Math.max(1, Math.floor(nbVehicJourG * 1.25));
+      // Yoann 2026-05-03 : tournées/véhicule/jour calculé selon le mode :
+      // - Mode atelier (montés) : pas de montage chez client, le chef gère
+      //   la signature pendant que le chauffeur recharge → 2.5 tournées/jour
+      //   facile (chauffeur ne perd pas de temps sur place)
+      // - Mode cartons : montage chez client = stop long (12 min × N vélos /
+      //   monteurs) → 1 tournée/jour
+      // Override possible via body.tourneesParVeh*
+      const tourneesParVehMontes = Number(body.tourneesParVehMontes || 2.5);
+      const tourneesParVehCartons = Number(body.tourneesParVehCartons || 1);
 
       // Voronoi : chaque client → entrepôt le + proche
       type Bucket = { entrepot: EntG; clientsMontes: CliG[]; clientsCartons: CliG[]; demandeMontes: number; demandeCartons: number };
@@ -5450,6 +5456,18 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
           return pool[idx];
         }
       };
+      // Yoann 2026-05-03 : on plafonne au stock dispo de l entrepôt
+      // (pas d usine à gaz, juste planifier ce qu on a). Les clients
+      // au-delà du stock vont dans clientsBloquesParStock pour suggestion
+      // réappro Tiffany. Lead time configurable (default 3j).
+      const leadTimeJours = Number(body.leadTimeJours || 3);
+      type CliBloque = { clientId: string; entreprise: string; ville: string; reste: number; modeRequis: "atelier" | "client"; entrepotPrevu: string };
+      const clientsBloques: CliBloque[] = [];
+      // Stock résiduel par entrepôt (mis à jour pendant la génération)
+      const stockResiduel = new Map<string, { cartons: number; montes: number }>();
+      for (const e of entrepotsG) {
+        stockResiduel.set(e.id, { cartons: e.stockCartons, montes: e.stockVelosMontes });
+      }
       for (const b of buckets.values()) {
         // Tri par distance entrepôt (plus proches d abord)
         const sortByDist = (arr: CliG[]) =>
@@ -5457,11 +5475,15 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
             - haversineKmFs(b.entrepot.lat, b.entrepot.lng, y.lat, y.lng));
         sortByDist(b.clientsMontes);
         sortByDist(b.clientsCartons);
-        // Slot montés (priorité)
+        const stk = stockResiduel.get(b.entrepot.id)!;
+        // Slot montés (priorité) — plafonné au stock montés dispo
         let i = 0;
-        while (i < b.clientsMontes.length) {
+        while (i < b.clientsMontes.length && stk.montes > 0) {
           const besoinParis = b.clientsMontes.slice(i).some((c) => c.estParis);
           const cam = choisirCamion("atelier", besoinParis);
+          // Capa effective = min(camion, stock dispo)
+          const capaEff = Math.min(cam.capaciteVelosMontes, stk.montes);
+          if (capaEff <= 0) break;
           const slot: TourneeSlot = {
             entrepotId: b.entrepot.id,
             entrepotNom: b.entrepot.nom,
@@ -5472,42 +5494,41 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
             stops: [],
             totalVelos: 0,
           };
-          let reste = cam.capaciteVelosMontes;
+          let reste = capaEff;
           while (i < b.clientsMontes.length && reste > 0) {
             const c = b.clientsMontes[i];
-            // Skip si Paris et camion ne peut pas
             if (c.estParis && !cam.peutEntrerParis) { i++; continue; }
             const nb = Math.min(c.reste, reste);
             slot.stops.push({
-              clientId: c.id,
-              entreprise: c.entreprise,
-              nbVelos: nb,
-              ville: c.ville,
-              estParis: c.estParis,
-              creneauLivraison: c.creneauLivraison,
-              apporteurLower: c.apporteurLower,
-              lat: c.lat,
-              lng: c.lng,
-              codePostal: c.codePostal,
-              adresse: c.adresse,
+              clientId: c.id, entreprise: c.entreprise, nbVelos: nb,
+              ville: c.ville, estParis: c.estParis, creneauLivraison: c.creneauLivraison,
+              apporteurLower: c.apporteurLower, lat: c.lat, lng: c.lng,
+              codePostal: c.codePostal, adresse: c.adresse,
             });
             slot.totalVelos += nb;
             reste -= nb;
-            // Si client n est pas servi totalement, il faudra revenir → on laisse tel quel
-            if (nb < c.reste) {
-              c.reste -= nb;
-            } else {
-              i++;
-            }
+            if (nb < c.reste) { c.reste -= nb; }
+            else { i++; }
           }
           if (slot.stops.length === 0) break;
           slots.push(slot);
+          stk.montes -= slot.totalVelos;
         }
-        // Slot cartons (gros volumes)
+        // Clients montés non servis faute de stock
+        for (; i < b.clientsMontes.length; i++) {
+          const c = b.clientsMontes[i];
+          if (c.reste > 0) clientsBloques.push({
+            clientId: c.id, entreprise: c.entreprise, ville: c.ville,
+            reste: c.reste, modeRequis: "atelier", entrepotPrevu: b.entrepot.nom,
+          });
+        }
+        // Slot cartons (gros volumes) — plafonné au stock cartons dispo
         i = 0;
-        while (i < b.clientsCartons.length) {
+        while (i < b.clientsCartons.length && stk.cartons > 0) {
           const besoinParis = b.clientsCartons.slice(i).some((c) => c.estParis);
           const cam = choisirCamion("client", besoinParis);
+          const capaEff = Math.min(cam.capaciteCartons, stk.cartons);
+          if (capaEff <= 0) break;
           const slot: TourneeSlot = {
             entrepotId: b.entrepot.id,
             entrepotNom: b.entrepot.nom,
@@ -5518,23 +5539,16 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
             stops: [],
             totalVelos: 0,
           };
-          let reste = cam.capaciteCartons;
+          let reste = capaEff;
           while (i < b.clientsCartons.length && reste > 0) {
             const c = b.clientsCartons[i];
             if (c.estParis && !cam.peutEntrerParis) { i++; continue; }
             const nb = Math.min(c.reste, reste);
             slot.stops.push({
-              clientId: c.id,
-              entreprise: c.entreprise,
-              nbVelos: nb,
-              ville: c.ville,
-              estParis: c.estParis,
-              creneauLivraison: c.creneauLivraison,
-              apporteurLower: c.apporteurLower,
-              lat: c.lat,
-              lng: c.lng,
-              codePostal: c.codePostal,
-              adresse: c.adresse,
+              clientId: c.id, entreprise: c.entreprise, nbVelos: nb,
+              ville: c.ville, estParis: c.estParis, creneauLivraison: c.creneauLivraison,
+              apporteurLower: c.apporteurLower, lat: c.lat, lng: c.lng,
+              codePostal: c.codePostal, adresse: c.adresse,
             });
             slot.totalVelos += nb;
             reste -= nb;
@@ -5543,8 +5557,24 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
           }
           if (slot.stops.length === 0) break;
           slots.push(slot);
+          stk.cartons -= slot.totalVelos;
+        }
+        for (; i < b.clientsCartons.length; i++) {
+          const c = b.clientsCartons[i];
+          if (c.reste > 0) clientsBloques.push({
+            clientId: c.id, entreprise: c.entreprise, ville: c.ville,
+            reste: c.reste, modeRequis: "client", entrepotPrevu: b.entrepot.nom,
+          });
         }
       }
+
+      // Yoann 2026-05-03 : tournées/jour calculé selon mix réel montés/cartons
+      const nbSlotsMontes = slots.filter((s) => s.modeMontage === "atelier").length;
+      const nbSlotsCartons = slots.filter((s) => s.modeMontage === "client").length;
+      const totalSlots = nbSlotsMontes + nbSlotsCartons;
+      const ratioMontes = totalSlots > 0 ? nbSlotsMontes / totalSlots : 1;
+      const tourneesParVeh = ratioMontes * tourneesParVehMontes + (1 - ratioMontes) * tourneesParVehCartons;
+      const tourneesParJour = Math.max(1, Math.round(nbVehicJourG * tourneesParVeh));
 
       // Yoann 2026-05-03 : round-robin RÉEL entre entrepôts pour mélanger
       // les tournées (avant : tous les Chelles d abord, puis tous les Nanterre,
@@ -5583,12 +5613,10 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
         if (jourIdx < planning.length) planning[jourIdx].tournees.push(slotsPlanifies[k]);
       }
 
-      // Yoann 2026-05-03 : suggestion réappro par entrepôt.
-      // Pour chaque entrepôt, on calcule :
-      //   - stockInitialCartons / stockInitialMontes
-      //   - consommation (somme des slots planifiés depuis cet entrepôt)
-      //   - stockApresPlanning = initial - consommation
-      //   - dateLimiteReappro = date du 1er slot qui dépasse le stock dispo
+      // Yoann 2026-05-03 : suggestion réappro par entrepôt — version
+      // simple (pas d usine à gaz). On regarde combien il manque pour
+      // servir TOUS les clients (planifiés + bloqués), et on recule la
+      // date limite du leadTime Tiffany.
       type ReapproEnt = {
         entrepotId: string;
         entrepotNom: string;
@@ -5603,7 +5631,15 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
         dateLimiteReapproCartons: string | null;
         dateLimiteReapproMontes: string | null;
       };
+      // Helper : recule une date ISO de N jours
+      const reculerDate = (iso: string, jours: number): string => {
+        const d = new Date(iso);
+        d.setDate(d.getDate() - jours);
+        return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+      };
+
       const reappros: ReapproEnt[] = entrepotsG.map((e) => {
+        // Conso = ce qu on a planifié depuis cet entrepôt (plafonné au stock)
         const consoSlots = slots.filter((s) => s.entrepotId === e.id);
         let consoCartons = 0;
         let consoMontes = 0;
@@ -5611,24 +5647,18 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
           if (s.modeMontage === "client") consoCartons += s.totalVelos;
           else consoMontes += s.totalVelos;
         }
-        // Date limite : on recalcule en parcourant le planning et accumulant
-        // jusqu à dépasser le stock initial.
-        let cumCartons = 0;
-        let cumMontes = 0;
-        let dateLimCart: string | null = null;
-        let dateLimMont: string | null = null;
-        for (const j of planning) {
-          for (const t of j.tournees) {
-            if (t.entrepotId !== e.id) continue;
-            if (t.modeMontage === "client") {
-              cumCartons += t.totalVelos;
-              if (!dateLimCart && cumCartons > e.stockCartons) dateLimCart = j.date;
-            } else {
-              cumMontes += t.totalVelos;
-              if (!dateLimMont && cumMontes > e.stockVelosMontes) dateLimMont = j.date;
-            }
-          }
-        }
+        // Besoin de réappro = clients bloqués faute de stock pour cet entrepôt
+        const blocCart = clientsBloques
+          .filter((c) => c.entrepotPrevu === e.nom && c.modeRequis === "client")
+          .reduce((s, c) => s + c.reste, 0);
+        const blocMont = clientsBloques
+          .filter((c) => c.entrepotPrevu === e.nom && c.modeRequis === "atelier")
+          .reduce((s, c) => s + c.reste, 0);
+        // Date limite réappro = première date du planning de cet entrepôt
+        // - leadTime Tiffany. Si on ne commande pas avant cette date, le
+        // stock additionnel n arrivera pas à temps pour les tournées suivantes.
+        const premierJourEntrepot = planning.find((j) => j.tournees.some((t) => t.entrepotId === e.id))?.date || null;
+        const dateLimReappro = premierJourEntrepot ? reculerDate(premierJourEntrepot, leadTimeJours) : null;
         return {
           entrepotId: e.id,
           entrepotNom: e.nom,
@@ -5638,12 +5668,12 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
           consommationMontes: consoMontes,
           stockApresCartons: e.stockCartons - consoCartons,
           stockApresMontes: e.stockVelosMontes - consoMontes,
-          besoinReapproCartons: Math.max(0, consoCartons - e.stockCartons),
-          besoinReapproMontes: Math.max(0, consoMontes - e.stockVelosMontes),
-          dateLimiteReapproCartons: dateLimCart,
-          dateLimiteReapproMontes: dateLimMont,
+          besoinReapproCartons: blocCart,
+          besoinReapproMontes: blocMont,
+          dateLimiteReapproCartons: blocCart > 0 ? dateLimReappro : null,
+          dateLimiteReapproMontes: blocMont > 0 ? dateLimReappro : null,
         };
-      }).filter((r) => r.consommationCartons > 0 || r.consommationMontes > 0);
+      }).filter((r) => r.consommationCartons > 0 || r.consommationMontes > 0 || r.besoinReapproCartons > 0 || r.besoinReapproMontes > 0);
 
       // Si apply=true : crée les tournées + livraisons en base
       let tourneesCreees = 0;
@@ -5730,6 +5760,11 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
         erreurs,
         camionsUtilises: camionsG.map((c) => ({ id: c.id, nom: c.nom, capaciteCartons: c.capaciteCartons, capaciteVelosMontes: c.capaciteVelosMontes, peutEntrerParis: c.peutEntrerParis })),
         reappros, // Yoann 2026-05-03 : suggestion réappro par entrepôt
+        clientsBloques, // Yoann 2026-05-03 : clients non plannifiés faute de stock
+        leadTimeJours,
+        tourneesParVehMontes,
+        tourneesParVehCartons,
+        ratioMontes: Math.round(ratioMontes * 100) / 100,
         dates: datesSorted,
         planning: planning.map((j) => ({
           date: j.date,

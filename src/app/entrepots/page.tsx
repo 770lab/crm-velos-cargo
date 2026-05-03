@@ -3760,6 +3760,14 @@ type CamionUtilise = {
   capaciteVelosMontes: number;
   peutEntrerParis: boolean;
 };
+type ClientBloque = {
+  clientId: string;
+  entreprise: string;
+  ville: string;
+  reste: number;
+  modeRequis: "atelier" | "client";
+  entrepotPrevu: string;
+};
 type GenererPlanningResult = {
   ok?: boolean;
   error?: string;
@@ -3777,6 +3785,11 @@ type GenererPlanningResult = {
   erreurs?: string[];
   camionsUtilises?: CamionUtilise[];
   reappros?: ReapproEntrepot[];
+  clientsBloques?: ClientBloque[];
+  leadTimeJours?: number;
+  tourneesParVehMontes?: number;
+  tourneesParVehCartons?: number;
+  ratioMontes?: number;
   dates?: string[];
   planning?: PlanningJour[];
 };
@@ -3801,6 +3814,7 @@ function GenererPlanningModal({ rayonKm, seuilGrosVolume, camionIds, nbChauffeur
     return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
   };
   const [dates, setDates] = useState<Set<string>>(() => new Set([todayIso()]));
+  const [leadTimeJours, setLeadTimeJours] = useState(3); // Yoann 2026-05-03 : Tiffany livre en ~3j
   const [datePicker, setDatePicker] = useState(todayIso());
 
   const presetCetteSemaine = () => {
@@ -3846,6 +3860,7 @@ function GenererPlanningModal({ rayonKm, seuilGrosVolume, camionIds, nbChauffeur
         seuilGrosVolume,
         camionIds,
         nbChauffeurs: nbChauffeurs ?? undefined,
+        leadTimeJours,
         dates: [...dates].sort(),
         apply,
       })) as GenererPlanningResult;
@@ -3909,7 +3924,7 @@ function GenererPlanningModal({ rayonKm, seuilGrosVolume, camionIds, nbChauffeur
               Tout effacer
             </button>
           </div>
-          <div className="flex items-center gap-2 mb-2">
+          <div className="flex items-center gap-2 mb-2 flex-wrap">
             <input
               type="date"
               value={datePicker}
@@ -3922,6 +3937,21 @@ function GenererPlanningModal({ rayonKm, seuilGrosVolume, camionIds, nbChauffeur
             >
               + Ajouter
             </button>
+            <div className="ml-auto flex items-center gap-1 text-xs text-gray-700">
+              <label htmlFor="leadtime" title="Délai entre commande Tiffany et arrivée en stock (utilisé pour calculer la date limite de commande)">
+                ⏱ Lead time Tiffany :
+              </label>
+              <input
+                id="leadtime"
+                type="number"
+                value={leadTimeJours}
+                onChange={(e) => setLeadTimeJours(Number(e.target.value))}
+                min={0}
+                max={30}
+                className="w-14 px-1 py-1 border rounded text-sm text-center"
+              />
+              <span className="text-gray-500">jours</span>
+            </div>
           </div>
           {dates.size > 0 && (
             <div className="flex flex-wrap gap-1 mt-2">
@@ -3957,8 +3987,13 @@ function GenererPlanningModal({ rayonKm, seuilGrosVolume, camionIds, nbChauffeur
                     {result.apply ? "✓ Planning CRÉÉ" : "🔍 Preview"} · {result.totalTourneesPlanifiees} tournées · {result.totalVelosPlanifies} vélos
                   </div>
                   <div className="text-xs text-emerald-800 mt-1">
-                    {result.dates?.length} jour{(result.dates?.length || 0) > 1 ? "s" : ""} · {result.tourneesParJour} tournées/jour max ({result.nbVehiculesParJour} véh./jour) · capacité totale = {result.capaciteTotaleJournees} tournées
+                    {result.dates?.length} jour{(result.dates?.length || 0) > 1 ? "s" : ""} · {result.tourneesParJour} tournées/jour ({result.nbVehiculesParJour} véh.) · capacité totale = {result.capaciteTotaleJournees} tournées
                   </div>
+                  {result.ratioMontes != null && (
+                    <div className="text-[11px] text-emerald-700 mt-0.5">
+                      📊 Mix : {Math.round((result.ratioMontes ?? 0) * 100)}% montés (~{result.tourneesParVehMontes}/véh./j) · {Math.round((1 - (result.ratioMontes ?? 0)) * 100)}% cartons (~{result.tourneesParVehCartons}/véh./j)
+                    </div>
+                  )}
                   {(result.nbSlotsNonPlanifies ?? 0) > 0 && (
                     <div className="text-xs text-amber-800 mt-1 font-semibold">
                       ⚠️ {result.nbSlotsNonPlanifies} tournées non planifiées (manque de jours sélectionnés). Ajoute plus de dates ou plus de véhicules.
@@ -4035,6 +4070,43 @@ function GenererPlanningModal({ rayonKm, seuilGrosVolume, camionIds, nbChauffeur
                         );
                       })}
                     </div>
+                  </div>
+                )}
+
+                {/* Yoann 2026-05-03 : clients non plannifiés faute de stock */}
+                {result.clientsBloques && result.clientsBloques.length > 0 && (
+                  <div className="bg-rose-50 border border-rose-300 rounded p-3 mb-3">
+                    <div className="text-sm font-bold text-rose-900 mb-1">
+                      ⚠️ {result.clientsBloques.length} client{result.clientsBloques.length > 1 ? "s" : ""} non plannifié{result.clientsBloques.length > 1 ? "s" : ""} faute de stock
+                    </div>
+                    <div className="text-[11px] text-rose-800 mb-2">
+                      Stock actuel insuffisant pour les servir. Commande Tiffany {result.leadTimeJours ? `${result.leadTimeJours}j` : ""} avant la prochaine livraison prévue (voir dates limites ci-dessus).
+                    </div>
+                    <details className="text-[11px]">
+                      <summary className="cursor-pointer text-rose-700 hover:underline">
+                        Voir la liste détaillée
+                      </summary>
+                      <div className="mt-2 max-h-48 overflow-y-auto bg-white rounded border border-rose-200 divide-y">
+                        {result.clientsBloques.map((c) => (
+                          <div key={c.clientId} className="px-2 py-1 flex items-center gap-2 text-[11px]">
+                            <span className="text-gray-500">
+                              {c.modeRequis === "atelier" ? "🔧" : "📦"}
+                            </span>
+                            <a
+                              href={`/clients/detail?id=${encodeURIComponent(c.clientId)}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="font-semibold hover:underline truncate flex-1"
+                            >
+                              {c.entreprise}
+                            </a>
+                            <span className="text-gray-500 text-[10px]">{c.ville}</span>
+                            <span className="font-bold text-rose-700">{c.reste}v</span>
+                            <span className="text-[10px] text-gray-500">→ {c.entrepotPrevu}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
                   </div>
                 )}
 
