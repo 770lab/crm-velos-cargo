@@ -545,11 +545,15 @@ function TransformModal({
     }
     setBusy(true);
     try {
-      const { collection, addDoc, doc, setDoc, serverTimestamp } = await import("firebase/firestore");
+      // Yoann 2026-05-03 : passé en increment atomique côté serveur
+      // (avant : getDoc + setDoc avec calcul côté client → race condition
+      // si 2 transformations rapides ou snapshot stale → cartons pas
+      // décrémentés). FieldValue.increment garantit l atomicité.
+      const { collection, addDoc, doc, updateDoc, increment, serverTimestamp } = await import("firebase/firestore");
       const { db } = await import("@/lib/firebase");
       const sharedSource = `transformation-atelier-${Date.now()}`;
       const baseNotes = notes.trim() || `Atelier monte ${n} vélos`;
-      // 1. Mouvement -N cartons
+      // 1. Mouvement -N cartons (traçabilité)
       await addDoc(collection(db, "entrepots", entrepotId, "mouvements"), {
         type: "carton",
         quantite: -n,
@@ -559,7 +563,7 @@ function TransformModal({
         createdAt: serverTimestamp(),
         autoCreated: false,
       });
-      // 2. Mouvement +N montés
+      // 2. Mouvement +N montés (traçabilité)
       await addDoc(collection(db, "entrepots", entrepotId, "mouvements"), {
         type: "monte",
         quantite: n,
@@ -569,21 +573,12 @@ function TransformModal({
         createdAt: serverTimestamp(),
         autoCreated: false,
       });
-      // 3. Update stockCartons + stockVelosMontes en 1 transaction côté client
-      const { getDoc } = await import("firebase/firestore");
-      const eRef = doc(db, "entrepots", entrepotId);
-      const cur = (await getDoc(eRef)).data() as Record<string, unknown>;
-      const newCartons = Math.max(0, Number(cur?.stockCartons || 0) - n);
-      const newMontes = Math.max(0, Number(cur?.stockVelosMontes || 0) + n);
-      await setDoc(
-        eRef,
-        {
-          stockCartons: newCartons,
-          stockVelosMontes: newMontes,
-          updatedAt: serverTimestamp(),
-        },
-        { merge: true },
-      );
+      // 3. Update atomique des 2 stocks (increment serveur)
+      await updateDoc(doc(db, "entrepots", entrepotId), {
+        stockCartons: increment(-n),
+        stockVelosMontes: increment(n),
+        updatedAt: serverTimestamp(),
+      });
       onClose();
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e));
@@ -1251,18 +1246,16 @@ function MouvementModal({
         createdAt: serverTimestamp(),
         createdByNom: user?.nom || null,
       });
-      // 2. Met à jour le stock dénormalisé sur le doc parent (somme cumulée).
-      // Pour simplicité : on lit le stock actuel + q (FieldValue.increment
-      // serait idéal mais nécessite import). Workaround : recalcul via setDoc
-      // depuis la valeur connue au moment du clic.
+      // 2. Update atomique du stock dénormalisé via FieldValue.increment
+      // (Yoann 2026-05-03 : remplace le getDoc + setDoc qui était sujet à
+      // race condition, observée le 2026-05-03 sur transformation cartons→
+      // montés). Si q est négatif (correction), increment l'applique tel quel.
       const field = kind === "carton" ? "stockCartons" : "stockVelosMontes";
-      const eSnap = await import("firebase/firestore").then((m) => m.getDoc(doc(db, "entrepots", entrepotId)));
-      const cur = Number((eSnap.data() as Record<string, unknown>)?.[field] || 0);
-      await setDoc(
-        doc(db, "entrepots", entrepotId),
-        { [field]: Math.max(0, cur + q), updatedAt: serverTimestamp() },
-        { merge: true },
-      );
+      const { updateDoc, increment } = await import("firebase/firestore");
+      await updateDoc(doc(db, "entrepots", entrepotId), {
+        [field]: increment(q),
+        updatedAt: serverTimestamp(),
+      });
       onClose();
     } catch (e) {
       alert(e instanceof Error ? e.message : String(e));
