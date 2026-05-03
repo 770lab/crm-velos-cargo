@@ -5455,29 +5455,16 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
         totalVelos: number;
       };
       const slots: TourneeSlot[] = [];
-      // Yoann 2026-05-03 : round-robin camion entre tous les sélectionnés
-      // (au lieu de toujours prendre le plus grand). Permet d utiliser TOUS
-      // les camions disponibles au lieu d en mettre 1 seul partout.
-      // Compteurs séparés montés/cartons pour ne pas biaiser.
-      let camionMontesIdx = 0;
-      let camionCartonsIdx = 0;
-      const choisirCamion = (mode: "atelier" | "client", besoinParis: boolean): CamG => {
-        // Si client Paris dans les stops à venir → priorité aux camions
-        // peutEntrerParis. Si aucun ne peut, on prend le pool complet
-        // (l algo skip ensuite les clients Paris incompatibles).
-        const candidats = besoinParis ? camionsG.filter((c) => c.peutEntrerParis) : camionsG;
-        const pool = candidats.length > 0 ? candidats : camionsG;
-        // Round-robin sur le pool
-        if (mode === "atelier") {
-          const idx = camionMontesIdx % pool.length;
-          camionMontesIdx++;
-          return pool[idx];
-        } else {
-          const idx = camionCartonsIdx % pool.length;
-          camionCartonsIdx++;
-          return pool[idx];
-        }
-      };
+      // Yoann 2026-05-03 : First-Fit Decreasing (FFD) — algorithme bin
+      // packing standard logistique. Maximise le remplissage des camions
+      // (avant : round-robin créait des tournées à 30-50%, "c est nul faut
+      // remplir"). Logique :
+      //   1. Trier clients DESC par volume restant
+      //   2. Pour chaque client : essayer un slot EXISTANT compatible
+      //      (capa restante suffisante, contrainte Paris OK)
+      //   3. Sinon ouvrir un nouveau slot avec le PLUS GRAND camion
+      //      compatible → on remplira au max ensuite
+      //   4. Pour clients Paris : forcer camion peutEntrerParis
       // Yoann 2026-05-03 : on plafonne au stock dispo de l entrepôt
       // (pas d usine à gaz, juste planifier ce qu on a). Les clients
       // au-delà du stock vont dans clientsBloquesParStock pour suggestion
@@ -5490,43 +5477,45 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
       for (const e of entrepotsG) {
         stockResiduel.set(e.id, { cartons: e.stockCartons, montes: e.stockVelosMontes });
       }
-      for (const b of buckets.values()) {
-        // Tri par distance entrepôt (plus proches d abord)
-        const sortByDist = (arr: CliG[]) =>
-          arr.sort((x, y) => haversineKmFs(b.entrepot.lat, b.entrepot.lng, x.lat, x.lng)
-            - haversineKmFs(b.entrepot.lat, b.entrepot.lng, y.lat, y.lng));
-        sortByDist(b.clientsMontes);
-        sortByDist(b.clientsCartons);
-        const stk = stockResiduel.get(b.entrepot.id)!;
-        // Slot montés (priorité) — plafonné au stock montés dispo
-        let i = 0;
-        while (i < b.clientsMontes.length && stk.montes > 0) {
-          const besoinParis = b.clientsMontes.slice(i).some((c) => c.estParis);
-          const cam = choisirCamion("atelier", besoinParis);
-          // Capa effective = min(camion, stock dispo)
-          const capaEff = Math.min(cam.capaciteVelosMontes, stk.montes);
-          if (capaEff <= 0) break;
-          const slot: TourneeSlot = {
-            entrepotId: b.entrepot.id,
-            entrepotNom: b.entrepot.nom,
-            modeMontage: "atelier",
-            camionId: cam.id,
-            camionNom: cam.nom,
-            capacite: cam.capaciteVelosMontes,
-            stops: [],
-            totalVelos: 0,
-          };
-          let reste = capaEff;
-          // Yoann 2026-05-03 : RÈGLE MÉTIER — un client va EN ENTIER dans
-          // son slot, JAMAIS splitté entre 2 jours. Si volume > capa du slot
-          // courant ET on a déjà des stops → break (ouvrira un nouveau slot
-          // au prochain tour). Si client > capa max camion → tout dans 1 slot
-          // (warn signalé via splitMultiCamion).
-          while (i < b.clientsMontes.length && reste > 0) {
-            const c = b.clientsMontes[i];
-            if (c.estParis && !cam.peutEntrerParis) { i++; continue; }
-            // Cas 1 : client tient entier dans le reste → on l ajoute
-            if (c.reste <= reste) {
+      // Helper : retourne la capa du camion pour un mode donné
+      const capaCam = (cam: CamG, mode: "atelier" | "client") =>
+        mode === "atelier" ? cam.capaciteVelosMontes : cam.capaciteCartons;
+
+      // Helper : pack une liste de clients dans des slots avec FFD.
+      // Maximise le remplissage : pour chaque client, tente de le placer
+      // dans un slot existant avant d en ouvrir un nouveau.
+      const packBucket = (
+        bucketId: string,
+        bucketNom: string,
+        bucketLat: number,
+        bucketLng: number,
+        clients: CliG[],
+        mode: "atelier" | "client",
+        stockDispo: number,
+      ): { slotsBucket: TourneeSlot[]; bloques: CliG[]; stockUtilise: number } => {
+        const slotsBucket: TourneeSlot[] = [];
+        const bloques: CliG[] = [];
+        let stockResiduel = stockDispo;
+        // Tri DÉCROISSANT par volume restant (FFD = First-Fit Decreasing)
+        const sorted = [...clients].sort((a, b) => b.reste - a.reste);
+        for (const c of sorted) {
+          if (c.reste <= 0) continue;
+          if (stockResiduel <= 0) {
+            bloques.push(c);
+            continue;
+          }
+          // 1) Essai placement dans un slot existant compatible
+          let placed = false;
+          for (const slot of slotsBucket) {
+            const cam = camionsG.find((x) => x.id === slot.camionId);
+            if (!cam) continue;
+            // Contrainte Paris
+            if (c.estParis && !cam.peutEntrerParis) continue;
+            const capa = capaCam(cam, mode);
+            const restant = capa - slot.totalVelos;
+            const aPlacer = Math.min(c.reste, restant, stockResiduel);
+            // On ne split pas le client : il faut que tout tienne d un coup
+            if (c.reste <= restant && c.reste <= stockResiduel) {
               slot.stops.push({
                 clientId: c.id, entreprise: c.entreprise, nbVelos: c.reste,
                 ville: c.ville, estParis: c.estParis, creneauLivraison: c.creneauLivraison,
@@ -5534,97 +5523,94 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
                 codePostal: c.codePostal, adresse: c.adresse,
               });
               slot.totalVelos += c.reste;
-              reste -= c.reste;
-              i++;
-              continue;
+              stockResiduel -= c.reste;
+              placed = true;
+              break;
             }
-            // Cas 2 : client > reste mais slot a déjà des stops → fermer
-            // ce slot, le prochain tour ouvrira un nouveau slot dédié.
-            if (slot.stops.length > 0) break;
-            // Cas 3 : slot vide ET client > capa max — slot dédié à ce
-            // client avec sa capa max (le reste sera dans clientsBloques
-            // ou nécessite multi-camions parallèles → on signale).
-            slot.stops.push({
-              clientId: c.id, entreprise: c.entreprise, nbVelos: reste,
+            // unused var
+            void aPlacer;
+          }
+          if (placed) continue;
+          // 2) Pas de slot existant compatible → ouvrir un nouveau
+          // Choisir le camion avec la capa la plus PROCHE du besoin (best-fit)
+          // pour ne pas gâcher un grand camion sur un petit client. Si client
+          // Paris : forcer peutEntrerParis.
+          const candidats = c.estParis
+            ? camionsG.filter((cam) => cam.peutEntrerParis)
+            : camionsG;
+          if (candidats.length === 0) {
+            bloques.push(c);
+            continue;
+          }
+          // Best-fit : capa >= reste, sort ASC pour choisir la plus petite
+          // qui contient. Si aucune ne contient (client > capa max) → on
+          // prend la plus grande disponible (sera marqué multiCamion).
+          const sortedCams = [...candidats].sort((a, b) => capaCam(a, mode) - capaCam(b, mode));
+          const camChoisi = sortedCams.find((cam) => capaCam(cam, mode) >= c.reste) || sortedCams[sortedCams.length - 1];
+          const capa = capaCam(camChoisi, mode);
+          const aPrendre = Math.min(c.reste, capa, stockResiduel);
+          if (aPrendre <= 0) {
+            bloques.push(c);
+            continue;
+          }
+          slotsBucket.push({
+            entrepotId: bucketId,
+            entrepotNom: bucketNom,
+            modeMontage: mode,
+            camionId: camChoisi.id,
+            camionNom: camChoisi.nom,
+            capacite: capa,
+            stops: [{
+              clientId: c.id, entreprise: c.entreprise, nbVelos: aPrendre,
               ville: c.ville, estParis: c.estParis, creneauLivraison: c.creneauLivraison,
               apporteurLower: c.apporteurLower, lat: c.lat, lng: c.lng,
               codePostal: c.codePostal, adresse: c.adresse,
-            });
-            slot.totalVelos += reste;
-            c.reste -= reste;
-            reste = 0;
-            // Le client n est pas servi totalement, mais son reste sera
-            // marqué bloqué (pas de re-split sur un autre jour). Yoann
-            // décidera manuellement (commande supplémentaire ou multi-camions).
-            break;
+            }],
+            totalVelos: aPrendre,
+          });
+          stockResiduel -= aPrendre;
+          // Si client > capa du camion : signaler reste bloqué
+          if (aPrendre < c.reste) {
+            bloques.push({ ...c, reste: c.reste - aPrendre });
           }
-          if (slot.stops.length === 0) break;
-          slots.push(slot);
-          stk.montes -= slot.totalVelos;
         }
-        // Clients montés non servis faute de stock
-        for (; i < b.clientsMontes.length; i++) {
-          const c = b.clientsMontes[i];
-          if (c.reste > 0) clientsBloques.push({
+        // Yoann 2026-05-03 — passe d optimisation finale : si plusieurs
+        // slots du même camion type avec remplissage faible, on essaie
+        // de fusionner en re-faisant FFD (pour pousser le remplissage
+        // au max). Ici déjà appliqué via le tri décroissant initial.
+        // Tri par distance pour l affichage (plus proche d abord)
+        for (const s of slotsBucket) {
+          s.stops.sort((a, b) =>
+            haversineKmFs(bucketLat, bucketLng, a.lat, a.lng)
+            - haversineKmFs(bucketLat, bucketLng, b.lat, b.lng));
+        }
+        return { slotsBucket, bloques, stockUtilise: stockDispo - stockResiduel };
+      };
+
+      for (const b of buckets.values()) {
+        const stk = stockResiduel.get(b.entrepot.id)!;
+        // Pack montés
+        const { slotsBucket: smt, bloques: bm, stockUtilise: usedM } = packBucket(
+          b.entrepot.id, b.entrepot.nom, b.entrepot.lat, b.entrepot.lng,
+          b.clientsMontes, "atelier", stk.montes,
+        );
+        slots.push(...smt);
+        stk.montes -= usedM;
+        for (const c of bm) {
+          clientsBloques.push({
             clientId: c.id, entreprise: c.entreprise, ville: c.ville,
             reste: c.reste, modeRequis: "atelier", entrepotPrevu: b.entrepot.nom,
           });
         }
-        // Slot cartons (gros volumes) — plafonné au stock cartons dispo
-        i = 0;
-        while (i < b.clientsCartons.length && stk.cartons > 0) {
-          const besoinParis = b.clientsCartons.slice(i).some((c) => c.estParis);
-          const cam = choisirCamion("client", besoinParis);
-          const capaEff = Math.min(cam.capaciteCartons, stk.cartons);
-          if (capaEff <= 0) break;
-          const slot: TourneeSlot = {
-            entrepotId: b.entrepot.id,
-            entrepotNom: b.entrepot.nom,
-            modeMontage: "client",
-            camionId: cam.id,
-            camionNom: cam.nom,
-            capacite: cam.capaciteCartons,
-            stops: [],
-            totalVelos: 0,
-          };
-          let reste = capaEff;
-          // Même règle métier "1 client = 1 jour" en mode cartons.
-          while (i < b.clientsCartons.length && reste > 0) {
-            const c = b.clientsCartons[i];
-            if (c.estParis && !cam.peutEntrerParis) { i++; continue; }
-            if (c.reste <= reste) {
-              slot.stops.push({
-                clientId: c.id, entreprise: c.entreprise, nbVelos: c.reste,
-                ville: c.ville, estParis: c.estParis, creneauLivraison: c.creneauLivraison,
-                apporteurLower: c.apporteurLower, lat: c.lat, lng: c.lng,
-                codePostal: c.codePostal, adresse: c.adresse,
-              });
-              slot.totalVelos += c.reste;
-              reste -= c.reste;
-              i++;
-              continue;
-            }
-            if (slot.stops.length > 0) break;
-            // Client trop gros pour 1 camion → on prend la capa max du
-            // camion (slot dédié), le reste sera dans clientsBloques
-            slot.stops.push({
-              clientId: c.id, entreprise: c.entreprise, nbVelos: reste,
-              ville: c.ville, estParis: c.estParis, creneauLivraison: c.creneauLivraison,
-              apporteurLower: c.apporteurLower, lat: c.lat, lng: c.lng,
-              codePostal: c.codePostal, adresse: c.adresse,
-            });
-            slot.totalVelos += reste;
-            c.reste -= reste;
-            reste = 0;
-            break;
-          }
-          if (slot.stops.length === 0) break;
-          slots.push(slot);
-          stk.cartons -= slot.totalVelos;
-        }
-        for (; i < b.clientsCartons.length; i++) {
-          const c = b.clientsCartons[i];
-          if (c.reste > 0) clientsBloques.push({
+        // Pack cartons
+        const { slotsBucket: sct, bloques: bc, stockUtilise: usedC } = packBucket(
+          b.entrepot.id, b.entrepot.nom, b.entrepot.lat, b.entrepot.lng,
+          b.clientsCartons, "client", stk.cartons,
+        );
+        slots.push(...sct);
+        stk.cartons -= usedC;
+        for (const c of bc) {
+          clientsBloques.push({
             clientId: c.id, entreprise: c.entreprise, ville: c.ville,
             reste: c.reste, modeRequis: "client", entrepotPrevu: b.entrepot.nom,
           });
