@@ -171,6 +171,23 @@ export default function LivraisonsPage() {
   // est visible si AU MOINS UN filtre matche. Permet de comparer visuellement
   // plusieurs charges (ex: ricky + ETHAN sur la même semaine).
   const [filtresIntervenants, setFiltresIntervenants] = useState<string[]>([]);
+  // Yoann 2026-05-03 : carte entrepots (id -> nom) chargée pour le filtre
+  // par entrepôt source. Pas dans data-context (pas utilisé ailleurs).
+  const [entrepotsMap, setEntrepotsMap] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    const unsub = onSnapshot(collection(db, "entrepots"), (snap) => {
+      const m = new Map<string, string>();
+      for (const d of snap.docs) {
+        const data = d.data() as { nom?: string; dateArchivage?: unknown };
+        if (data.dateArchivage) continue;
+        m.set(d.id, String(data.nom || d.id));
+      }
+      setEntrepotsMap(m);
+    }, () => {
+      // erreur permissions / réseau : pas grave, le filtre entrepôt sera vide
+    });
+    return () => unsub();
+  }, []);
   // Compat : pour le chaînage des départs par chauffeur (ne s'active que si
   // un seul chauffeur est sélectionné).
   const filtreChauffeurId = (() => {
@@ -324,12 +341,15 @@ export default function LivraisonsPage() {
     const monteurIds = new Set<string>();
     const prepIds = new Set<string>();
     const apporteursLower = new Set<string>();
+    const entrepotIds = new Set<string>();
     for (const t of tournees) {
       const liv0 = t.livraisons[0];
       for (const id of liv0?.chefEquipeIds || []) chefIds.add(id);
       if (liv0?.chefEquipeId) chefIds.add(liv0.chefEquipeId);
       for (const id of liv0?.monteurIds || []) monteurIds.add(id);
       for (const id of liv0?.preparateurIds || []) prepIds.add(id);
+      const eid = liv0?.entrepotOrigineId;
+      if (eid) entrepotIds.add(eid);
       for (const l of t.livraisons) {
         const a = (l as { apporteurLower?: string }).apporteurLower;
         if (a) apporteursLower.add(a.toLowerCase());
@@ -340,13 +360,17 @@ export default function LivraisonsPage() {
     const apporteurs = equipe
       .filter((m) => m.role === "apporteur" && apporteursLower.has((m.nom || "").trim().toLowerCase()))
       .sort((a, b) => (a.nom || "").localeCompare(b.nom || ""));
+    const entrepots = Array.from(entrepotIds)
+      .map((id) => ({ id, nom: entrepotsMap.get(id) || id }))
+      .sort((a, b) => a.nom.localeCompare(b.nom));
     return {
       chefs: filterByIds(chefIds),
       monteurs: filterByIds(monteurIds),
       preparateurs: filterByIds(prepIds),
       apporteurs,
+      entrepots,
     };
-  }, [tournees, equipe]);
+  }, [tournees, equipe, entrepotsMap]);
 
   const chauffeurFilteredTournees = useMemo(() => {
     if (filtresIntervenants.length === 0) return filteredTournees;
@@ -366,6 +390,8 @@ export default function LivraisonsPage() {
           return t.livraisons.some(
             (l) => ((l as { apporteurLower?: string }).apporteurLower || "").toLowerCase() === key,
           );
+        case "entrepot":
+          return liv0?.entrepotOrigineId === key;
         default:
           return false;
       }
@@ -744,7 +770,8 @@ export default function LivraisonsPage() {
             intervenantsPresents.chefs.length > 0 ||
             intervenantsPresents.monteurs.length > 0 ||
             intervenantsPresents.preparateurs.length > 0 ||
-            intervenantsPresents.apporteurs.length > 0
+            intervenantsPresents.apporteurs.length > 0 ||
+            intervenantsPresents.entrepots.length > 0
           ) && (
             <MultiIntervenantSelect
               value={filtresIntervenants}
@@ -755,6 +782,7 @@ export default function LivraisonsPage() {
                 { label: "🔧 Monteurs", role: "monteur", options: intervenantsPresents.monteurs.map((m) => ({ key: m.id, label: m.nom })) },
                 { label: "📦 Préparateurs", role: "preparateur", options: intervenantsPresents.preparateurs.map((p) => ({ key: p.id, label: p.nom })) },
                 { label: "🤝 Apporteurs", role: "apporteur", options: intervenantsPresents.apporteurs.map((a) => ({ key: (a.nom || "").trim().toLowerCase(), label: a.nom })) },
+                { label: "🏬 Entrepôts source", role: "entrepot", options: intervenantsPresents.entrepots.map((e) => ({ key: e.id, label: e.nom })) },
               ]}
             />
           )}
