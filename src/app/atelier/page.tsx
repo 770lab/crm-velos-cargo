@@ -22,7 +22,7 @@
 //   - extractFnuciFromImage (Cloud Function)
 //   - assignFnuciToClient (firestore action)
 //   - markVeloPrepare (firestore action)
-import { Suspense, useEffect, useState, useMemo } from "react";
+import { Suspense, useEffect, useState, useMemo, useRef } from "react";
 import { useSearchParams } from "next/navigation";
 import Link from "next/link";
 import { useCurrentUser } from "@/lib/current-user";
@@ -101,6 +101,8 @@ function AtelierPage() {
   const [scanning, setScanning] = useState(false);
   const [lastResult, setLastResult] = useState<{ ok: boolean; msg: string } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [scannetteCode, setScannetteCode] = useState("");
+  const scannetteInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     if (!sessionId) {
@@ -210,13 +212,54 @@ function AtelierPage() {
   const totalRestants = useMemo(() => clients.reduce((s, c) => s + c.reste, 0), [clients]);
   const totalCommandes = useMemo(() => clients.reduce((s, c) => s + c.nbVelosCommandes, 0), [clients]);
 
-  const onScanFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file || !selectedClientId) {
-      if (!selectedClientId) alert("Sélectionne un client avant de scanner");
-      return;
+  // Yoann 2026-05-03 — workflow réel : c est la SCANNETTE physique (USB/BT)
+  // qui tape le FNUCI dans l input + Enter automatique. La caméra/photo est
+  // un fallback si la scannette ne lit pas (sticker abîmé). Pas de Gemini
+  // Vision ici : direct le code lu par la scannette → assignFnuciToClient.
+
+  // Affilie un FNUCI déjà identifié (que ce soit via scannette ou photo)
+  const affilierFnuci = async (fnuciRaw: string) => {
+    const fnuci = fnuciRaw.trim().toUpperCase();
+    if (!fnuci) return;
+    if (!selectedClientId) return alert("Sélectionne un client avant de scanner");
+    setScanning(true);
+    setLastResult(null);
+    try {
+      const aff = (await gasPost("assignFnuciToClient", {
+        clientId: selectedClientId,
+        fnuci,
+      })) as { ok?: boolean; error?: string; code?: string };
+      if (aff.ok === false || aff.error) {
+        setLastResult({ ok: false, msg: `FNUCI ${fnuci} : ${aff.error}` });
+        return;
+      }
+      const userId = session?.chefId || user?.id || null;
+      if (userId) {
+        await gasPost("markVeloPrepare", { fnuci, userId });
+      }
+      const cliNom = clients.find((c) => c.id === selectedClientId)?.entreprise || "?";
+      setLastResult({ ok: true, msg: `✓ ${fnuci} → ${cliNom} (préparé)` });
+      setRefreshKey((k) => k + 1);
+    } catch (e) {
+      setLastResult({ ok: false, msg: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setScanning(false);
     }
+  };
+
+  const onScannetteSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const code = scannetteCode.trim();
+    setScannetteCode("");
+    if (!code) return;
+    await affilierFnuci(code);
+    // Re-focus pour scan suivant
+    setTimeout(() => scannetteInputRef.current?.focus(), 50);
+  };
+
+  // Fallback photo+Gemini si scannette n arrive pas à lire
+  const processPhoto = async (file: File) => {
+    if (!selectedClientId) return alert("Sélectionne un client avant de scanner");
     setScanning(true);
     setLastResult(null);
     try {
@@ -228,33 +271,31 @@ function AtelierPage() {
       })) as { ok?: boolean; extracted?: string[]; error?: string };
       if (!ident.ok || !ident.extracted || ident.extracted.length === 0) {
         setLastResult({ ok: false, msg: "Aucun FNUCI lisible. Reprends une photo plus nette." });
+        setScanning(false);
         return;
       }
       const fnuci = ident.extracted[0];
-      const aff = (await gasPost("assignFnuciToClient", {
-        clientId: selectedClientId,
-        fnuci,
-      })) as { ok?: boolean; error?: string; code?: string };
-      if (aff.ok === false || aff.error) {
-        setLastResult({ ok: false, msg: `FNUCI ${fnuci} : ${aff.error}` });
-        return;
-      }
-      const userId = session?.chefId || user?.id || null;
-      if (userId) {
-        await gasPost("markVeloPrepare", {
-          fnuci,
-          userId,
-        });
-      }
-      const cliNom = clients.find((c) => c.id === selectedClientId)?.entreprise || "?";
-      setLastResult({ ok: true, msg: `✓ ${fnuci} → ${cliNom} (préparé)` });
-      setRefreshKey((k) => k + 1);
+      setScanning(false);
+      await affilierFnuci(fnuci);
     } catch (e) {
       setLastResult({ ok: false, msg: e instanceof Error ? e.message : String(e) });
-    } finally {
       setScanning(false);
     }
   };
+
+  const onScanFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    await processPhoto(file);
+  };
+
+  // Auto-focus input scannette quand un client est sélectionné
+  useEffect(() => {
+    if (selectedClientId && scannetteInputRef.current) {
+      scannetteInputRef.current.focus();
+    }
+  }, [selectedClientId]);
 
   if (!sessionId) {
     return (
@@ -337,11 +378,33 @@ function AtelierPage() {
         {selectedClient ? (
           <>
             <div className="text-sm font-bold text-blue-900 mb-2">
-              📷 Scanner un carton pour <strong>{selectedClient.entreprise}</strong>
+              🔫 Scanner un carton pour <strong>{selectedClient.entreprise}</strong>
             </div>
             <div className="text-[11px] text-blue-700 mb-3">
-              Photo du sticker FNUCI (BC...). Gemini lit, on affilie, on marque préparé.
               Reste à affilier : <strong>{selectedClient.reste} vélo{selectedClient.reste > 1 ? "s" : ""}</strong>.
+              La scannette tape le FNUCI dans le champ ci-dessous puis Enter automatique.
+            </div>
+            <form onSubmit={onScannetteSubmit} className="mb-3">
+              <input
+                ref={scannetteInputRef}
+                type="text"
+                value={scannetteCode}
+                onChange={(e) => setScannetteCode(e.target.value)}
+                disabled={scanning}
+                autoFocus
+                placeholder="Scanner ou taper le FNUCI (BC...) puis Enter"
+                className="w-full px-3 py-3 border-2 border-blue-400 rounded-lg text-sm font-mono uppercase focus:border-blue-600 focus:outline-none"
+              />
+              <button
+                type="submit"
+                disabled={scanning || !scannetteCode.trim()}
+                className="hidden"
+              >
+                Submit
+              </button>
+            </form>
+            <div className="text-[10px] text-gray-500 italic mb-2 text-center">
+              — ou bien si la scannette ne lit pas le sticker —
             </div>
             <label className="block">
               <input
@@ -352,8 +415,8 @@ function AtelierPage() {
                 disabled={scanning}
                 className="hidden"
               />
-              <span className={`block w-full text-center px-4 py-3 rounded-lg font-semibold cursor-pointer ${scanning ? "bg-gray-300 text-gray-500" : "bg-blue-600 text-white hover:bg-blue-700"}`}>
-                {scanning ? "🔍 Identification..." : "📷 Scanner un carton"}
+              <span className={`block w-full text-center px-4 py-2 rounded-lg text-sm cursor-pointer ${scanning ? "bg-gray-300 text-gray-500" : "bg-white border border-blue-300 text-blue-700 hover:bg-blue-50"}`}>
+                {scanning ? "🔍 Identification..." : "📷 Photo Gemini (fallback)"}
               </span>
             </label>
           </>
