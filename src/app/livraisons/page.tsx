@@ -480,6 +480,11 @@ export default function LivraisonsPage() {
   };
   const [sessionsAtelier, setSessionsAtelier] = useState<SessionAtelierMini[]>([]);
   useEffect(() => {
+    // Yoann 2026-05-03 : RBAC apporteur — sessionsMontageAtelier est
+    // bloqué pour les apporteurs côté rules. On skip le onSnapshot pour
+    // éviter "Missing permissions" + cacher la card côté UI (interne
+    // logistique, pas du métier apporteur).
+    if (currentUser?.role === "apporteur") return;
     const unsub = onSnapshot(collection(db, "sessionsMontageAtelier"), (snap) => {
       const rows: SessionAtelierMini[] = [];
       for (const d of snap.docs) {
@@ -502,7 +507,7 @@ export default function LivraisonsPage() {
       setSessionsAtelier(rows);
     });
     return () => unsub();
-  }, []);
+  }, [currentUser?.role]);
   const sessionsByDate = useMemo(() => {
     const m = new Map<string, SessionAtelierMini[]>();
     for (const s of sessionsAtelier) {

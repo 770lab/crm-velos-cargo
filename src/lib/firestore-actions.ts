@@ -208,6 +208,10 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "setClientVelosTarget",
   "cancelClient",
   "restoreClient",
+  // Yoann 2026-05-03 : getClient passe maintenant par Firestore (avant
+  // routing GAS legacy qui plantait silencieusement pour les apporteurs
+  // → fiche client bloquée sur "Chargement…").
+  "getClient",
   // livraisons
   "createLivraison",
   "updateLivraison",
@@ -278,6 +282,10 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   // Yoann 2026-05-03 : reset FNUCI sur un vélo (libère le slot pour
   // ré-affilier). Garde le vélo, retire fnuci/datePreparation/preparateurId.
   "resetVeloFnuci",
+  // Yoann 2026-05-03 : commentaire apporteur (1 par client + 1 par
+  // livraison). L apporteur n a le droit d écrire que ce champ-là sur
+  // ses propres dossiers (rules Firestore).
+  "setApporteurNote",
   // Yoann 2026-05-03 : Gemini scanne les anomalies clients
   "detectAnomaliesClients",
   // Yoann 2026-05-03 : simulation macro Opération Paris (1 bouton, full plan)
@@ -1205,6 +1213,22 @@ export async function runFirestoreAction(
       const veloId = getRequired(body, "veloId");
       const fnuci = getString(body, "fnuci") || null;
       await updateDoc(doc(db, "velos", veloId), { fnuci, updatedAt: ts() });
+      return { ok: true };
+    }
+
+    case "setApporteurNote": {
+      // Yoann 2026-05-03 — commentaire apporteur sur 1 client OU 1 livraison.
+      // Champ ouvert à l apporteur (rules Firestore le permettent sur ses
+      // propres dossiers). Note unique (overwrite à chaque save).
+      const target = getString(body, "target"); // "client" | "livraison"
+      const id = getRequired(body, "id");
+      const note = (getString(body, "note") || "").trim();
+      const collec = target === "livraison" ? "livraisons" : "clients";
+      await updateDoc(doc(db, collec, id), {
+        apporteurNote: note,
+        apporteurNoteAt: ts(),
+        updatedAt: ts(),
+      });
       return { ok: true };
     }
 

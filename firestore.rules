@@ -80,6 +80,13 @@ service cloud.firestore {
                   || (isStaff() && !isApporteur())
                   || (isApporteur() && resource.data.apporteurLower == apporteurNameLower());
       allow write: if isAdmin();
+      // Yoann 2026-05-03 : apporteur peut écrire UNIQUEMENT le champ
+      // apporteurNote (commentaire libre) sur ses propres clients.
+      // Tous les autres champs restent verrouillés (read-only ailleurs).
+      allow update: if isApporteur()
+                    && resource.data.apporteurLower == apporteurNameLower()
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                       .hasOnly(['apporteurNote', 'apporteurNoteAt', 'updatedAt']);
     }
 
     // Vélos : update ouvert au staff terrain pour le marquage d'étapes
@@ -106,7 +113,11 @@ service cloud.firestore {
       allow read: if isAdmin()
                   || (isStaff() && !isApporteur())
                   || (isApporteur() && resource.data.apporteurLower == apporteurNameLower());
-      allow update: if isStaff() && !isApporteur();
+      allow update: if (isStaff() && !isApporteur())
+                    || (isApporteur()
+                        && resource.data.apporteurLower == apporteurNameLower()
+                        && request.resource.data.diff(resource.data).affectedKeys()
+                           .hasOnly(['apporteurNote', 'apporteurNoteAt', 'updatedAt']));
       allow create, delete: if isAdmin();
     }
 
