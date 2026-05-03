@@ -1840,6 +1840,9 @@ export function SessionAtelierModal({
   // Yoann 2026-05-03 : associer une session atelier aux tournées qu'elle
   // prépare. Permet de tracer "cette session AXDIS prépare les tournées
   // 26, 42, 43, 53" et d'éviter le doublon avec un champ Notes texte libre.
+  // Yoann 2026-05-04 : on liste toutes les tournées planifiées >= date de
+  // la session, parce qu'une session de pré-montage peut préparer pour
+  // des tournées du lendemain ou jours suivants (vélos stockés en entrepôt).
   const [tourneeIds, setTourneeIds] = useState<string[]>([]);
   const [tourneesDuJour, setTourneesDuJour] = useState<Array<{
     id: string;
@@ -1848,6 +1851,7 @@ export function SessionAtelierModal({
     nbVelos: number;
     nbClients: number;
     modeMontage: string | null;
+    datePrevue: string | null;
   }>>([]);
   const [quantitePrevue, setQuantitePrevue] = useState("");
   const [quantiteReelle, setQuantiteReelle] = useState("");
@@ -1933,12 +1937,15 @@ export function SessionAtelierModal({
       nbVelos: number;
       nbClients: number;
       modeMontage: string | null;
+      datePrevue: string | null;
     };
     const byTour = new Map<string, Agg>();
     for (const l of livraisonsCtx) {
       if (!l.datePrevue) continue;
-      // datePrevue côté context = ISO string (data-context-firebase normalise)
-      if (!String(l.datePrevue).startsWith(date)) continue;
+      // datePrevue côté context = ISO string (data-context-firebase normalise).
+      // On garde >= date de session (futur compris : pré-montage pour J+1, J+2…).
+      const livDate = String(l.datePrevue).slice(0, 10);
+      if (livDate < date) continue;
       if (l.statut === "annulee") continue;
       const tid = l.tourneeId;
       if (!tid) continue;
@@ -1949,6 +1956,7 @@ export function SessionAtelierModal({
         nbVelos: 0,
         nbClients: 0,
         modeMontage: l.modeMontage || null,
+        datePrevue: livDate,
       };
       cur.nbVelos += Number(l.nbVelos || 0);
       cur.nbClients += 1;
@@ -1965,8 +1973,15 @@ export function SessionAtelierModal({
         nbVelos: t.nbVelos,
         nbClients: t.nbClients,
         modeMontage: t.modeMontage,
+        datePrevue: t.datePrevue,
       }))
-      .sort((a, b) => (a.numero ?? 999) - (b.numero ?? 999));
+      // Tri : par date asc puis par numéro de tournée
+      .sort((a, b) => {
+        const da = a.datePrevue || "";
+        const db = b.datePrevue || "";
+        if (da !== db) return da.localeCompare(db);
+        return (a.numero ?? 999) - (b.numero ?? 999);
+      });
     setTourneesDuJour(rows);
   }, [date, equipe, livraisonsCtx]);
 
@@ -2335,46 +2350,74 @@ export function SessionAtelierModal({
           <div>
             <label className="text-xs text-gray-600">
               Tournées préparées par cette session ({tourneeIds.length} sélectionnée{tourneeIds.length > 1 ? "s" : ""})
+              <span className="ml-1 text-[10px] text-gray-400">— à partir du {date}, jours suivants compris</span>
             </label>
-            <div className="mt-1 max-h-40 overflow-y-auto border rounded p-2 bg-gray-50">
+            <div className="mt-1 max-h-60 overflow-y-auto border rounded p-2 bg-gray-50">
               {tourneesDuJour.length === 0 ? (
                 <div className="text-[11px] text-gray-400 italic text-center py-2">
-                  Aucune tournée planifiée le {date}.
+                  Aucune tournée planifiée à partir du {date}.
                 </div>
               ) : (
                 <div className="space-y-1">
-                  {tourneesDuJour.map((t) => {
-                    const sel = tourneeIds.includes(t.id);
-                    return (
-                      <label
-                        key={t.id}
-                        className={`flex items-center gap-2 px-2 py-1 rounded cursor-pointer text-xs ${
-                          sel ? "bg-amber-100 border border-amber-300" : "bg-white border border-gray-200 hover:bg-amber-50"
-                        }`}
-                      >
-                        <input
-                          type="checkbox"
-                          checked={sel}
-                          onChange={() =>
-                            setTourneeIds((prev) =>
-                              prev.includes(t.id) ? prev.filter((x) => x !== t.id) : [...prev, t.id]
-                            )
-                          }
-                          className="w-3.5 h-3.5"
-                        />
-                        <span className="font-medium">
-                          {t.numero != null ? `Tournée ${t.numero}` : "Tournée ?"}
-                        </span>
-                        {t.chauffeurNom && <span className="text-gray-600">· {t.chauffeurNom}</span>}
-                        <span className="text-gray-500">
-                          · {t.nbVelos}v / {t.nbClients} client{t.nbClients > 1 ? "s" : ""}
-                        </span>
-                        {t.modeMontage === "atelier" && (
-                          <span className="ml-auto text-[10px] px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">atelier</span>
-                        )}
-                      </label>
-                    );
-                  })}
+                  {(() => {
+                    // Group par date pour une lecture rapide multi-jours.
+                    const groups = new Map<string, typeof tourneesDuJour>();
+                    for (const t of tourneesDuJour) {
+                      const d = t.datePrevue || "?";
+                      if (!groups.has(d)) groups.set(d, []);
+                      groups.get(d)!.push(t);
+                    }
+                    const fmtDate = (iso: string) => {
+                      try {
+                        return new Date(iso + "T12:00:00").toLocaleDateString("fr-FR", {
+                          weekday: "short",
+                          day: "numeric",
+                          month: "short",
+                        });
+                      } catch {
+                        return iso;
+                      }
+                    };
+                    return Array.from(groups.entries()).map(([d, list]) => (
+                      <div key={d} className="space-y-1">
+                        <div className="text-[10px] uppercase tracking-wide text-gray-500 font-semibold pt-1 first:pt-0 capitalize">
+                          {d === date ? `📅 ${fmtDate(d)} (jour de la session)` : `📅 ${fmtDate(d)}`}
+                        </div>
+                        {list.map((t) => {
+                          const sel = tourneeIds.includes(t.id);
+                          return (
+                            <label
+                              key={t.id}
+                              className={`flex items-center gap-2 px-2 py-1 rounded cursor-pointer text-xs ${
+                                sel ? "bg-amber-100 border border-amber-300" : "bg-white border border-gray-200 hover:bg-amber-50"
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={sel}
+                                onChange={() =>
+                                  setTourneeIds((prev) =>
+                                    prev.includes(t.id) ? prev.filter((x) => x !== t.id) : [...prev, t.id]
+                                  )
+                                }
+                                className="w-3.5 h-3.5"
+                              />
+                              <span className="font-medium">
+                                {t.numero != null ? `Tournée ${t.numero}` : "Tournée ?"}
+                              </span>
+                              {t.chauffeurNom && <span className="text-gray-600">· {t.chauffeurNom}</span>}
+                              <span className="text-gray-500">
+                                · {t.nbVelos}v / {t.nbClients} client{t.nbClients > 1 ? "s" : ""}
+                              </span>
+                              {t.modeMontage === "atelier" && (
+                                <span className="ml-auto text-[10px] px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">atelier</span>
+                              )}
+                            </label>
+                          );
+                        })}
+                      </div>
+                    ));
+                  })()}
                 </div>
               )}
             </div>
