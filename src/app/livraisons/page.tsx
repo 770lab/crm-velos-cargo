@@ -530,6 +530,8 @@ export default function LivraisonsPage() {
     chefNom?: string | null;
     chefAdminTerrainId?: string | null;
     chefAdminTerrainNom?: string | null;
+    tourneeIds?: string[];
+    tourneeNumeros?: number[];
     quantitePrevue?: number | null;
     statut: "planifiee" | "en_cours" | "terminee" | "annulee";
   };
@@ -557,6 +559,8 @@ export default function LivraisonsPage() {
           chefNom: typeof data.chefNom === "string" ? data.chefNom : null,
           chefAdminTerrainId: typeof data.chefAdminTerrainId === "string" ? data.chefAdminTerrainId : null,
           chefAdminTerrainNom: typeof data.chefAdminTerrainNom === "string" ? data.chefAdminTerrainNom : null,
+          tourneeIds: Array.isArray(data.tourneeIds) ? data.tourneeIds : [],
+          tourneeNumeros: Array.isArray(data.tourneeNumeros) ? data.tourneeNumeros : [],
           quantitePrevue: typeof data.quantitePrevue === "number" ? data.quantitePrevue : null,
           statut: ["en_cours", "terminee", "annulee"].includes(data.statut)
             ? data.statut
@@ -1038,6 +1042,7 @@ type SessionAtelierItem = {
   heureFin?: string | null;
   quantitePrevue?: number | null;
   monteurNoms: string[];
+  tourneeNumeros?: number[];
 };
 type SessionsByDate = Map<string, SessionAtelierItem[]>;
 
@@ -1077,6 +1082,11 @@ function SessionAtelierCard({ s }: { s: SessionAtelierItem }) {
         {s.monteurNoms.length} monteur{s.monteurNoms.length > 1 ? "s" : ""}
         {s.quantitePrevue ? ` · ${s.quantitePrevue}v` : ""}
       </div>
+      {s.tourneeNumeros && s.tourneeNumeros.length > 0 && (
+        <div className="text-amber-800 opacity-90 truncate">
+          → T{s.tourneeNumeros.join(", T")}
+        </div>
+      )}
     </div>
     {showEdit && (
       <SessionAtelierModal
@@ -5506,6 +5516,7 @@ type SessionAtelierForBrief = {
   chefNom?: string | null;
   chefAdminTerrainId?: string | null;
   chefAdminTerrainNom?: string | null;
+  tourneeNumeros?: number[];
   quantitePrevue?: number | null;
   statut: "planifiee" | "en_cours" | "terminee" | "annulee";
 };
@@ -5837,7 +5848,10 @@ function BriefJourneeModal({
         else if (s.heureDebut) creneau = ` dès ${fmtH(s.heureDebut)}`;
         else if (s.heureFin) creneau = ` jusqu'à ${fmtH(s.heureFin)}`;
         const qte = s.quantitePrevue ? ` · ${s.quantitePrevue} vélos prévus` : "";
-        lines.push(`• Atelier ${s.entrepotNom}${creneau} · ${equipeStr || "(personnel à affecter)"}${qte}`);
+        const tournees = (s.tourneeNumeros && s.tourneeNumeros.length > 0)
+          ? ` → prépare T${s.tourneeNumeros.join(", T")}`
+          : "";
+        lines.push(`• Atelier ${s.entrepotNom}${creneau} · ${equipeStr || "(personnel à affecter)"}${qte}${tournees}`);
       }
     }
     // Marqueur insertion note pour générer textBare (sans note) en parallèle.
