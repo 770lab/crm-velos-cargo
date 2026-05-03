@@ -347,11 +347,13 @@ export default function ClientsPage() {
         }}
       />
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
-        <table className="w-full min-w-[800px] text-sm">
-          <thead className="bg-gray-50 border-b">
+      <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto max-h-[calc(100vh-14rem)] overflow-y-auto">
+        <table className="w-full min-w-[800px] text-sm border-separate border-spacing-0">
+          {/* Yoann 2026-05-03 : entête sticky top + colonne Entreprise
+              sticky left, pour ne pas perdre le contexte au scroll. */}
+          <thead className="bg-gray-50 border-b sticky top-0 z-30">
             <tr>
-              <th className="px-3 py-3 w-8">
+              <th className="px-3 py-3 w-8 bg-gray-50 sticky left-0 z-40 border-b">
                 <input
                   type="checkbox"
                   aria-label="Sélectionner tous les clients filtrés"
@@ -367,7 +369,7 @@ export default function ClientsPage() {
                   }}
                 />
               </th>
-              <th className="text-left px-4 py-3 font-medium text-gray-600">Entreprise</th>
+              <th className="text-left px-4 py-3 font-medium text-gray-600 bg-gray-50 sticky left-8 z-40 border-b shadow-[1px_0_0_#e5e7eb]">Entreprise</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Apporteur</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600">Ville</th>
               <th className="text-center px-4 py-3 font-medium text-gray-600">Dép.</th>
@@ -398,9 +400,11 @@ export default function ClientsPage() {
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-100">
-            {filteredClients.map((c) => (
-              <tr key={c.id} className={`hover:bg-gray-50 ${selectedIds.has(c.id) ? "bg-blue-50/50" : ""}`}>
-                <td className="px-3 py-3 w-8">
+            {filteredClients.map((c) => {
+              const rowBg = selectedIds.has(c.id) ? "bg-blue-50/50" : "bg-white";
+              return (
+              <tr key={c.id} className="hover:bg-gray-50 group">
+                <td className={`px-3 py-3 w-8 sticky left-0 z-10 ${rowBg} group-hover:bg-gray-50`}>
                   <input
                     type="checkbox"
                     aria-label={`Sélectionner ${c.entreprise}`}
@@ -413,7 +417,7 @@ export default function ClientsPage() {
                     }}
                   />
                 </td>
-                <td className="px-4 py-3">
+                <td className={`px-4 py-3 sticky left-8 z-10 ${rowBg} group-hover:bg-gray-50 shadow-[1px_0_0_#e5e7eb]`}>
                   <Link
                     href={`/clients/detail?id=${c.id}`}
                     className="text-blue-600 hover:underline font-medium"
@@ -522,7 +526,8 @@ export default function ClientsPage() {
                   </button>
                 </td>
               </tr>
-            ))}
+              );
+            })}
             {filteredClients.length === 0 && (
               <tr>
                 <td colSpan={15} className="px-4 py-12 text-center text-gray-400">
