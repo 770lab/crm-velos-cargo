@@ -15,6 +15,7 @@ import {
 } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { useCurrentUser } from "@/lib/current-user";
+import { useData } from "@/lib/data-context";
 
 // Yoann 2026-05-01 : 4 entrepôts utilisés pour la logistique CEE.
 // - AXDIS PRO (Le Blanc-Mesnil) : entrepôt source, cartons reçus de Tiffany
@@ -1915,76 +1916,59 @@ export function SessionAtelierModal({
   }, []);
 
   // Yoann 2026-05-03 : charge les tournées planifiées du jour pour permettre
-  // d'associer la session atelier aux tournées qu'elle prépare. Une tournée
-  // = ensemble de livraisons partageant le même tourneeId. On en récupère
-  // numero, chauffeur, nb vélos, nb clients, mode montage.
+  // d'associer la session atelier aux tournées qu'elle prépare. Source = data
+  // context (livraisons déjà chargées via onSnapshot, datePrevue normalisée
+  // en string ISO). Évite la query Firestore string ">=" qui ratait les
+  // livraisons stockées en Timestamp Firestore (bug T26 = 7v au lieu de 21v).
+  const { livraisons: livraisonsCtx } = useData();
   useEffect(() => {
     if (!date) {
       setTourneesDuJour([]);
       return;
     }
-    let alive = true;
-    (async () => {
-      const { collection, query, where, getDocs } = await import("firebase/firestore");
-      const { db } = await import("@/lib/firebase");
-      // Récupère toutes les livraisons du jour (datePrevue commence par YYYY-MM-DD)
-      const livSnap = await getDocs(query(
-        collection(db, "livraisons"),
-        where("datePrevue", ">=", date),
-        where("datePrevue", "<", date + "Z"),
-      ));
-      // Group par tourneeId
-      type Agg = {
-        id: string;
-        numero: number | null;
-        chauffeurId: string | null;
-        nbVelos: number;
-        nbClients: number;
-        modeMontage: string | null;
+    type Agg = {
+      id: string;
+      numero: number | null;
+      chauffeurId: string | null;
+      nbVelos: number;
+      nbClients: number;
+      modeMontage: string | null;
+    };
+    const byTour = new Map<string, Agg>();
+    for (const l of livraisonsCtx) {
+      if (!l.datePrevue) continue;
+      // datePrevue côté context = ISO string (data-context-firebase normalise)
+      if (!String(l.datePrevue).startsWith(date)) continue;
+      if (l.statut === "annulee") continue;
+      const tid = l.tourneeId;
+      if (!tid) continue;
+      const cur = byTour.get(tid) || {
+        id: tid,
+        numero: typeof l.tourneeNumero === "number" ? l.tourneeNumero : null,
+        chauffeurId: l.chauffeurId || null,
+        nbVelos: 0,
+        nbClients: 0,
+        modeMontage: l.modeMontage || null,
       };
-      const byTour = new Map<string, Agg>();
-      for (const d of livSnap.docs) {
-        const data = d.data() as {
-          tourneeId?: string;
-          tourneeNumero?: number;
-          chauffeurId?: string;
-          nbVelos?: number;
-          statut?: string;
-          modeMontage?: string;
-        };
-        if (data.statut === "annulee") continue;
-        const tid = data.tourneeId;
-        if (!tid) continue;
-        const cur = byTour.get(tid) || {
-          id: tid,
-          numero: typeof data.tourneeNumero === "number" ? data.tourneeNumero : null,
-          chauffeurId: data.chauffeurId || null,
-          nbVelos: 0,
-          nbClients: 0,
-          modeMontage: data.modeMontage || null,
-        };
-        cur.nbVelos += Number(data.nbVelos || 0);
-        cur.nbClients += 1;
-        if (cur.numero === null && typeof data.tourneeNumero === "number") cur.numero = data.tourneeNumero;
-        if (!cur.modeMontage && data.modeMontage) cur.modeMontage = data.modeMontage;
-        byTour.set(tid, cur);
-      }
-      // Lookup chauffeurNom depuis l'équipe déjà chargée
-      const eqMap = new Map(equipe.map((m) => [m.id, m.nom] as const));
-      const rows = Array.from(byTour.values())
-        .map((t) => ({
-          id: t.id,
-          numero: t.numero,
-          chauffeurNom: t.chauffeurId ? eqMap.get(t.chauffeurId) || null : null,
-          nbVelos: t.nbVelos,
-          nbClients: t.nbClients,
-          modeMontage: t.modeMontage,
-        }))
-        .sort((a, b) => (a.numero ?? 999) - (b.numero ?? 999));
-      if (alive) setTourneesDuJour(rows);
-    })();
-    return () => { alive = false; };
-  }, [date, equipe]);
+      cur.nbVelos += Number(l.nbVelos || 0);
+      cur.nbClients += 1;
+      if (cur.numero === null && typeof l.tourneeNumero === "number") cur.numero = l.tourneeNumero;
+      if (!cur.modeMontage && l.modeMontage) cur.modeMontage = l.modeMontage;
+      byTour.set(tid, cur);
+    }
+    const eqMap = new Map(equipe.map((m) => [m.id, m.nom] as const));
+    const rows = Array.from(byTour.values())
+      .map((t) => ({
+        id: t.id,
+        numero: t.numero,
+        chauffeurNom: t.chauffeurId ? eqMap.get(t.chauffeurId) || null : null,
+        nbVelos: t.nbVelos,
+        nbClients: t.nbClients,
+        modeMontage: t.modeMontage,
+      }))
+      .sort((a, b) => (a.numero ?? 999) - (b.numero ?? 999));
+    setTourneesDuJour(rows);
+  }, [date, equipe, livraisonsCtx]);
 
   // Charge les conflits monteur pour la date sélectionnée :
   //  - livraisons.monteurIds dont datePrevue commence par YYYY-MM-DD
