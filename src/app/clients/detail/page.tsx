@@ -575,7 +575,7 @@ function ClientDetailPage() {
           photo a la livraison ; il y en a 1 par tournee (un meme client peut
           avoir plusieurs tournees s'il y a plusieurs gros camions). On
           deduplique par tourneeId via velo.livraison. */}
-      <BlSignesSection velos={client.velos} />
+      <BlSignesSection velos={client.velos} clientId={id} />
 
       <div className="grid grid-cols-3 gap-4 mb-8">
         <div className="bg-white rounded-xl border p-4 text-center">
@@ -941,7 +941,7 @@ function StatusBadge({ ok }: { ok: boolean }) {
 // il y en a 1 par tournee (un client gros peut avoir plusieurs tournees).
 // On deduplique via velo.livraison.tourneeId pour eviter les doublons quand
 // plusieurs velos partagent la meme livraison.
-function BlSignesSection({ velos }: { velos: Velo[] }) {
+function BlSignesSection({ velos, clientId }: { velos: Velo[]; clientId: string }) {
   const seenTournees = new Set<string>();
   const bls: Array<{ tourneeId: string; datePrevue: string | null; statut: string; urlBlSigne: string | null }> = [];
   for (const v of velos) {
@@ -980,18 +980,32 @@ function BlSignesSection({ velos }: { velos: Velo[] }) {
                 {" · "}Tournée <span className="font-mono">{b.tourneeId}</span>
               </div>
             </div>
-            {b.urlBlSigne ? (
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {/* Yoann 2026-05-03 : bouton pour imprimer le BL vierge
+                  (à faire signer/tamponner par le client). Toujours dispo
+                  dès qu une tournée existe, même avant le tampon. */}
               <a
-                href={b.urlBlSigne}
+                href={`${BASE_PATH}/bl?tourneeId=${encodeURIComponent(b.tourneeId)}&clientId=${encodeURIComponent(clientId)}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-xs font-medium text-emerald-700 bg-white border border-emerald-300 rounded-lg px-3 py-1.5 hover:bg-emerald-100 whitespace-nowrap"
+                className="text-xs font-medium text-blue-700 bg-white border border-blue-300 rounded-lg px-3 py-1.5 hover:bg-blue-100 whitespace-nowrap"
+                title="Imprimer le bon de livraison vierge à faire tamponner par le client"
               >
-                📄 Voir le BL signé
+                🖨 Imprimer BL
               </a>
-            ) : (
-              <span className="text-xs text-gray-500 italic whitespace-nowrap">Pas encore tamponné</span>
-            )}
+              {b.urlBlSigne ? (
+                <a
+                  href={b.urlBlSigne}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs font-medium text-emerald-700 bg-white border border-emerald-300 rounded-lg px-3 py-1.5 hover:bg-emerald-100 whitespace-nowrap"
+                >
+                  📄 Voir le BL signé
+                </a>
+              ) : (
+                <span className="text-xs text-gray-500 italic whitespace-nowrap">Pas encore tamponné</span>
+              )}
+            </div>
           </div>
         ))}
       </div>
