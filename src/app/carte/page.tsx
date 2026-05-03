@@ -757,6 +757,7 @@ export default function CartePage() {
           entrepotNom={showPlannerOnEntrepot.nom}
           stockCartons={showPlannerOnEntrepot.stockCartons}
           stockVelosMontes={showPlannerOnEntrepot.stockVelosMontes}
+          isFournisseur={showPlannerOnEntrepot.role === "fournisseur"}
           onClose={() => {
             setShowPlannerOnEntrepot(null);
             refresh("livraisons");
