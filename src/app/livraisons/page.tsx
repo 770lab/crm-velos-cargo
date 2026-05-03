@@ -1080,17 +1080,19 @@ function DayView({
         {list.length === 0 && sessions.length === 0 && (
           <div className="text-sm text-gray-400 italic text-center py-8">Aucune tournée ni session atelier ce jour-là.</div>
         )}
-        {list.map((t) => (
-          <TourneeCard key={t.tourneeId || t.livraisons[0].id} tournee={t} onClick={() => onOpen(t)} />
-        ))}
+        {/* Yoann 2026-05-03 : sessions atelier TOUJOURS en haut de la colonne
+            (avant les tournées) pour visibilité immédiate du montage planifié. */}
         {sessions.length > 0 && (
-          <div className="border-t border-amber-200 pt-2 mt-2 space-y-1">
+          <div className="space-y-1 pb-2 mb-2 border-b border-amber-200">
             <div className="text-[11px] font-semibold text-amber-900 mb-1">
               🔧 {sessions.length} session{sessions.length > 1 ? "s" : ""} atelier
             </div>
             {sessions.map((s) => <SessionAtelierCard key={s.id} s={s} />)}
           </div>
         )}
+        {list.map((t) => (
+          <TourneeCard key={t.tourneeId || t.livraisons[0].id} tournee={t} onClick={() => onOpen(t)} />
+        ))}
         <DayStaffingSummary tournees={list} />
       </div>
     </div>
@@ -1181,10 +1183,11 @@ function MultiDayView({
           return (
             <div key={iso} className="border-r last:border-r-0 p-2 space-y-1.5">
               {list.length === 0 && sessions.length === 0 && <div className="text-[11px] text-gray-300">—</div>}
+              {/* Sessions atelier en haut (Yoann 2026-05-03) */}
+              {sessions.map((s) => <SessionAtelierCard key={s.id} s={s} />)}
               {list.map((t) => (
                 <TourneeCard key={t.tourneeId || t.livraisons[0].id} tournee={t} onClick={() => onOpen(t)} compact />
               ))}
-              {sessions.map((s) => <SessionAtelierCard key={s.id} s={s} />)}
               <DayStaffingSummary tournees={list} />
             </div>
           );
@@ -1273,10 +1276,11 @@ function WeekView({
           return (
             <div key={iso} className="border-r last:border-r-0 p-2 space-y-1.5">
               {list.length === 0 && sessions.length === 0 && <div className="text-[11px] text-gray-300">—</div>}
+              {/* Sessions atelier en haut (Yoann 2026-05-03) */}
+              {sessions.map((s) => <SessionAtelierCard key={s.id} s={s} />)}
               {list.map((t) => (
                 <TourneeCard key={t.tourneeId || t.livraisons[0].id} tournee={t} onClick={() => onOpen(t)} compact />
               ))}
-              {sessions.map((s) => <SessionAtelierCard key={s.id} s={s} />)}
               <DayStaffingSummary tournees={list} />
             </div>
           );
@@ -1331,15 +1335,16 @@ function MonthView({
               <div className={`text-xs font-medium ${inMonth ? "text-gray-700" : "text-gray-400"}`}>
                 {d.getDate()}
               </div>
+              {/* Sessions atelier en haut (Yoann 2026-05-03) */}
+              {sessionsByDate?.get(iso)?.map((s) => (
+                <SessionAtelierCard key={s.id} s={s} />
+              ))}
               {list.slice(0, 3).map((t) => (
                 <TourneeCard key={t.tourneeId || t.livraisons[0].id} tournee={t} onClick={() => onOpen(t)} compact />
               ))}
               {list.length > 3 && (
                 <div className="text-[10px] text-gray-500">+{list.length - 3} autres</div>
               )}
-              {sessionsByDate?.get(iso)?.map((s) => (
-                <SessionAtelierCard key={s.id} s={s} />
-              ))}
             </div>
           );
         })}
