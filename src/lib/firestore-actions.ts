@@ -297,6 +297,10 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   // diagnostic + routing (vague 3 — Cloud Functions)
   "testGemini",
   "getRouting",
+  // Yoann 2026-05-03 : brief logistique du jour (notes textuelles saisies
+  // par Yoann pour aider Gemini à comprendre les cascades inter-équipes
+  // multi-chauffeurs sur une journée donnée).
+  "setBriefJourNotes",
 ]);
 
 export function isMigrated(action: string): boolean {
@@ -4327,6 +4331,29 @@ export async function runFirestoreAction(
       const minPerVeloPerMonteur = Number(body.minPerVeloPerMonteur || 12);
       if (!epId) return { error: "entrepotId requis" };
 
+      // Yoann 2026-05-03 — Notes logistique du jour (cf. setBriefJourNotes).
+      // planifierJourneeCamion est un algo pur (FFD/CWS), pas d appel Gemini
+      // ici, mais on remonte les notes dans la réponse pour que l UI puisse
+      // les afficher en tête du résultat (et que d éventuels appels Gemini
+      // en aval — strategieGemini, ou un assistant manuel — puissent les
+      // récupérer). Date cible = body.datePrevue si fournie, sinon today.
+      let notesJourTxt = "";
+      let notesJourDate = "";
+      try {
+        const dateCible = (() => {
+          const d = getString(body, "datePrevue") || "";
+          if (/^\d{4}-\d{2}-\d{2}$/.test(d)) return d;
+          return new Date().toISOString().slice(0, 10);
+        })();
+        notesJourDate = dateCible;
+        const dn = await getDoc(doc(db, "briefsJour", dateCible));
+        if (dn.exists()) {
+          notesJourTxt = String((dn.data() as { notes?: string }).notes || "").trim();
+        }
+      } catch {
+        // failover silencieux
+      }
+
       const CAPACITES_CARTONS_M: Record<string, number> = { gros: 77, moyen: 54, camionnette: 44, petit: 44 };
       const CAPACITES_MONTES_M: Record<string, number> = { gros: 40, moyen: 30, camionnette: 20, petit: 20 };
       const capTable = mModeMontage === "client" ? CAPACITES_CARTONS_M : CAPACITES_MONTES_M;
@@ -4554,6 +4581,9 @@ export async function runFirestoreAction(
         totalKmJournee,
         monteursParTournee,
         tournees,
+        // Notes logistique du jour (peut être vide string)
+        notesJour: notesJourTxt,
+        notesJourDate,
       };
     }
 
@@ -4748,7 +4778,32 @@ export async function runFirestoreAction(
       }
       const nbCamions = overrideCamions ?? camionsList.length;
 
-      const prompt = `Tu es un logisticien expert en VRP (Vehicle Routing Problem) multi-véhicules multi-dépôts. Tu planifies les tournées de livraison de vélos cargo en région Île-de-France et alentours.
+      // Yoann 2026-05-03 — Notes logistique du jour (saisies dans la modale
+      // « Brief du jour »). Permet à Gemini de comprendre les cascades
+      // inter-équipes que les livraisons brutes ne révèlent pas : enchaînements
+      // chauffeur, navettes, monteur qui change d équipe en cours de journée…
+      let notesJourSection = "";
+      try {
+        const todayIso = new Date().toISOString().slice(0, 10);
+        const tomorrowDate = new Date();
+        tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+        const tomorrowIso = tomorrowDate.toISOString().slice(0, 10);
+        // Préfère la note du jour planifié (demain) sinon fallback aujourd hui
+        const candidates = [tomorrowIso, todayIso];
+        for (const iso of candidates) {
+          const dn = await getDoc(doc(db, "briefsJour", iso));
+          if (!dn.exists()) continue;
+          const dd = dn.data() as { notes?: string };
+          const txt = String(dd.notes || "").trim();
+          if (!txt) continue;
+          notesJourSection = `\n\n📝 NOTES LOGISTIQUE DU JOUR (saisies par Yoann — règles métier à respecter ABSOLUMENT, elles décrivent des cascades inter-équipes ${iso === tomorrowIso ? "pour DEMAIN" : "pour AUJOURD HUI"} que tu ne peux pas deviner depuis les seules livraisons) :\n"""\n${txt}\n"""\n`;
+          break;
+        }
+      } catch {
+        // failover silencieux : pas de notes dispos
+      }
+
+      const prompt = `Tu es un logisticien expert en VRP (Vehicle Routing Problem) multi-véhicules multi-dépôts. Tu planifies les tournées de livraison de vélos cargo en région Île-de-France et alentours.${notesJourSection}
 ${meteoLine ? `\n🌤 ${meteoLine}` : ""}${jourFerie ? `\n📅 Jour férié : ${jourFerie} → trafic potentiellement allégé OU clients fermés (à arbitrer dans la stratégie).` : ""}
 ${nbClientsParis > 0 ? `🚦 ${nbClientsParis} client${nbClientsParis > 1 ? "s" : ""} en Paris intra-muros (CP 75XXX) → contraintes camion poids lourd à respecter.\n` : ""}
 
@@ -4893,6 +4948,33 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
       } catch (e) {
         return { ok: false, error: e instanceof Error ? e.message : String(e) };
       }
+    }
+
+    case "setBriefJourNotes": {
+      // Yoann 2026-05-03 — Notes logistique du jour. Stocke un texte libre
+      // par date (id = YYYY-MM-DD) pour décrire les cascades inter-équipes
+      // que Gemini ne peut pas deviner depuis les seules livraisons (ex :
+      // "ETHAN finit FIRAT puis rejoint Armel pour montage in situ pendant
+      // que Zinédine fait des navettes"). Réinjecté dans le brief WhatsApp
+      // ET dans les prompts Gemini (strategieGemini) pour fiabiliser la
+      // coordination cross-équipes.
+      const date = getRequired(body, "date"); // YYYY-MM-DD
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+        return { ok: false, error: "date invalide (attendu YYYY-MM-DD)" };
+      }
+      const notes = (getString(body, "notes") || "").trim();
+      const updatedBy = getString(body, "updatedBy") || null;
+      await setDoc(
+        doc(db, "briefsJour", date),
+        {
+          date,
+          notes,
+          updatedBy,
+          updatedAt: ts(),
+        },
+        { merge: true },
+      );
+      return { ok: true };
     }
 
     case "resetStockEntrepot": {

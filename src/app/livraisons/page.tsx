@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import { collection, onSnapshot } from "firebase/firestore";
+import { collection, doc, onSnapshot } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { gasGet, gasPost } from "@/lib/gas";
 import { useData, type LivraisonRow, type EquipeMember, type ClientPoint, type EquipeRole } from "@/lib/data-context";
@@ -72,6 +72,10 @@ function livraisonMatchesUser(
   role: EquipeRole,
   userName?: string,
   clientApporteur?: string | null,
+  /** Yoann 2026-05-03 : pour un chef d équipe, on étend la visibilité aux
+   *  tournées où l un de ses monteurs est affecté (pas juste où il est chef).
+   *  Permet au chef de voir le planning complet de SES équipes. */
+  mesMonteursIds?: string[],
 ): boolean {
   if (role === "admin" || role === "superadmin") return true;
   if (role === "apporteur") {
@@ -86,9 +90,18 @@ function livraisonMatchesUser(
       return (l.preparateurIds || []).includes(userId);
     case "monteur":
       return (l.monteurIds || []).includes(userId);
-    case "chef":
+    case "chef": {
       if (l.chefEquipeId === userId) return true;
-      return (l.chefEquipeIds || []).includes(userId);
+      if ((l.chefEquipeIds || []).includes(userId)) return true;
+      // Tournée où un de mes monteurs est affecté → je la vois aussi
+      if (mesMonteursIds && mesMonteursIds.length > 0) {
+        const monteurs = l.monteurIds || [];
+        for (const mid of mesMonteursIds) {
+          if (monteurs.includes(mid)) return true;
+        }
+      }
+      return false;
+    }
     default:
       return false;
   }
@@ -189,13 +202,23 @@ export default function LivraisonsPage() {
     for (const c of carte) m.set(c.id, c.apporteur);
     return m;
   }, [carte]);
+  // Yoann 2026-05-03 : pour le rôle chef, on calcule la liste des monteurs
+  // sous lui (chefId === currentUser.id) pour étendre la visibilité aux
+  // tournées où ils sont affectés.
+  const mesMonteursIds = useMemo(() => {
+    if (currentUser?.role !== "chef") return [] as string[];
+    return equipe
+      .filter((m) => m.role === "monteur" && m.chefId === currentUser.id && m.actif !== false)
+      .map((m) => m.id);
+  }, [currentUser?.role, currentUser?.id, equipe]);
+
   const userLivraisons = useMemo(() => {
     if (!currentUser) return [] as LivraisonRow[];
     return livraisons.filter((l) => {
       const apporteur = l.clientId ? apporteurByClientId.get(l.clientId) ?? null : null;
-      return livraisonMatchesUser(l, currentUser.id, currentUser.role, currentUser.nom, apporteur);
+      return livraisonMatchesUser(l, currentUser.id, currentUser.role, currentUser.nom, apporteur, mesMonteursIds);
     });
-  }, [livraisons, currentUser, apporteurByClientId]);
+  }, [livraisons, currentUser, apporteurByClientId, mesMonteursIds]);
 
   const tournees = useMemo(() => {
     const list = groupByTournee(userLivraisons);
@@ -5270,6 +5293,62 @@ function BriefJourneeModal({
     return new Date(`${selectedDate}T12:00:00`);
   }, [selectedDate, tomorrow]);
 
+  // Yoann 2026-05-03 — Notes logistique du jour (cascades inter-équipes,
+  // ex : "ETHAN finit FIRAT puis rejoint Armel pour montage in situ pendant
+  // que Zinédine fait des navettes"). Affichées en haut du brief WhatsApp
+  // ET injectées dans le prompt strategieGemini côté backend.
+  // Persistance Firestore sur briefsJour/{date} via setBriefJourNotes.
+  const currentUser = useCurrentUser();
+  const [notesJour, setNotesJour] = useState<string>("");
+  const [notesJourLoaded, setNotesJourLoaded] = useState<string>(""); // dernière valeur sauvegardée
+  const [notesJourSaving, setNotesJourSaving] = useState(false);
+  const [notesJourSavedAt, setNotesJourSavedAt] = useState<number | null>(null);
+  const notesDirty = notesJour !== notesJourLoaded;
+
+  // Charge la note Firestore en live (onSnapshot) pour la date sélectionnée
+  useEffect(() => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) return;
+    const unsub = onSnapshot(doc(db, "briefsJour", selectedDate), (snap) => {
+      const data = snap.exists() ? (snap.data() as { notes?: string }) : null;
+      const txt = String(data?.notes || "");
+      setNotesJour(txt);
+      setNotesJourLoaded(txt);
+    }, () => {
+      // si erreur (rules / réseau), on garde la note locale en cours
+    });
+    return unsub;
+  }, [selectedDate]);
+
+  const saveNotesJour = useCallback(async () => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(selectedDate)) return;
+    setNotesJourSaving(true);
+    try {
+      const r = await gasPost("setBriefJourNotes", {
+        date: selectedDate,
+        notes: notesJour,
+        updatedBy: currentUser?.nom || null,
+      });
+      if (r && (r as { ok?: boolean }).ok) {
+        setNotesJourLoaded(notesJour);
+        setNotesJourSavedAt(Date.now());
+      }
+    } catch {
+      // erreur réseau : on laisse le bouton actif pour retry
+    } finally {
+      setNotesJourSaving(false);
+    }
+  }, [selectedDate, notesJour, currentUser]);
+
+  // Auto-save debounced 2s : si la note locale diverge de la valeur Firestore
+  // pendant > 2s sans nouvelle frappe, on persiste automatiquement.
+  useEffect(() => {
+    if (!notesDirty) return;
+    const t = setTimeout(() => {
+      void saveNotesJour();
+    }, 2000);
+    return () => clearTimeout(t);
+  }, [notesDirty, notesJour, saveNotesJour]);
+
   const findName = (id: string | null | undefined) =>
     id ? equipe.find((m) => m.id === id)?.nom || "?" : null;
   const fmtHM = (mins: number) => {
@@ -5349,6 +5428,14 @@ function BriefJourneeModal({
       if (c) allChauffeurs.add(c);
     }
     lines.push(`${sorted.length} tournée${sorted.length > 1 ? "s" : ""} · ${totalVelos} vélos · ${allChauffeurs.size} chauffeur${allChauffeurs.size > 1 ? "s" : ""}`);
+    // Yoann 2026-05-03 — Notes logistique du jour injectées en tête de brief
+    // si non vides (cascades inter-équipes, navettes, enchaînements…).
+    const notesTrim = notesJour.trim();
+    if (notesTrim) {
+      lines.push("");
+      lines.push("📝 *NOTES DU JOUR*");
+      lines.push(notesTrim);
+    }
     lines.push("");
     lines.push("═".repeat(40));
 
@@ -5411,7 +5498,7 @@ function BriefJourneeModal({
     lines.push("═".repeat(40));
     lines.push("Bonne tournée à tous 🚴‍♂️");
     return lines.join("\n");
-  }, [refDate, tournees, equipe, clientInfo, tourneeDepartures]);
+  }, [briefDate, tournees, equipe, clientInfo, tourneeDepartures, notesJour]);
   void findName;
 
   const [copied, setCopied] = useState(false);
@@ -5459,10 +5546,49 @@ function BriefJourneeModal({
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
         </div>
+        {/* Yoann 2026-05-03 — Notes logistique du jour : cascades inter-équipes,
+            navettes, enchaînements monteur. Persisté Firestore briefsJour/{date},
+            réinjecté dans le brief WhatsApp + prompt strategieGemini. */}
+        <div className="mb-3 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+          <div className="flex items-center justify-between mb-1.5 gap-2">
+            <label className="text-xs font-semibold text-amber-900 flex items-center gap-1.5">
+              📝 Notes logistique du jour
+              <span className="text-[10px] font-normal text-amber-700">(cascades inter-équipes, navettes, enchaînements — lues par Gemini)</span>
+            </label>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-amber-700">
+                {notesJourSaving
+                  ? "💾 Sauvegarde…"
+                  : notesDirty
+                    ? "● Non sauvegardé"
+                    : notesJourSavedAt
+                      ? "✓ Sauvegardé"
+                      : ""}
+              </span>
+              <button
+                onClick={() => void saveNotesJour()}
+                disabled={!notesDirty || notesJourSaving}
+                className={`text-[11px] px-2 py-1 rounded font-medium ${
+                  !notesDirty || notesJourSaving
+                    ? "bg-gray-100 text-gray-400 cursor-not-allowed"
+                    : "bg-amber-600 text-white hover:bg-amber-700"
+                }`}
+              >
+                💾 Sauvegarder
+              </button>
+            </div>
+          </div>
+          <textarea
+            value={notesJour}
+            onChange={(e) => setNotesJour(e.target.value)}
+            placeholder="Ex : ETHAN finit FIRAT 11h puis rejoint Armel chez ALDI pour montage in situ pendant que Zinédine fait des navettes Lisses↔Chelles."
+            className="w-full h-20 px-2 py-1.5 border border-amber-300 rounded text-xs resize-y bg-white"
+          />
+        </div>
         <textarea
           value={text}
           readOnly
-          className="w-full h-[60vh] px-3 py-2 border rounded-lg font-mono text-xs whitespace-pre overflow-auto"
+          className="w-full h-[50vh] px-3 py-2 border rounded-lg font-mono text-xs whitespace-pre overflow-auto"
         />
         <div className="mt-3 flex justify-end gap-2">
           <button

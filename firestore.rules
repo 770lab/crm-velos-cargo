@@ -233,6 +233,17 @@ service cloud.firestore {
       allow write: if isAdmin();
     }
 
+    // Brief logistique du jour (Yoann 2026-05-03) : note libre par date
+    // (id = YYYY-MM-DD) pour décrire les cascades inter-équipes que les
+    // livraisons brutes ne révèlent pas (ex enchaînements chauffeur,
+    // monteur qui change d équipe en cours de journée). Réinjectée dans
+    // le brief WhatsApp ET les prompts Gemini. Lecture+écriture par tout
+    // le staff non-apporteur (chefs/chauffeurs peuvent annoter aussi).
+    match /briefsJour/{id} {
+      allow read: if isStaff() && !isApporteur();
+      allow write: if isStaff() && !isApporteur();
+    }
+
     // Tout le reste est refusé par défaut.
     match /{document=**} {
       allow read, write: if false;
