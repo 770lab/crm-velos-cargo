@@ -5427,16 +5427,28 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
         totalVelos: number;
       };
       const slots: TourneeSlot[] = [];
-      // Choix camion : pour mode atelier (montés) on préfère le + grand des
-      // camions montés. Pour cartons, le + grand cartons. Si Paris dans
-      // les stops → priorité aux camions peutEntrerParis.
+      // Yoann 2026-05-03 : round-robin camion entre tous les sélectionnés
+      // (au lieu de toujours prendre le plus grand). Permet d utiliser TOUS
+      // les camions disponibles au lieu d en mettre 1 seul partout.
+      // Compteurs séparés montés/cartons pour ne pas biaiser.
+      let camionMontesIdx = 0;
+      let camionCartonsIdx = 0;
       const choisirCamion = (mode: "atelier" | "client", besoinParis: boolean): CamG => {
+        // Si client Paris dans les stops à venir → priorité aux camions
+        // peutEntrerParis. Si aucun ne peut, on prend le pool complet
+        // (l algo skip ensuite les clients Paris incompatibles).
         const candidats = besoinParis ? camionsG.filter((c) => c.peutEntrerParis) : camionsG;
         const pool = candidats.length > 0 ? candidats : camionsG;
-        const sorted = [...pool].sort((a, b) =>
-          (mode === "atelier" ? b.capaciteVelosMontes - a.capaciteVelosMontes : b.capaciteCartons - a.capaciteCartons),
-        );
-        return sorted[0];
+        // Round-robin sur le pool
+        if (mode === "atelier") {
+          const idx = camionMontesIdx % pool.length;
+          camionMontesIdx++;
+          return pool[idx];
+        } else {
+          const idx = camionCartonsIdx % pool.length;
+          camionCartonsIdx++;
+          return pool[idx];
+        }
       };
       for (const b of buckets.values()) {
         // Tri par distance entrepôt (plus proches d abord)
@@ -5534,18 +5546,104 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
         }
       }
 
-      // Distribution sur les dates fournies (round-robin entrepôt pour ne
-      // pas mettre toutes les tournées d un même entrepôt le même jour)
+      // Yoann 2026-05-03 : round-robin RÉEL entre entrepôts pour mélanger
+      // les tournées (avant : tous les Chelles d abord, puis tous les Nanterre,
+      // ce qui faisait que les premiers jours = uniquement Chelles).
+      // On rebascule les slots par tour de bucket : 1er Chelles, 1er Nanterre,
+      // 1er Lisses, 1er Artisans, 2e Chelles, ... → distribution équilibrée.
+      const slotsParEntrepot = new Map<string, TourneeSlot[]>();
+      for (const s of slots) {
+        if (!slotsParEntrepot.has(s.entrepotId)) slotsParEntrepot.set(s.entrepotId, []);
+        slotsParEntrepot.get(s.entrepotId)!.push(s);
+      }
+      const slotsRoundRobin: TourneeSlot[] = [];
+      let stillSomething = true;
+      while (stillSomething) {
+        stillSomething = false;
+        for (const lst of slotsParEntrepot.values()) {
+          const next = lst.shift();
+          if (next) {
+            slotsRoundRobin.push(next);
+            stillSomething = true;
+          }
+        }
+      }
+
+      // Distribution sur les dates fournies — chaque jour reçoit
+      // tourneesParJour slots (alternance entrepôt+camion garantie par
+      // le round-robin ci-dessus + le round-robin camion dans choisirCamion).
       const datesSorted = [...datesArr].sort();
       type PlanJour = { date: string; tournees: TourneeSlot[] };
       const planning: PlanJour[] = datesSorted.map((d) => ({ date: d, tournees: [] }));
       const capaciteTotaleJournees = datesSorted.length * tourneesParJour;
-      const slotsPlanifies = slots.slice(0, capaciteTotaleJournees);
-      const slotsNonPlanifies = slots.slice(capaciteTotaleJournees);
+      const slotsPlanifies = slotsRoundRobin.slice(0, capaciteTotaleJournees);
+      const slotsNonPlanifies = slotsRoundRobin.slice(capaciteTotaleJournees);
       for (let k = 0; k < slotsPlanifies.length; k++) {
         const jourIdx = Math.floor(k / tourneesParJour);
         if (jourIdx < planning.length) planning[jourIdx].tournees.push(slotsPlanifies[k]);
       }
+
+      // Yoann 2026-05-03 : suggestion réappro par entrepôt.
+      // Pour chaque entrepôt, on calcule :
+      //   - stockInitialCartons / stockInitialMontes
+      //   - consommation (somme des slots planifiés depuis cet entrepôt)
+      //   - stockApresPlanning = initial - consommation
+      //   - dateLimiteReappro = date du 1er slot qui dépasse le stock dispo
+      type ReapproEnt = {
+        entrepotId: string;
+        entrepotNom: string;
+        stockInitialCartons: number;
+        stockInitialMontes: number;
+        consommationCartons: number;
+        consommationMontes: number;
+        stockApresCartons: number;
+        stockApresMontes: number;
+        besoinReapproCartons: number;
+        besoinReapproMontes: number;
+        dateLimiteReapproCartons: string | null;
+        dateLimiteReapproMontes: string | null;
+      };
+      const reappros: ReapproEnt[] = entrepotsG.map((e) => {
+        const consoSlots = slots.filter((s) => s.entrepotId === e.id);
+        let consoCartons = 0;
+        let consoMontes = 0;
+        for (const s of consoSlots) {
+          if (s.modeMontage === "client") consoCartons += s.totalVelos;
+          else consoMontes += s.totalVelos;
+        }
+        // Date limite : on recalcule en parcourant le planning et accumulant
+        // jusqu à dépasser le stock initial.
+        let cumCartons = 0;
+        let cumMontes = 0;
+        let dateLimCart: string | null = null;
+        let dateLimMont: string | null = null;
+        for (const j of planning) {
+          for (const t of j.tournees) {
+            if (t.entrepotId !== e.id) continue;
+            if (t.modeMontage === "client") {
+              cumCartons += t.totalVelos;
+              if (!dateLimCart && cumCartons > e.stockCartons) dateLimCart = j.date;
+            } else {
+              cumMontes += t.totalVelos;
+              if (!dateLimMont && cumMontes > e.stockVelosMontes) dateLimMont = j.date;
+            }
+          }
+        }
+        return {
+          entrepotId: e.id,
+          entrepotNom: e.nom,
+          stockInitialCartons: e.stockCartons,
+          stockInitialMontes: e.stockVelosMontes,
+          consommationCartons: consoCartons,
+          consommationMontes: consoMontes,
+          stockApresCartons: e.stockCartons - consoCartons,
+          stockApresMontes: e.stockVelosMontes - consoMontes,
+          besoinReapproCartons: Math.max(0, consoCartons - e.stockCartons),
+          besoinReapproMontes: Math.max(0, consoMontes - e.stockVelosMontes),
+          dateLimiteReapproCartons: dateLimCart,
+          dateLimiteReapproMontes: dateLimMont,
+        };
+      }).filter((r) => r.consommationCartons > 0 || r.consommationMontes > 0);
 
       // Si apply=true : crée les tournées + livraisons en base
       let tourneesCreees = 0;
@@ -5630,6 +5728,8 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
         tourneesCreees,
         livraisonsCreees,
         erreurs,
+        camionsUtilises: camionsG.map((c) => ({ id: c.id, nom: c.nom, capaciteCartons: c.capaciteCartons, capaciteVelosMontes: c.capaciteVelosMontes, peutEntrerParis: c.peutEntrerParis })),
+        reappros, // Yoann 2026-05-03 : suggestion réappro par entrepôt
         dates: datesSorted,
         planning: planning.map((j) => ({
           date: j.date,

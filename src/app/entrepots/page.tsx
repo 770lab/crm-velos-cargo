@@ -3739,6 +3739,27 @@ type PlanningJour = {
   totalVelos: number;
   tournees: PlanningTournee[];
 };
+type ReapproEntrepot = {
+  entrepotId: string;
+  entrepotNom: string;
+  stockInitialCartons: number;
+  stockInitialMontes: number;
+  consommationCartons: number;
+  consommationMontes: number;
+  stockApresCartons: number;
+  stockApresMontes: number;
+  besoinReapproCartons: number;
+  besoinReapproMontes: number;
+  dateLimiteReapproCartons: string | null;
+  dateLimiteReapproMontes: string | null;
+};
+type CamionUtilise = {
+  id: string;
+  nom: string;
+  capaciteCartons: number;
+  capaciteVelosMontes: number;
+  peutEntrerParis: boolean;
+};
 type GenererPlanningResult = {
   ok?: boolean;
   error?: string;
@@ -3754,6 +3775,8 @@ type GenererPlanningResult = {
   tourneesCreees?: number;
   livraisonsCreees?: number;
   erreurs?: string[];
+  camionsUtilises?: CamionUtilise[];
+  reappros?: ReapproEntrepot[];
   dates?: string[];
   planning?: PlanningJour[];
 };
@@ -3951,7 +3974,69 @@ function GenererPlanningModal({ rayonKm, seuilGrosVolume, camionIds, nbChauffeur
                       Erreurs : {result.erreurs.join(" · ")}
                     </div>
                   )}
+                  {result.camionsUtilises && result.camionsUtilises.length > 0 && (
+                    <div className="text-[11px] text-emerald-700 mt-1">
+                      🚛 {result.camionsUtilises.length} camion{result.camionsUtilises.length > 1 ? "s" : ""} utilisé{result.camionsUtilises.length > 1 ? "s" : ""} : {result.camionsUtilises.map((c) => `${c.peutEntrerParis ? "🚐" : "🚛"} ${c.nom}`).join(" · ")}
+                    </div>
+                  )}
                 </div>
+
+                {/* Yoann 2026-05-03 : suggestions réappro par entrepôt */}
+                {result.reappros && result.reappros.length > 0 && (
+                  <div className="bg-amber-50 border border-amber-300 rounded p-3 mb-3">
+                    <div className="text-sm font-bold text-amber-900 mb-2">
+                      📦 Recommandations stock par entrepôt
+                    </div>
+                    <div className="space-y-2">
+                      {result.reappros.map((r) => {
+                        const needsReappro = r.besoinReapproCartons > 0 || r.besoinReapproMontes > 0;
+                        return (
+                          <div
+                            key={r.entrepotId}
+                            className={`p-2 rounded border ${needsReappro ? "bg-rose-50 border-rose-200" : "bg-white border-gray-200"}`}
+                          >
+                            <div className="flex items-center justify-between gap-2 text-xs">
+                              <div className="font-bold">{r.entrepotNom}</div>
+                              <div className="text-gray-600">
+                                Stock initial : 📦 {r.stockInitialCartons}c · 🔧 {r.stockInitialMontes}m
+                              </div>
+                            </div>
+                            <div className="grid grid-cols-2 gap-2 mt-1 text-[10px]">
+                              <div>
+                                Conso cartons : <strong>{r.consommationCartons}</strong> → reste{" "}
+                                <span className={r.stockApresCartons < 0 ? "text-rose-700 font-bold" : "text-emerald-700"}>
+                                  {r.stockApresCartons}
+                                </span>
+                                {r.besoinReapproCartons > 0 && (
+                                  <div className="text-rose-800 font-semibold">
+                                    ⚠️ Commander Tiffany : <strong>+{r.besoinReapproCartons} cartons</strong>
+                                    {r.dateLimiteReapproCartons && (
+                                      <span> avant <strong>{r.dateLimiteReapproCartons}</strong></span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                              <div>
+                                Conso montés : <strong>{r.consommationMontes}</strong> → reste{" "}
+                                <span className={r.stockApresMontes < 0 ? "text-rose-700 font-bold" : "text-emerald-700"}>
+                                  {r.stockApresMontes}
+                                </span>
+                                {r.besoinReapproMontes > 0 && (
+                                  <div className="text-rose-800 font-semibold">
+                                    ⚠️ Monter en atelier : <strong>+{r.besoinReapproMontes} vélos</strong>
+                                    {r.dateLimiteReapproMontes && (
+                                      <span> avant <strong>{r.dateLimiteReapproMontes}</strong></span>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
+                )}
 
                 <div className="space-y-2">
                   {result.planning.map((j) => (
