@@ -75,6 +75,10 @@ interface ClientDetail {
   operationNumero: string | null;
   referenceOperation: string | null;
   apporteur: string | null;
+  /** Yoann 2026-05-03 : commentaire libre apporteur (visible par tous,
+   *  éditable uniquement par l apporteur du dossier). */
+  apporteurNote?: string | null;
+  apporteurNoteAt?: string | null;
   departement: string | null;
   devisSignee: boolean;
   kbisRecu: boolean;
@@ -588,6 +592,19 @@ function ClientDetailPage() {
           (Validé téléphone, Dossier complet, À déposer, BL à Franck) ici
           pour pouvoir gérer l administratif depuis la fiche client. */}
       <ValidationsAdminSection velos={client.velos} clientId={id} clientNom={client.entreprise} onChanged={load} />
+
+      {/* Commentaire apporteur (Yoann 2026-05-03). Éditable seulement par
+          l apporteur du dossier (rules Firestore). Lu par tous. */}
+      <ApporteurNoteSection
+        clientId={id}
+        currentNote={client.apporteurNote || ""}
+        canEdit={
+          currentUser?.role === "apporteur" &&
+          (currentUser.nom || "").trim().toLowerCase() ===
+            (client.apporteur || "").trim().toLowerCase()
+        }
+        onSaved={load}
+      />
 
       {/* Bons de livraison signes par le client. Le chauffeur les prend en
           photo a la livraison ; il y en a 1 par tournee (un meme client peut
@@ -1413,6 +1430,79 @@ function ValidationsAdminSection({
           );
         })}
       </div>
+    </div>
+  );
+}
+
+// ApporteurNoteSection — Yoann 2026-05-03
+// Zone "📝 Commentaire apporteur" sur la fiche client. Lecture pour tous,
+// édition réservée à l apporteur du dossier (rules Firestore : seul le
+// champ apporteurNote/apporteurNoteAt peut être écrit par un apporteur
+// dont apporteurLower === resource.data.apporteurLower).
+function ApporteurNoteSection({
+  clientId,
+  currentNote,
+  canEdit,
+  onSaved,
+}: {
+  clientId: string;
+  currentNote: string;
+  canEdit: boolean;
+  onSaved: () => void;
+}) {
+  const [note, setNote] = useState(currentNote);
+  const [busy, setBusy] = useState(false);
+  const [savedAt, setSavedAt] = useState<number | null>(null);
+  useEffect(() => { setNote(currentNote); }, [currentNote]);
+  const dirty = note !== currentNote;
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      await gasPost("setApporteurNote", { target: "client", id: clientId, note });
+      setSavedAt(Date.now());
+      onSaved();
+    } catch (e) {
+      alert("Erreur : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // Pas d apporteur sur le client OU note vide ET non-éditeur → on cache.
+  if (!canEdit && !currentNote.trim()) return null;
+
+  return (
+    <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 mb-6">
+      <h2 className="font-semibold text-amber-900 mb-2 flex items-center gap-2">
+        📝 Commentaire apporteur
+        {!canEdit && <span className="text-[10px] text-amber-700 font-normal">(lecture seule)</span>}
+      </h2>
+      {canEdit ? (
+        <>
+          <textarea
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            rows={3}
+            placeholder="Note libre (visible par toute l équipe, modifiable par toi seul)"
+            className="w-full px-3 py-2 border border-amber-300 rounded-lg text-sm bg-white"
+          />
+          <div className="flex justify-end items-center gap-2 mt-2">
+            {savedAt && !dirty && (
+              <span className="text-[11px] text-emerald-700">✓ Sauvegardé</span>
+            )}
+            <button
+              onClick={save}
+              disabled={busy || !dirty}
+              className="px-3 py-1.5 text-sm bg-amber-600 text-white rounded hover:bg-amber-700 disabled:opacity-50"
+            >
+              {busy ? "..." : "💾 Sauvegarder"}
+            </button>
+          </div>
+        </>
+      ) : (
+        <div className="text-sm text-amber-900 whitespace-pre-wrap">{currentNote}</div>
+      )}
     </div>
   );
 }
