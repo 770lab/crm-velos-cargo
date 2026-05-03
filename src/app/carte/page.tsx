@@ -88,6 +88,10 @@ export default function CartePage() {
   // Yoann 2026-05-01 : modal Suggérer ouvert depuis click entrepôt (map ou
   // encart "+proche") — bypasse la sidebar pour aller direct à la planif.
   const [quickSuggestEntrepot, setQuickSuggestEntrepot] = useState<EntrepotMapPoint | null>(null);
+  // Yoann 2026-05-03 : bouton 🪄 Planifier avec Gemini sur /carte. Ouvre
+  // PlanifierJourneeModal préfixé sur l'entrepôt source par défaut (AXDIS
+  // fournisseur). Yoann peut ensuite ajuster mode camion / mode montage.
+  const [showPlannerOnEntrepot, setShowPlannerOnEntrepot] = useState<EntrepotMapPoint | null>(null);
   useEffect(() => {
     let alive = true;
     (async () => {
@@ -376,6 +380,28 @@ export default function CartePage() {
               🔀 Les deux
             </button>
           </div>
+          {/* Yoann 2026-05-03 : bouton Gemini sur /carte. Réutilise
+              PlanifierJourneeModal pré-rempli avec l'entrepôt source par
+              défaut (AXDIS fournisseur si dispo, sinon le 1er entrepôt de
+              la liste). */}
+          <button
+            onClick={() => {
+              const def =
+                entrepotsList.find((e) => e.role === "fournisseur") ||
+                entrepotsList.find((e) => e.role === "stock") ||
+                entrepotsList[0] ||
+                null;
+              if (!def) {
+                alert("Aucun entrepôt configuré.");
+                return;
+              }
+              setShowPlannerOnEntrepot(def);
+            }}
+            className="px-2 sm:px-3 py-1.5 bg-purple-600 text-white text-[11px] sm:text-xs font-medium rounded-lg hover:bg-purple-700 whitespace-nowrap"
+            title="Planifier la journée avec Gemini : annonce les ressources du jour, Gemini propose la ventilation optimale des clients en tournées"
+          >
+            🪄 Planifier avec Gemini
+          </button>
           <div className="flex-1 sm:w-32 sm:flex-initial h-2 bg-gray-200 rounded-full overflow-hidden">
             <div
               className="h-full bg-green-500 rounded-full transition-all"
@@ -723,6 +749,19 @@ export default function CartePage() {
           stockCartons={quickSuggestEntrepot.stockCartons}
           stockVelosMontes={quickSuggestEntrepot.stockVelosMontes}
           onClose={() => setQuickSuggestEntrepot(null)}
+        />
+      )}
+      {showPlannerOnEntrepot && (
+        <PlanifierJourneeModal
+          entrepotId={showPlannerOnEntrepot.id}
+          entrepotNom={showPlannerOnEntrepot.nom}
+          stockCartons={showPlannerOnEntrepot.stockCartons}
+          stockVelosMontes={showPlannerOnEntrepot.stockVelosMontes}
+          onClose={() => {
+            setShowPlannerOnEntrepot(null);
+            refresh("livraisons");
+            refresh("carte");
+          }}
         />
       )}
     </div>
