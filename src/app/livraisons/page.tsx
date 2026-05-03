@@ -533,14 +533,25 @@ export default function LivraisonsPage() {
   }, [currentUser?.role]);
   const sessionsByDate = useMemo(() => {
     const m = new Map<string, SessionAtelierMini[]>();
+    // Yoann 2026-05-03 : pour un chef d équipe, on filtre les sessions
+    // atelier visibles à celles où au moins un de ses monteurs est
+    // dans monteurIds (ou s il est lui-même chef de la session).
+    const isChef = currentUser?.role === "chef";
+    const mesIds = new Set(mesMonteursIds);
     for (const s of sessionsAtelier) {
       if (s.statut === "annulee") continue;
       if (!s.date) continue;
+      if (isChef) {
+        const isMine =
+          s.chefId === currentUser?.id ||
+          (s.monteurIds || []).some((id) => mesIds.has(id));
+        if (!isMine) continue;
+      }
       if (!m.has(s.date)) m.set(s.date, []);
       m.get(s.date)!.push(s);
     }
     return m;
-  }, [sessionsAtelier]);
+  }, [sessionsAtelier, currentUser?.role, currentUser?.id, mesMonteursIds]);
 
   const tourneesByDate = useMemo(() => {
     const map = new Map<string, Tournee[]>();
@@ -4742,24 +4753,33 @@ function EquipeAssignBlock({
                 const on = monteurIds.includes(m.id);
                 const chef = m.chefId ? chefs.find((c) => c.id === m.chefId) : null;
                 const isChefPolyvalent = m.role === "chef" && m.aussiMonteur;
+                // Yoann 2026-05-03 : chef d équipe ne peut sélectionner que
+                // SES monteurs. Visibles mais grisés / non-cliquables sinon.
+                const horsEquipe =
+                  currentUser?.role === "chef" && m.chefId !== currentUser?.id;
                 return (
                   <button
                     key={m.id}
                     type="button"
-                    onClick={() => toggleMonteur(m.id)}
+                    onClick={() => { if (!horsEquipe) toggleMonteur(m.id); }}
+                    disabled={horsEquipe}
                     className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${
-                      on
-                        ? "bg-emerald-600 text-white border-emerald-600"
-                        : isChefPolyvalent
-                          ? "bg-purple-50 border-purple-300 text-purple-800 hover:bg-purple-100"
-                          : "border-gray-300 text-gray-700 hover:bg-gray-50"
+                      horsEquipe
+                        ? "bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed"
+                        : on
+                          ? "bg-emerald-600 text-white border-emerald-600"
+                          : isChefPolyvalent
+                            ? "bg-purple-50 border-purple-300 text-purple-800 hover:bg-purple-100"
+                            : "border-gray-300 text-gray-700 hover:bg-gray-50"
                     }`}
                     title={
-                      isChefPolyvalent
-                        ? `${m.nom} — Chef polyvalent (peut aussi monter sur place)`
-                        : chef
-                          ? `Team ${chef.nom}`
-                          : "Monteur indépendant"
+                      horsEquipe
+                        ? "Hors équipe — seul son chef peut le sélectionner"
+                        : isChefPolyvalent
+                          ? `${m.nom} — Chef polyvalent (peut aussi monter sur place)`
+                          : chef
+                            ? `Team ${chef.nom}`
+                            : "Monteur indépendant"
                     }
                   >
                     {on ? "✓ " : ""}

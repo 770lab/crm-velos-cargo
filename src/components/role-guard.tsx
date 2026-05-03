@@ -18,7 +18,10 @@ const ALLOWED: Record<EquipeRole, string[]> = {
   superadmin: ["/"],
   admin: ["/"],
   preparateur: ["/livraisons", "/preparation", "/tournee-execute", "/etiquettes", "/bl"],
-  chef: ["/livraisons", "/clients", "/equipe", "/preparation", "/chargement", "/livraison", "/montage", "/tournee-execute", "/etiquettes", "/bl"],
+  // Yoann 2026-05-03 : chef d équipe = lecture seule planning + son équipe
+  // + sa pointeuse (paiements de ses monteurs). Plus de /clients (pas son
+  // métier), ajout de /finances pour la pointeuse.
+  chef: ["/livraisons", "/equipe", "/finances", "/preparation", "/chargement", "/livraison", "/montage", "/tournee-execute", "/etiquettes", "/bl"],
   chauffeur: ["/livraisons", "/chargement", "/livraison", "/tournee-execute", "/etiquettes", "/bl"],
   // /finances est autorisé pour les monteurs : page elle-même filtre par
   // estChefMonteur (les monteurs simples voient le 403 amber).

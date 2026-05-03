@@ -1810,6 +1810,11 @@ export function SessionAtelierModal({
 }) {
   type Member = { id: string; nom: string; role: string; chefId?: string | null; aussiMonteur?: boolean };
   const [equipe, setEquipe] = useState<Member[]>([]);
+  const currentUser = useCurrentUser();
+  // Yoann 2026-05-03 : un chef d équipe ne peut sélectionner que SES
+  // monteurs (chefId === currentUser.id). Les autres restent visibles
+  // mais désactivés (grisés, non cliquables).
+  const isChefRestricted = currentUser?.role === "chef";
   const [date, setDate] = useState(new Date().toISOString().slice(0, 10));
   const [chefId, setChefId] = useState("");
   const [monteurIds, setMonteurIds] = useState<string[]>([]);
@@ -2156,14 +2161,24 @@ export function SessionAtelierModal({
                 const on = monteurIds.includes(m.id);
                 const chef = m.chefId ? chefs.find((c) => c.id === m.chefId) : null;
                 const conflit = conflits.get(m.id);
+                // Yoann 2026-05-03 : chef d équipe = sélection limitée à
+                // son équipe. Les autres monteurs sont visibles mais grisés.
+                const horsEquipe = isChefRestricted && m.chefId !== currentUser?.id;
                 return (
                   <button
                     key={m.id}
                     type="button"
-                    onClick={() => toggleMonteur(m.id)}
-                    title={conflit ? `Déjà engagé ce jour : ${conflit}` : undefined}
+                    onClick={() => { if (!horsEquipe) toggleMonteur(m.id); }}
+                    disabled={horsEquipe}
+                    title={
+                      horsEquipe
+                        ? "Hors équipe — seul son chef peut le sélectionner"
+                        : conflit ? `Déjà engagé ce jour : ${conflit}` : undefined
+                    }
                     className={`text-[10px] px-2 py-0.5 rounded-full border ${
-                      on ? "bg-emerald-600 text-white border-emerald-600"
+                      horsEquipe
+                        ? "bg-gray-100 border-gray-200 text-gray-400 cursor-not-allowed"
+                        : on ? "bg-emerald-600 text-white border-emerald-600"
                         : conflit
                           ? "bg-amber-50 border-amber-400 text-amber-900 hover:bg-amber-100"
                           : "bg-white border-gray-300 text-gray-700 hover:bg-gray-50"
