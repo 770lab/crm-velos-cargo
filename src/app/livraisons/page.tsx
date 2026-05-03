@@ -500,6 +500,8 @@ export default function LivraisonsPage() {
     monteurNoms: string[];
     chefId?: string | null;
     chefNom?: string | null;
+    chefAdminTerrainId?: string | null;
+    chefAdminTerrainNom?: string | null;
     quantitePrevue?: number | null;
     statut: "planifiee" | "en_cours" | "terminee" | "annulee";
   };
@@ -525,6 +527,8 @@ export default function LivraisonsPage() {
           monteurNoms: Array.isArray(data.monteurNoms) ? data.monteurNoms : [],
           chefId: typeof data.chefId === "string" ? data.chefId : null,
           chefNom: typeof data.chefNom === "string" ? data.chefNom : null,
+          chefAdminTerrainId: typeof data.chefAdminTerrainId === "string" ? data.chefAdminTerrainId : null,
+          chefAdminTerrainNom: typeof data.chefAdminTerrainNom === "string" ? data.chefAdminTerrainNom : null,
           quantitePrevue: typeof data.quantitePrevue === "number" ? data.quantitePrevue : null,
           statut: ["en_cours", "terminee", "annulee"].includes(data.statut)
             ? data.statut
@@ -5346,6 +5350,8 @@ type SessionAtelierForBrief = {
   monteurNoms: string[];
   chefId?: string | null;
   chefNom?: string | null;
+  chefAdminTerrainId?: string | null;
+  chefAdminTerrainNom?: string | null;
   quantitePrevue?: number | null;
   statut: "planifiee" | "en_cours" | "terminee" | "annulee";
 };
@@ -5655,8 +5661,13 @@ function BriefJourneeModal({
       lines.push("🔧 *SESSIONS ATELIER DU JOUR*");
       for (const s of sessionsDuJour) {
         const chef = s.chefNom ? `chef ${s.chefNom}` : null;
+        const chefAdmin = s.chefAdminTerrainNom ? `admin terrain ${s.chefAdminTerrainNom}` : null;
         const monteurs = (s.monteurNoms || []).filter(Boolean);
-        const equipeStr = [chef, monteurs.length > 0 ? `${monteurs.length} monteur${monteurs.length > 1 ? "s" : ""} (${monteurs.join(", ")})` : null]
+        const equipeStr = [
+          chef,
+          chefAdmin,
+          monteurs.length > 0 ? `${monteurs.length} monteur${monteurs.length > 1 ? "s" : ""} (${monteurs.join(", ")})` : null,
+        ]
           .filter(Boolean)
           .join(" + ");
         const fmtH = (h: string | null | undefined): string => {

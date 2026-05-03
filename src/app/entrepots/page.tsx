@@ -1818,7 +1818,7 @@ export function SessionAtelierModal({
   existingSessionId?: string;
   onClose: () => void;
 }) {
-  type Member = { id: string; nom: string; role: string; chefId?: string | null; aussiMonteur?: boolean };
+  type Member = { id: string; nom: string; role: string; chefId?: string | null; aussiMonteur?: boolean; chefDeMonteurs?: boolean };
   const [equipe, setEquipe] = useState<Member[]>([]);
   const currentUser = useCurrentUser();
   // Yoann 2026-05-03 : un chef d équipe ne peut sélectionner que SES
@@ -1831,6 +1831,10 @@ export function SessionAtelierModal({
   const [heureDebut, setHeureDebut] = useState("");
   const [heureFin, setHeureFin] = useState("");
   const [chefId, setChefId] = useState("");
+  // Yoann 2026-05-03 : un chef admin terrain (Julia/ETHAN) peut superviser
+  // une session atelier (présent sur place pour coordonner) en plus du chef
+  // monteur. Champ optionnel séparé pour clarifier les rôles.
+  const [chefAdminTerrainId, setChefAdminTerrainId] = useState("");
   const [monteurIds, setMonteurIds] = useState<string[]>([]);
   const [quantitePrevue, setQuantitePrevue] = useState("");
   const [quantiteReelle, setQuantiteReelle] = useState("");
@@ -1856,6 +1860,7 @@ export function SessionAtelierModal({
       setHeureDebut(typeof d.heureDebut === "string" ? d.heureDebut : "");
       setHeureFin(typeof d.heureFin === "string" ? d.heureFin : "");
       setChefId(typeof d.chefId === "string" ? d.chefId : "");
+      setChefAdminTerrainId(typeof d.chefAdminTerrainId === "string" ? d.chefAdminTerrainId : "");
       setMonteurIds(Array.isArray(d.monteurIds) ? d.monteurIds : []);
       setQuantitePrevue(d.quantitePrevue != null ? String(d.quantitePrevue) : "");
       setQuantiteReelle(d.quantiteReelle != null ? String(d.quantiteReelle) : "");
@@ -1886,6 +1891,7 @@ export function SessionAtelierModal({
             role: String(data.role || ""),
             chefId: typeof data.chefId === "string" ? data.chefId : null,
             aussiMonteur: data.aussiMonteur === true,
+            chefDeMonteurs: data.chefDeMonteurs === true,
             actif: data.actif !== false,
           };
         })
@@ -2001,6 +2007,7 @@ export function SessionAtelierModal({
       const { db } = await import("@/lib/firebase");
       const monteurNoms = monteurIds.map((id) => equipe.find((m) => m.id === id)?.nom || "?");
       const chef = chefs.find((c) => c.id === chefId);
+      const chefAdmin = chefs.find((c) => c.id === chefAdminTerrainId);
       const q = quantitePrevue ? parseInt(quantitePrevue, 10) : null;
       const qr = quantiteReelle ? parseInt(quantiteReelle, 10) : null;
       const payload = {
@@ -2013,6 +2020,8 @@ export function SessionAtelierModal({
         monteurNoms,
         chefId: chef?.id || null,
         chefNom: chef?.nom || null,
+        chefAdminTerrainId: chefAdmin?.id || null,
+        chefAdminTerrainNom: chefAdmin?.nom || null,
         quantitePrevue: q && q > 0 ? q : null,
         quantiteReelle: qr && qr > 0 ? qr : null,
         notes: notes.trim() || null,
@@ -2109,18 +2118,35 @@ export function SessionAtelierModal({
               />
             </div>
           </div>
-          <div>
-            <label className="text-xs text-gray-600">Chef d&apos;équipe (optionnel)</label>
-            <select
-              value={chefId}
-              onChange={(e) => setChefId(e.target.value)}
-              className="w-full px-2 py-1.5 border rounded text-sm"
-            >
-              <option value="">— Aucun —</option>
-              {chefs.map((c) => (
-                <option key={c.id} value={c.id}>{c.nom}</option>
-              ))}
-            </select>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="text-xs text-gray-600">Chef monteur (optionnel)</label>
+              <select
+                value={chefId}
+                onChange={(e) => setChefId(e.target.value)}
+                className="w-full px-2 py-1.5 border rounded text-sm"
+                title="Chef qui supervise les monteurs sur place (Ricky, Nordine…)"
+              >
+                <option value="">— Aucun —</option>
+                {chefs.filter((c) => c.chefDeMonteurs === true).map((c) => (
+                  <option key={c.id} value={c.id}>{c.nom}</option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="text-xs text-gray-600">Chef admin terrain (optionnel)</label>
+              <select
+                value={chefAdminTerrainId}
+                onChange={(e) => setChefAdminTerrainId(e.target.value)}
+                className="w-full px-2 py-1.5 border rounded text-sm"
+                title="Chef admin terrain qui coordonne sur place (Julia, ETHAN…) — peut s'ajouter en plus du chef monteur"
+              >
+                <option value="">— Aucun —</option>
+                {chefs.filter((c) => c.chefDeMonteurs !== true).map((c) => (
+                  <option key={c.id} value={c.id}>{c.nom}</option>
+                ))}
+              </select>
+            </div>
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div>
