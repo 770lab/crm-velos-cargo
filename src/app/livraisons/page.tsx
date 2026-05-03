@@ -2021,19 +2021,19 @@ function TourneeModal({
     const role = currentUser?.role;
     const isApporteurLocal = role === "apporteur";
     const isChefMonteurLocal = role === "monteur" && currentUser?.estChefMonteur === true;
-    // Yoann 2026-05-03 : distinction chef monteur (Ricky/Nordine,
-    // chefDeMonteurs=true → restrictions) vs chef admin terrain (Julia/
-    // Ethan, chefDeMonteurs=false ou null → permissions admin terrain).
+    // Yoann 2026-05-03 : tous les chefs (monteur + admin terrain) sont
+    // en lecture seule sur /livraisons. Chef monteur peut en plus
+    // modifier les monteurs de SON équipe (canEditEquipe).
     const isFullAdmin = role === "admin" || role === "superadmin";
-    const isChefMonteurEquipe = role === "chef" && currentUser?.chefDeMonteurs === true;
-    const isChefAdminTerrain = role === "chef" && currentUser?.chefDeMonteurs !== true;
-    // Chef monteur restreint : aucun bouton admin, juste son équipe.
-    // Chef admin terrain : presque comme un admin (boutons admin OK).
-    const canSeeAdminBlocs = !isApporteurLocal && !isChefMonteurEquipe && (isFullAdmin || isChefAdminTerrain || role === "preparateur");
-    const canSeeBonAxdis = !isApporteurLocal && !isChefMonteurEquipe && (canSeeAdminBlocs || role === "chauffeur");
-    const canEditEquipe = !isApporteurLocal && (isFullAdmin || isChefMonteurLocal || role === "chef");
-    const canSeeEquipeRecap = !isApporteurLocal && (canEditEquipe || role === "chauffeur" || role === "preparateur");
-    return { canSeeAdminBlocs, canSeeBonAxdis, canEditEquipe, canSeeEquipeRecap, isApporteurLocal, isChefTerrain: isChefMonteurEquipe };
+    const isChefAny = role === "chef";
+    const isChefMonteurEquipe = isChefAny && currentUser?.chefDeMonteurs === true;
+    const canSeeAdminBlocs = !isApporteurLocal && !isChefAny && (isFullAdmin || role === "preparateur");
+    const canSeeBonAxdis = !isApporteurLocal && !isChefAny && (canSeeAdminBlocs || role === "chauffeur");
+    // canEditEquipe : seul chef monteur peut modifier ses monteurs.
+    // Chef admin terrain : lecture seule (pas de modif équipe).
+    const canEditEquipe = !isApporteurLocal && (isFullAdmin || isChefMonteurLocal || isChefMonteurEquipe);
+    const canSeeEquipeRecap = !isApporteurLocal && (canEditEquipe || role === "chauffeur" || role === "preparateur" || isChefAny);
+    return { canSeeAdminBlocs, canSeeBonAxdis, canEditEquipe, canSeeEquipeRecap, isApporteurLocal, isChefTerrain: isChefAny };
   }, [currentUser?.role, currentUser?.estChefMonteur, currentUser?.chefDeMonteurs]);
   const [showRappel, setShowRappel] = useState(false);
   const [showBrief, setShowBrief] = useState(false);

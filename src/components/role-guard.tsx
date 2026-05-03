@@ -41,9 +41,14 @@ const FALLBACK: Record<EquipeRole, string> = {
 
 function isAllowed(role: EquipeRole, path: string, chefDeMonteurs?: boolean): boolean {
   // Yoann 2026-05-03 : chef admin terrain (chefDeMonteurs !== true) =
-  // wildcard comme admin. Seul le chef monteur (Ricky/Nordine) garde
-  // les routes restreintes.
-  if (role === "chef" && chefDeMonteurs !== true) return true;
+  // vue restreinte aux livraisons + workflow terrain (preparation,
+  // chargement, livraison, montage, BL, étiquettes). Pas Tableau de
+  // bord / Clients / Carte / Entrepôts / Finances. Chef monteur
+  // (chefDeMonteurs === true) garde sa propre liste élargie (cf. NAV_BY_ROLE).
+  if (role === "chef" && chefDeMonteurs !== true) {
+    const allowed = ["/livraisons", "/preparation", "/chargement", "/livraison", "/montage", "/tournee-execute", "/etiquettes", "/bl"];
+    return allowed.some((p) => path === p || path.startsWith(p + "/") || path.startsWith(p + "?"));
+  }
   const list = ALLOWED[role];
   if (list[0] === "/") return true;
   return list.some((p) => path === p || path.startsWith(p + "/") || path.startsWith(p + "?"));

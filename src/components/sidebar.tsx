@@ -102,18 +102,11 @@ export function Sidebar() {
   const nav = useMemo(() => {
     if (!user) return [];
     // Yoann 2026-05-03 : chef admin terrain (Julia/ETHAN, chefDeMonteurs
-    // !== true) → vue admin complète. Seul le chef monteur (Ricky/Nordine)
-    // garde la vue restreinte définie dans NAV_BY_ROLE.chef.
+    // !== true) → vue Livraisons SEULEMENT (lecture seule du planning,
+    // pas de gestion admin). Vue suffisante pour le chef qui supervise
+    // sur le terrain.
     if (user.role === "chef" && user.chefDeMonteurs !== true) {
-      return [
-        { href: "/", label: "Tableau de bord", icon: "📊" },
-        { href: "/clients", label: "Clients", icon: "🏢" },
-        { href: "/carte", label: "Carte & Tournées", icon: "🗺️" },
-        { href: "/livraisons", label: "Livraisons", icon: "🚚" },
-        { href: "/entrepots", label: "Entrepôts", icon: "🏬" },
-        { href: "/equipe", label: "Équipe", icon: "👷" },
-        { href: "/verifications", label: "À vérifier", icon: "🔎", badge: true },
-      ];
+      return [{ href: "/livraisons", label: "Livraisons", icon: "🚚" }];
     }
     const base = [...NAV_BY_ROLE[user.role]];
     // Chef monteur (ricky) : on ajoute /finances pour suivre les règlements
