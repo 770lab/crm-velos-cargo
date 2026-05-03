@@ -1211,6 +1211,10 @@ export async function runFirestoreAction(
       // extraire 2× le même code dans 2 photos différentes consommait 2 slots.
       const clientId = getRequired(body, "clientId");
       const fnuci = getRequired(body, "fnuci");
+      // Yoann 2026-05-03 : preparateurId optionnel pour traçabilité atelier
+      // (qui a fait l affiliation = qui a "préparé" le carton). Évite un
+      // 2e appel markVeloPrepare qui exige un tourneeId qu on n a pas ici.
+      const preparateurId = getString(body, "preparateurId") || null;
       const dupSnap = await getDocs(
         query(collection(db, "velos"), where("fnuci", "==", fnuci)),
       );
@@ -1256,6 +1260,7 @@ export async function runFirestoreAction(
         await updateDoc(sansFnuci.ref, {
           fnuci,
           datePreparation: ts(),
+          ...(preparateurId ? { preparateurId } : {}),
           updatedAt: ts(),
         });
         return { ok: true, veloId: sansFnuci.id, created: false };
@@ -1269,6 +1274,7 @@ export async function runFirestoreAction(
           apporteurLower,
           fnuci,
           datePreparation: ts(),
+          ...(preparateurId ? { preparateurId } : {}),
           dateChargement: null,
           dateLivraisonScan: null,
           dateMontage: null,

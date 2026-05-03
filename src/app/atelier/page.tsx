@@ -239,17 +239,17 @@ function AtelierPage() {
     setScanning(true);
     setLastResult(null);
     try {
+      const userId = session?.chefId || user?.id || null;
       const aff = (await gasPost("assignFnuciToClient", {
         clientId: selectedClientId,
         fnuci,
+        // Yoann 2026-05-03 : preparateurId stocké directement, pas besoin
+        // d un 2e call markVeloPrepare qui exige un tourneeId inexistant ici.
+        ...(userId ? { preparateurId: userId } : {}),
       })) as { ok?: boolean; error?: string; code?: string };
       if (aff.ok === false || aff.error) {
         setLastResult({ ok: false, msg: `FNUCI ${fnuci} : ${aff.error}` });
         return;
-      }
-      const userId = session?.chefId || user?.id || null;
-      if (userId) {
-        await gasPost("markVeloPrepare", { fnuci, userId });
       }
       const cliNom = clients.find((c) => c.id === selectedClientId)?.entreprise || "?";
       setLastResult({ ok: true, msg: `✓ ${fnuci} → ${cliNom} (préparé)`, fnuci });
