@@ -1567,11 +1567,17 @@ function EntrepotsPanel() {
                 </div>
               )}
               {/* Yoann 2026-05-03 : éphémère = stock client (Firat Food etc),
-                  livré par le client à ses propres magasins. Pas dans nos tournées. */}
-              {isEphemere && total > 0 && (
-                <div className="mt-2 bg-purple-50 border border-purple-200 rounded p-1.5 text-[10px] text-purple-900">
-                  🟣 Stock client géré par le groupe — pas dans nos tournées
-                </div>
+                  livré par le client à ses propres magasins. Pas dans nos
+                  tournées. On peut quand même planifier une session de
+                  montage+livraison sur place (camion client + chef de chez
+                  nous présent). */}
+              {isEphemere && (
+                <SessionSurSitePanel
+                  entrepotId={e.id}
+                  entrepotNom={e.nom}
+                  groupeClient={e.groupeClient || e.nom}
+                  stockTotal={total}
+                />
               )}
             </div>
           );
@@ -1957,6 +1963,362 @@ function StrategieGeminiModal({ onClose }: { onClose: () => void }) {
           }}
         />
       )}
+    </div>
+  );
+}
+
+// SessionSurSitePanel — Yoann 2026-05-03
+// Pour les entrepôts éphémères (Firat Food etc) : permet de planifier
+// une session de montage+livraison sur site. Le client utilise SON camion
+// pour distribuer ses propres magasins ; on envoie un chef + des monteurs
+// sur place. Pas de tournée AXDIS, pas de notre flotte.
+type SessionSurSite = {
+  id: string;
+  datePrevue: string;
+  nbVelos: number;
+  nbMonteurs: number;
+  nbCartons: number;
+  chefAffecteId: string;
+  chefAffecteNom: string;
+  camionClient: boolean;
+  notes: string;
+  statut: string;
+};
+
+function SessionSurSitePanel({
+  entrepotId,
+  entrepotNom,
+  groupeClient,
+  stockTotal,
+}: {
+  entrepotId: string;
+  entrepotNom: string;
+  groupeClient: string;
+  stockTotal: number;
+}) {
+  const [sessions, setSessions] = useState<SessionSurSite[]>([]);
+  const [showModal, setShowModal] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, onSnapshot, query, where } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const q = query(collection(db, "sessionsSurSite"), where("entrepotEphId", "==", entrepotId));
+      const unsub = onSnapshot(q, (snap) => {
+        if (!alive) return;
+        const rows: SessionSurSite[] = [];
+        for (const d of snap.docs) {
+          const data = d.data() as Record<string, unknown>;
+          rows.push({
+            id: d.id,
+            datePrevue: String(data.datePrevue || ""),
+            nbVelos: Number(data.nbVelos) || 0,
+            nbMonteurs: Number(data.nbMonteurs) || 0,
+            nbCartons: Number(data.nbCartons) || 0,
+            chefAffecteId: String(data.chefAffecteId || ""),
+            chefAffecteNom: String(data.chefAffecteNom || ""),
+            camionClient: data.camionClient !== false,
+            notes: String(data.notes || ""),
+            statut: String(data.statut || "planifiee"),
+          });
+        }
+        rows.sort((a, b) => (a.datePrevue || "").localeCompare(b.datePrevue || ""));
+        setSessions(rows);
+      });
+      return () => unsub();
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [entrepotId]);
+
+  const sessionsActives = sessions.filter((s) => s.statut !== "annulee");
+
+  return (
+    <div className="mt-2 bg-purple-50 border border-purple-200 rounded p-2">
+      <div className="text-[10px] text-purple-900 mb-1.5">
+        🟣 Stock client géré par le groupe — pas dans nos tournées
+      </div>
+      {sessionsActives.length > 0 && (
+        <div className="space-y-1 mb-1.5">
+          {sessionsActives.map((s) => {
+            const d = s.datePrevue ? new Date(s.datePrevue) : null;
+            const dateStr = d
+              ? d.toLocaleString("fr-FR", {
+                  weekday: "short",
+                  day: "2-digit",
+                  month: "short",
+                  hour: "2-digit",
+                  minute: "2-digit",
+                })
+              : "?";
+            return (
+              <div
+                key={s.id}
+                className="bg-white border border-purple-200 rounded p-1.5 text-[10px] text-purple-900"
+              >
+                <div className="flex items-center justify-between">
+                  <div className="font-semibold">📅 {dateStr}</div>
+                  <button
+                    onClick={async () => {
+                      if (!confirm("Annuler cette session ?")) return;
+                      await gasPost("cancelSessionSurSite", { id: s.id });
+                    }}
+                    className="text-red-600 hover:underline text-[9px]"
+                  >
+                    Annuler
+                  </button>
+                </div>
+                <div className="text-purple-800">
+                  {s.nbVelos} vélos · {s.nbMonteurs} monteurs
+                  {s.nbCartons > 0 ? ` · ${s.nbCartons} cartons` : ""}
+                </div>
+                {s.chefAffecteNom && (
+                  <div className="text-purple-700">👷 Chef : {s.chefAffecteNom}</div>
+                )}
+                {s.camionClient && <div className="text-purple-700">🚚 Camion client</div>}
+                {s.notes && <div className="text-purple-600 italic">{s.notes}</div>}
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <button
+        onClick={() => setShowModal(true)}
+        className="w-full bg-purple-600 hover:bg-purple-700 text-white text-[11px] font-medium rounded px-2 py-1.5"
+      >
+        📅 Planifier session sur site
+      </button>
+      {showModal && (
+        <SessionSurSiteModal
+          entrepotId={entrepotId}
+          entrepotNom={entrepotNom}
+          groupeClient={groupeClient}
+          stockTotal={stockTotal}
+          onClose={() => setShowModal(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+type EquipeChef = { id: string; nom: string };
+
+function SessionSurSiteModal({
+  entrepotId,
+  entrepotNom,
+  groupeClient,
+  stockTotal,
+  onClose,
+}: {
+  entrepotId: string;
+  entrepotNom: string;
+  groupeClient: string;
+  stockTotal: number;
+  onClose: () => void;
+}) {
+  const [date, setDate] = useState("");
+  const [heure, setHeure] = useState("09:00");
+  const [nbVelos, setNbVelos] = useState(stockTotal || 0);
+  const [nbMonteurs, setNbMonteurs] = useState(2);
+  const [nbCartons, setNbCartons] = useState(0);
+  const [chefId, setChefId] = useState("");
+  const [camionClient, setCamionClient] = useState(true);
+  const [notes, setNotes] = useState("");
+  const [chefs, setChefs] = useState<EquipeChef[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, onSnapshot } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const unsub = onSnapshot(collection(db, "equipe"), (snap) => {
+        if (!alive) return;
+        const rows: EquipeChef[] = [];
+        for (const d of snap.docs) {
+          const data = d.data() as { role?: string; actif?: boolean; nom?: string };
+          if (data.role !== "chef") continue;
+          if (data.actif === false) continue;
+          rows.push({ id: d.id, nom: String(data.nom || "") });
+        }
+        rows.sort((a, b) => a.nom.localeCompare(b.nom));
+        setChefs(rows);
+      });
+      return () => unsub();
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const submit = async () => {
+    if (!date) {
+      alert("Date obligatoire");
+      return;
+    }
+    if (nbVelos <= 0) {
+      alert("Nombre de vélos > 0");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const datePrevue = `${date}T${heure}:00`;
+      const chef = chefs.find((c) => c.id === chefId);
+      const res = await gasPost("createSessionSurSite", {
+        entrepotEphId: entrepotId,
+        datePrevue,
+        nbVelos,
+        nbMonteurs,
+        nbCartons,
+        chefAffecteId: chefId,
+        chefAffecteNom: chef ? chef.nom : "",
+        camionClient,
+        notes,
+      });
+      if (!res || res.ok === false) {
+        alert("Erreur : " + (res?.error || "inconnue"));
+        setSubmitting(false);
+        return;
+      }
+      onClose();
+    } catch (err) {
+      alert("Erreur : " + (err instanceof Error ? err.message : String(err)));
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl max-w-md w-full p-5 max-h-[90vh] overflow-y-auto">
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <h2 className="text-base font-bold text-gray-900">
+              📅 Planifier session sur site
+            </h2>
+            <div className="text-xs text-gray-500 mt-0.5">
+              {entrepotNom}
+              {groupeClient && groupeClient !== entrepotNom ? ` · ${groupeClient}` : ""}
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">
+            ×
+          </button>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2 mb-3">
+          <div>
+            <label className="text-[11px] uppercase text-gray-500 font-semibold">Date</label>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full mt-1 border rounded px-2 py-1.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-[11px] uppercase text-gray-500 font-semibold">Heure</label>
+            <input
+              type="time"
+              value={heure}
+              onChange={(e) => setHeure(e.target.value)}
+              className="w-full mt-1 border rounded px-2 py-1.5 text-sm"
+            />
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2 mb-3">
+          <div>
+            <label className="text-[11px] uppercase text-gray-500 font-semibold">Vélos</label>
+            <input
+              type="number"
+              min={1}
+              value={nbVelos}
+              onChange={(e) => setNbVelos(Number(e.target.value) || 0)}
+              className="w-full mt-1 border rounded px-2 py-1.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-[11px] uppercase text-gray-500 font-semibold">Monteurs</label>
+            <input
+              type="number"
+              min={0}
+              value={nbMonteurs}
+              onChange={(e) => setNbMonteurs(Number(e.target.value) || 0)}
+              className="w-full mt-1 border rounded px-2 py-1.5 text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-[11px] uppercase text-gray-500 font-semibold">Cartons</label>
+            <input
+              type="number"
+              min={0}
+              value={nbCartons}
+              onChange={(e) => setNbCartons(Number(e.target.value) || 0)}
+              className="w-full mt-1 border rounded px-2 py-1.5 text-sm"
+            />
+          </div>
+        </div>
+
+        <div className="mb-3">
+          <label className="text-[11px] uppercase text-gray-500 font-semibold">
+            Chef affecté
+          </label>
+          <select
+            value={chefId}
+            onChange={(e) => setChefId(e.target.value)}
+            className="w-full mt-1 border rounded px-2 py-1.5 text-sm"
+          >
+            <option value="">— Choisir un chef —</option>
+            {chefs.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.nom}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        <div className="mb-3">
+          <label className="flex items-center gap-2 text-sm text-gray-700">
+            <input
+              type="checkbox"
+              checked={camionClient}
+              onChange={(e) => setCamionClient(e.target.checked)}
+            />
+            🚚 Camion fourni par le client
+          </label>
+        </div>
+
+        <div className="mb-4">
+          <label className="text-[11px] uppercase text-gray-500 font-semibold">
+            Notes (optionnel)
+          </label>
+          <textarea
+            value={notes}
+            onChange={(e) => setNotes(e.target.value)}
+            rows={2}
+            placeholder="Adresse précise, contact, etc."
+            className="w-full mt-1 border rounded px-2 py-1.5 text-sm"
+          />
+        </div>
+
+        <div className="flex gap-2 justify-end">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50"
+          >
+            Annuler
+          </button>
+          <button
+            onClick={submit}
+            disabled={submitting}
+            className="px-3 py-1.5 text-sm bg-purple-600 text-white rounded hover:bg-purple-700 disabled:opacity-50"
+          >
+            {submitting ? "..." : "Planifier"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

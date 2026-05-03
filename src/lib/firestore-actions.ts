@@ -268,6 +268,12 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   // Yoann 2026-05-03 : reset stock + suggestion stock cible 100km Paris
   "resetStockEntrepot",
   "suggestionStockEntrepot",
+  // Yoann 2026-05-03 : session montage+livraison sur site client (Firat)
+  // — pas dans nos tournées, le client utilise son propre camion + 1 chef
+  // de chez nous présent sur place.
+  "createSessionSurSite",
+  "updateSessionSurSite",
+  "cancelSessionSurSite",
   // Yoann 2026-05-03 : Gemini scanne les anomalies clients
   "detectAnomaliesClients",
   // Yoann 2026-05-03 : simulation macro Opération Paris (1 bouton, full plan)
@@ -5946,6 +5952,57 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
           };
         }),
       };
+    }
+
+    case "createSessionSurSite": {
+      // Yoann 2026-05-03 — Session montage+livraison sur site client (Firat
+      // Food et autres groupes). Le client utilise SON camion pour distribuer
+      // ses propres magasins, on envoie un chef de chez nous + des monteurs
+      // sur place. Pas de tournée AXDIS, pas de camion de notre flotte.
+      const entrepotEphId = getRequired(body, "entrepotEphId");
+      const eSnap = await getDoc(doc(db, "entrepots", entrepotEphId));
+      if (!eSnap.exists()) {
+        return { ok: false, error: "Entrepôt introuvable" };
+      }
+      const eData = eSnap.data() as { nom?: string; groupeClient?: string; role?: string };
+      const ref = await addDoc(collection(db, "sessionsSurSite"), {
+        entrepotEphId,
+        entrepotNom: eData.nom || "",
+        groupeClient: eData.groupeClient || eData.nom || "",
+        datePrevue: getString(body, "datePrevue"),
+        nbVelos: Number(body.nbVelos) || 0,
+        nbMonteurs: Number(body.nbMonteurs) || 0,
+        nbCartons: Number(body.nbCartons) || 0,
+        chefAffecteId: getString(body, "chefAffecteId"),
+        chefAffecteNom: getString(body, "chefAffecteNom"),
+        camionClient: body.camionClient !== false,
+        notes: getString(body, "notes") || "",
+        statut: "planifiee",
+        createdAt: ts(),
+        updatedAt: ts(),
+      });
+      return { ok: true, id: ref.id };
+    }
+
+    case "updateSessionSurSite": {
+      const id = getRequired(body, "id");
+      const data = (body.data as Body) || {};
+      await updateDoc(doc(db, "sessionsSurSite", id), {
+        ...applyMaybeDates(data),
+        updatedAt: ts(),
+      });
+      return { ok: true };
+    }
+
+    case "cancelSessionSurSite": {
+      const id = getRequired(body, "id");
+      await updateDoc(doc(db, "sessionsSurSite", id), {
+        statut: "annulee",
+        annuleAt: ts(),
+        annuleReason: getString(body, "reason") || "",
+        updatedAt: ts(),
+      });
+      return { ok: true };
     }
 
     case "detectAnomaliesClients": {
