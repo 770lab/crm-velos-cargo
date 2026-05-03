@@ -210,8 +210,17 @@ function AtelierPage() {
         c.reste = Math.max(0, c.nbVelosCommandes - c.velosAffilies);
       }
 
+      // Yoann 2026-05-03 : exclut les clients déjà ≥ 90 % livrés.
+      // Cas typique : ANADOLU 28/30 livrés (commande montée à 30 par
+      // anticipation mais 2 vélos jamais arrivés). Yoann a "marqué livré"
+      // → considère terminé. On exclut tout client dont velosLivres atteint
+      // 90 % de nbVelosCommandes (tolérance pour les écarts de saisie).
       const candidats = Array.from(clientsMap.values())
-        .filter((c) => c.reste > 0)
+        .filter((c) => {
+          if (c.reste <= 0) return false;
+          if (c.nbVelosCommandes > 0 && c.velosLivres / c.nbVelosCommandes >= 0.9) return false;
+          return true;
+        })
         .sort((a, b) => a.distance - b.distance);
       if (alive) setClients(candidats);
       if (alive) setLoading(false);
@@ -273,13 +282,19 @@ function AtelierPage() {
     if (!selectedClientId) return alert("Sélectionne un client avant de scanner");
     setScanning(true);
     setLastResult(null);
+    let etape = "init";
     try {
+      etape = "compress";
+      console.log("[atelier] photo size before compress:", file.size, "bytes");
       const compressed = await compressImage(file);
+      console.log("[atelier] base64 size after compress:", compressed.base64.length, "chars");
+      etape = "upload";
       const ident = (await gasUpload("extractFnuciFromImage", {
         imageBase64: compressed.base64,
         mimeType: compressed.mimeType,
         etape: "identify",
       })) as { ok?: boolean; extracted?: string[]; error?: string };
+      etape = "parse";
       if (!ident.ok || !ident.extracted || ident.extracted.length === 0) {
         setLastResult({ ok: false, msg: "Aucun FNUCI lisible. Reprends une photo plus nette." });
         setScanning(false);
@@ -289,7 +304,8 @@ function AtelierPage() {
       setScanning(false);
       await affilierFnuci(fnuci);
     } catch (e) {
-      setLastResult({ ok: false, msg: e instanceof Error ? e.message : String(e) });
+      console.error("[atelier] processPhoto KO at etape=", etape, e);
+      setLastResult({ ok: false, msg: `[${etape}] ${e instanceof Error ? e.message : String(e)}` });
       setScanning(false);
     }
   };
