@@ -45,13 +45,23 @@ export default function EquipePage() {
   const [inactifs, setInactifs] = useState<EquipeMember[]>([]);
   const [loadingInactifs, setLoadingInactifs] = useState(false);
 
+  const isChefTerrain = currentUser?.role === "chef";
   const byRole = useMemo(() => {
     const groups: Record<EquipeRole, EquipeMember[]> = { superadmin: [], admin: [], chauffeur: [], chef: [], monteur: [], preparateur: [], apporteur: [] };
     for (const m of equipe) {
       if (m.actif === false) continue;
-      // Vue restreinte non-admin : on ne voit QUE sa propre fiche (cf.
-      // demande Yoann 2026-04-29 « ethan dois voir que ethan »).
-      if (!isAdmin && m.id !== currentUser?.id) continue;
+      if (!isAdmin) {
+        // Yoann 2026-05-03 : chef d équipe (Ricky/ETHAN/...) voit
+        // sa propre fiche + tous ses monteurs (chefId = his id).
+        // Les autres rôles non-admin voient seulement leur fiche.
+        if (isChefTerrain) {
+          const isSelf = m.id === currentUser?.id;
+          const isMyMonteur = m.role === "monteur" && m.chefId === currentUser?.id;
+          if (!isSelf && !isMyMonteur) continue;
+        } else if (m.id !== currentUser?.id) {
+          continue;
+        }
+      }
       if (groups[m.role]) groups[m.role].push(m);
     }
     // Tri alphabétique (insensible à la casse / aux accents) dans chaque

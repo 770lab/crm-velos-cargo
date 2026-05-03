@@ -41,9 +41,12 @@ const NAV_BY_ROLE: Record<EquipeRole, NavItem[]> = {
     { href: "/livraisons", label: "Livraisons", icon: "🚚" },
   ],
   chef: [
+    // Yoann 2026-05-03 : chef d équipe = lecture seule planning + équipe
+    // (ses monteurs) + finances (sa pointeuse). Pas de /clients (pas son
+    // métier — il ne facture pas, ne suit pas le dossier admin).
     { href: "/livraisons", label: "Livraisons", icon: "🚚" },
-    { href: "/clients", label: "Clients", icon: "🏢" },
-    { href: "/equipe", label: "Équipe", icon: "👷" },
+    { href: "/equipe", label: "Mon équipe", icon: "👷" },
+    { href: "/finances", label: "Pointeuse", icon: "💶" },
   ],
   chauffeur: [
     { href: "/livraisons", label: "Livraisons", icon: "🚚" },

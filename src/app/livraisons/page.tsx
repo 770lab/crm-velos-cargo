@@ -1972,13 +1972,19 @@ function TourneeModal({
     const role = currentUser?.role;
     const isApporteurLocal = role === "apporteur";
     const isChefMonteurLocal = role === "monteur" && currentUser?.estChefMonteur === true;
-    const isFullAdmin = role === "admin" || role === "superadmin" || role === "chef";
-    // Yoann 2026-05-03 : apporteur en lecture seule. Aucune édition possible.
-    const canSeeAdminBlocs = !isApporteurLocal && (isFullAdmin || role === "preparateur");
-    const canSeeBonAxdis = !isApporteurLocal && (canSeeAdminBlocs || role === "chauffeur");
-    const canEditEquipe = !isApporteurLocal && (isFullAdmin || isChefMonteurLocal);
+    // Yoann 2026-05-03 : "chef" terrain (Ricky/ETHAN/etc.) ne fait plus
+    // partie de isFullAdmin. Seuls admin/superadmin gardent les boutons
+    // d édition globale (annuler livraison, reporter, marquer chargé,
+    // validation client, BL Franck...). Le chef garde uniquement le
+    // droit de modifier l équipe (canEditEquipe) sur ses tournées.
+    const isFullAdmin = role === "admin" || role === "superadmin";
+    const isChefTerrain = role === "chef";
+    // Apporteur ET chef terrain en lecture seule (sauf équipe pour le chef).
+    const canSeeAdminBlocs = !isApporteurLocal && !isChefTerrain && (isFullAdmin || role === "preparateur");
+    const canSeeBonAxdis = !isApporteurLocal && !isChefTerrain && (canSeeAdminBlocs || role === "chauffeur");
+    const canEditEquipe = !isApporteurLocal && (isFullAdmin || isChefMonteurLocal || isChefTerrain);
     const canSeeEquipeRecap = !isApporteurLocal && (canEditEquipe || role === "chauffeur" || role === "preparateur");
-    return { canSeeAdminBlocs, canSeeBonAxdis, canEditEquipe, canSeeEquipeRecap, isApporteurLocal };
+    return { canSeeAdminBlocs, canSeeBonAxdis, canEditEquipe, canSeeEquipeRecap, isApporteurLocal, isChefTerrain };
   }, [currentUser?.role, currentUser?.estChefMonteur]);
   const [showRappel, setShowRappel] = useState(false);
   const [showBrief, setShowBrief] = useState(false);
@@ -2678,7 +2684,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-            {!perms.isApporteurLocal && tournee.tourneeId && (
+            {(!perms.isApporteurLocal && !perms.isChefTerrain) && tournee.tourneeId && (
               <a
                 href={`/tournee-execute?id=${encodeURIComponent(tournee.tourneeId)}`}
                 target="_blank"
@@ -2689,7 +2695,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                 📱 Chef d&apos;équipe
               </a>
             )}
-            {!perms.isApporteurLocal && (
+            {(!perms.isApporteurLocal && !perms.isChefTerrain) && (
               <button
                 onClick={() => setShowRappel(true)}
                 className="px-2 sm:px-3 py-1 text-[11px] sm:text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-1"
@@ -2707,7 +2713,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                 📋 Brief équipe
               </button>
             )}
-            {!perms.isApporteurLocal && (
+            {(!perms.isApporteurLocal && !perms.isChefTerrain) && (
             <button
               onClick={async () => {
                 const { url } = buildAxdisCommandeMail(tournee);
@@ -2733,7 +2739,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
               {tournee.bonCommandeEnvoyeAt ? "✅ Commande AXDIS envoyée" : "📧 Commande AXDIS"}
             </button>
             )}
-            {!perms.isApporteurLocal && (
+            {(!perms.isApporteurLocal && !perms.isChefTerrain) && (
             <button
               onClick={() => setShowPrint(true)}
               className="px-2 sm:px-3 py-1 text-[11px] sm:text-xs bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-1"
@@ -3343,7 +3349,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                       ⊘ Annulée : {l.raisonAnnulation}
                     </div>
                   )}
-                  {l.statut !== "annulee" && !perms.isApporteurLocal && (
+                  {l.statut !== "annulee" && (!perms.isApporteurLocal && !perms.isChefTerrain) && (
                     <div className="mt-1">
                       {l.dejaChargee ? (
                         <div className="px-2 py-1 text-[11px] bg-indigo-50 border border-indigo-200 rounded text-indigo-800 flex items-center gap-2 flex-wrap">
@@ -3648,7 +3654,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           )}
         </div>
 
-        {!perms.isApporteurLocal && (
+        {(!perms.isApporteurLocal && !perms.isChefTerrain) && (
         <div className="mt-3">
           {addingClient ? (
             <div className="border rounded-lg p-3 bg-gray-50 space-y-2">

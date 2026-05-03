@@ -108,7 +108,13 @@ export default function FinancesPage() {
   // restreinte aux règlements de SES monteurs (pas la masse salariale globale,
   // pas les chauffeurs/préparateurs/apporteurs). Les admins standards et les
   // autres rôles n'ont pas accès du tout.
-  const isChefMonteurView = user?.role === "monteur" && user?.estChefMonteur === true;
+  // Yoann 2026-05-03 : chef d équipe (Ricky/ETHAN/...) voit la même vue
+  // restreinte que les chef-monteurs : pointeuse de SES monteurs +
+  // grand livre paiements (pas la masse salariale globale, pas les
+  // chauffeurs/préparateurs/apporteurs, pas les charges opé).
+  const isChefMonteurView =
+    (user?.role === "monteur" && user?.estChefMonteur === true) ||
+    user?.role === "chef";
   if (user && user.role !== "superadmin" && !isChefMonteurView) {
     return (
       <div className="max-w-2xl mx-auto bg-amber-50 border border-amber-200 rounded-xl p-6 text-amber-800">
@@ -229,7 +235,7 @@ export default function FinancesPage() {
       {data?.ok && (
         <>
           {/* === Pointeuse monteurs (compact, click pour détail) === */}
-          <PointeuseMonteurs data={data} from={from} to={to} fmt={fmt} />
+          <PointeuseMonteurs data={data} from={from} to={to} fmt={fmt} filterChefId={user?.role === "chef" ? user.id : null} />
 
           {isChefMonteurView ? null : (
           <>
@@ -869,11 +875,15 @@ function PointeuseMonteurs({
   from,
   to,
   fmt,
+  filterChefId = null,
 }: {
   data: FinancesResponse;
   from: string;
   to: string;
   fmt: (n: number) => string;
+  /** Yoann 2026-05-03 : si défini, on ne montre QUE les monteurs dont
+   *  chefId == filterChefId (pour la vue chef d équipe). */
+  filterChefId?: string | null;
 }) {
   type EqLite = { id: string; nom: string; chefId: string | null };
   const [equipeAll, setEquipeAll] = useState<EqLite[]>([]);
@@ -904,8 +914,15 @@ function PointeuseMonteurs({
     };
   }, []);
 
+  // Filtre chef d équipe : si filterChefId fourni, on ne garde que les
+  // monteurs dont chefId == filterChefId (lookup via equipeAll).
   const monteurs = (data.byMember || [])
     .filter((m) => m.role === "monteur")
+    .filter((m) => {
+      if (!filterChefId) return true;
+      const eq = equipeAll.find((e) => e.id === m.id);
+      return eq?.chefId === filterChefId;
+    })
     .sort((a, b) => b.coutTotal - a.coutTotal);
   if (monteurs.length === 0) return null;
   const totalMonteurs = monteurs.reduce((s, m) => s + m.coutTotal, 0);
