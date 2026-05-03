@@ -1849,10 +1849,43 @@ export function SessionAtelierModal({
     numero: number | null;
     chauffeurNom: string | null;
     nbVelos: number;
+    nbPrepares: number;
     nbClients: number;
     modeMontage: string | null;
     datePrevue: string | null;
   }>>([]);
+  // Yoann 2026-05-04 : map tourneeId → label de l'autre session qui la
+  // prend déjà. Permet de signaler les doublons et d'éviter de re-décompter
+  // les vélos déjà engagés dans une autre session de pré-montage.
+  const [tourneeInOtherSession, setTourneeInOtherSession] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, getDocs } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const snap = await getDocs(collection(db, "sessionsMontageAtelier"));
+      const map = new Map<string, string>();
+      for (const d of snap.docs) {
+        if (d.id === existingSessionId) continue;
+        const data = d.data() as {
+          statut?: string;
+          tourneeIds?: unknown;
+          entrepotNom?: string;
+          date?: string;
+        };
+        if (data.statut === "annulee") continue;
+        const tids = Array.isArray(data.tourneeIds) ? data.tourneeIds : [];
+        const label = `${data.entrepotNom || "?"} ${data.date || ""}`.trim();
+        for (const tid of tids) {
+          if (typeof tid === "string" && !map.has(tid)) {
+            map.set(tid, label);
+          }
+        }
+      }
+      if (alive) setTourneeInOtherSession(map);
+    })();
+    return () => { alive = false; };
+  }, [existingSessionId]);
   const [quantitePrevue, setQuantitePrevue] = useState("");
   const [quantiteReelle, setQuantiteReelle] = useState("");
   const [statut, setStatut] = useState<"planifiee" | "en_cours" | "terminee" | "annulee">("planifiee");
@@ -1935,6 +1968,7 @@ export function SessionAtelierModal({
       numero: number | null;
       chauffeurId: string | null;
       nbVelos: number;
+      nbPrepares: number;
       nbClients: number;
       modeMontage: string | null;
       datePrevue: string | null;
@@ -1942,8 +1976,6 @@ export function SessionAtelierModal({
     const byTour = new Map<string, Agg>();
     for (const l of livraisonsCtx) {
       if (!l.datePrevue) continue;
-      // datePrevue côté context = ISO string (data-context-firebase normalise).
-      // On garde >= date de session (futur compris : pré-montage pour J+1, J+2…).
       const livDate = String(l.datePrevue).slice(0, 10);
       if (livDate < date) continue;
       if (l.statut === "annulee") continue;
@@ -1954,11 +1986,16 @@ export function SessionAtelierModal({
         numero: typeof l.tourneeNumero === "number" ? l.tourneeNumero : null,
         chauffeurId: l.chauffeurId || null,
         nbVelos: 0,
+        nbPrepares: 0,
         nbClients: 0,
         modeMontage: l.modeMontage || null,
         datePrevue: livDate,
       };
       cur.nbVelos += Number(l.nbVelos || 0);
+      // Yoann 2026-05-04 : agrège les vélos déjà préparés via livraison.counts.prepares
+      // (calculé par trigger backend onVeloWriteSyncClientStats).
+      const counts = (l as { counts?: { prepares?: number } }).counts;
+      cur.nbPrepares += Number(counts?.prepares || 0);
       cur.nbClients += 1;
       if (cur.numero === null && typeof l.tourneeNumero === "number") cur.numero = l.tourneeNumero;
       if (!cur.modeMontage && l.modeMontage) cur.modeMontage = l.modeMontage;
@@ -1971,6 +2008,7 @@ export function SessionAtelierModal({
         numero: t.numero,
         chauffeurNom: t.chauffeurId ? eqMap.get(t.chauffeurId) || null : null,
         nbVelos: t.nbVelos,
+        nbPrepares: t.nbPrepares,
         nbClients: t.nbClients,
         modeMontage: t.modeMontage,
         datePrevue: t.datePrevue,
@@ -2353,11 +2391,13 @@ export function SessionAtelierModal({
               <span className="ml-1 text-[10px] text-gray-400">— à partir du {date}, jours suivants compris</span>
             </label>
             {(() => {
-              // Yoann 2026-05-04 : compteur live total vélos sélectionnés
-              // vs quantité prévue de la session. Couleur selon écart.
+              // Yoann 2026-05-04 : compteur live total vélos RESTANTS À PRÉPARER
+              // (= nbVelos - nbPrepares) vs quantité prévue de la session. Si une
+              // tournée a déjà 16/19 vélos préparés ailleurs, on ne compte que les
+              // 3 restants. Couleur selon écart.
               const totalSelectionne = tourneesDuJour
                 .filter((t) => tourneeIds.includes(t.id))
-                .reduce((s, t) => s + t.nbVelos, 0);
+                .reduce((s, t) => s + Math.max(0, t.nbVelos - t.nbPrepares), 0);
               const prevu = parseInt(quantitePrevue, 10);
               const hasPrevu = !isNaN(prevu) && prevu > 0;
               if (!hasPrevu && totalSelectionne === 0) return null;
@@ -2415,12 +2455,15 @@ export function SessionAtelierModal({
                         </div>
                         {list.map((t) => {
                           const sel = tourneeIds.includes(t.id);
+                          const restant = Math.max(0, t.nbVelos - t.nbPrepares);
+                          const totalPrep = t.nbVelos > 0 && t.nbPrepares >= t.nbVelos;
+                          const otherSession = tourneeInOtherSession.get(t.id);
                           return (
                             <label
                               key={t.id}
-                              className={`flex items-center gap-2 px-2 py-1 rounded cursor-pointer text-xs ${
+                              className={`flex flex-wrap items-center gap-2 px-2 py-1 rounded cursor-pointer text-xs ${
                                 sel ? "bg-amber-100 border border-amber-300" : "bg-white border border-gray-200 hover:bg-amber-50"
-                              }`}
+                              } ${totalPrep && !sel ? "opacity-60" : ""}`}
                             >
                               <input
                                 type="checkbox"
@@ -2439,6 +2482,20 @@ export function SessionAtelierModal({
                               <span className="text-gray-500">
                                 · {t.nbVelos}v / {t.nbClients} client{t.nbClients > 1 ? "s" : ""}
                               </span>
+                              {t.nbPrepares > 0 && (
+                                <span className={`text-[10px] px-1 py-0.5 rounded ${
+                                  totalPrep ? "bg-emerald-100 text-emerald-700" : "bg-orange-100 text-orange-700"
+                                }`}>
+                                  {totalPrep
+                                    ? `✓ ${t.nbPrepares}/${t.nbVelos} préparés`
+                                    : `${t.nbPrepares} prép · reste ${restant}v`}
+                                </span>
+                              )}
+                              {otherSession && (
+                                <span className="text-[10px] px-1 py-0.5 rounded bg-amber-200 text-amber-900" title={`Aussi sélectionnée dans la session : ${otherSession}`}>
+                                  ⚠ aussi : {otherSession}
+                                </span>
+                              )}
                               {t.modeMontage === "atelier" && (
                                 <span className="ml-auto text-[10px] px-1 py-0.5 rounded bg-emerald-100 text-emerald-700">atelier</span>
                               )}
