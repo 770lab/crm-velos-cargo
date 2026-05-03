@@ -3424,6 +3424,48 @@ function SimulationOperationModal({ onClose }: { onClose: () => void }) {
   const [nbChauffeurs, setNbChauffeurs] = useState<number | "">("");
   const [busy, setBusy] = useState(false);
   const [result, setResult] = useState<SimulationResult | null>(null);
+  // Yoann 2026-05-03 : sélection précise des camions à utiliser pour cette
+  // simulation (au lieu d utiliser la moyenne de toute la flotte active).
+  type CamionMini = { id: string; nom: string; capaciteCartons: number; capaciteVelosMontes: number; peutEntrerParis: boolean };
+  const [camionsFlotte, setCamionsFlotte] = useState<CamionMini[]>([]);
+  const [camionIdsSelectionnes, setCamionIdsSelectionnes] = useState<Set<string>>(new Set());
+  // Génération planning (mode + dates de range)
+  const [showGenererPlanning, setShowGenererPlanning] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, getDocs } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const snap = await getDocs(collection(db, "flotte"));
+      if (!alive) return;
+      const rows: CamionMini[] = [];
+      const initialSel = new Set<string>();
+      for (const d of snap.docs) {
+        const o = d.data() as { nom?: string; capaciteCartons?: number; capaciteVelosMontes?: number; capaciteVelos?: number; peutEntrerParis?: boolean; actif?: boolean };
+        if (o.actif === false) continue;
+        rows.push({
+          id: d.id,
+          nom: String(o.nom || ""),
+          capaciteCartons: Number(o.capaciteCartons || o.capaciteVelos || 50),
+          capaciteVelosMontes: Number(o.capaciteVelosMontes || 25),
+          peutEntrerParis: o.peutEntrerParis === true,
+        });
+        initialSel.add(d.id);
+      }
+      setCamionsFlotte(rows);
+      setCamionIdsSelectionnes(initialSel);
+    })();
+    return () => { alive = false; };
+  }, []);
+
+  const toggleCamion = (id: string) => {
+    setCamionIdsSelectionnes((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
 
   const run = async () => {
     setBusy(true);
@@ -3434,6 +3476,7 @@ function SimulationOperationModal({ onClose }: { onClose: () => void }) {
         rayonKm,
         seuilGrosVolume,
         nbChauffeurs: nbChauffeurs === "" ? undefined : nbChauffeurs,
+        camionIds: Array.from(camionIdsSelectionnes),
       })) as SimulationResult;
       setResult(r);
     } catch (e) {
@@ -3495,12 +3538,47 @@ function SimulationOperationModal({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
+        {/* Yoann 2026-05-03 : sélecteur camions précis */}
+        {camionsFlotte.length > 0 && (
+          <div className="mb-3 bg-slate-50 border border-slate-200 rounded p-3">
+            <div className="text-xs font-semibold text-slate-700 mb-2">
+              🚛 Camions à utiliser ({camionIdsSelectionnes.size} sélectionnés sur {camionsFlotte.length})
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {camionsFlotte.map((c) => {
+                const sel = camionIdsSelectionnes.has(c.id);
+                return (
+                  <label
+                    key={c.id}
+                    className={`flex items-center gap-2 p-2 rounded border cursor-pointer ${sel ? "bg-violet-50 border-violet-300" : "bg-white border-gray-200 hover:bg-gray-50"}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={sel}
+                      onChange={() => toggleCamion(c.id)}
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-semibold truncate">
+                        {c.peutEntrerParis ? "🚐" : "🚛"} {c.nom}
+                      </div>
+                      <div className="text-[10px] text-gray-600">
+                        📦 {c.capaciteCartons} cartons · 🔧 {c.capaciteVelosMontes} montés ·{" "}
+                        {c.peutEntrerParis ? "Paris OK" : "❌ Paris"}
+                      </div>
+                    </div>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
         <button
           onClick={run}
-          disabled={busy}
+          disabled={busy || camionIdsSelectionnes.size === 0}
           className="w-full px-3 py-2 bg-gradient-to-r from-violet-600 to-fuchsia-600 text-white rounded-lg hover:opacity-90 disabled:opacity-50 font-semibold"
         >
-          {busy ? "🚀 Simulation..." : "🚀 Lancer la simulation complète"}
+          {busy ? "🚀 Simulation..." : `🚀 Lancer la simulation complète (${camionIdsSelectionnes.size} camion${camionIdsSelectionnes.size > 1 ? "s" : ""})`}
         </button>
 
         {result && (
@@ -3590,9 +3668,333 @@ function SimulationOperationModal({ onClose }: { onClose: () => void }) {
                   ))}
                 </div>
 
+                {/* Yoann 2026-05-03 : bouton Générer planning depuis simulation */}
+                <div className="mt-3 bg-gradient-to-r from-emerald-50 to-teal-50 border-2 border-emerald-300 rounded-lg p-3 flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-sm font-bold text-emerald-900">📅 Générer le planning automatiquement</div>
+                    <div className="text-[11px] text-emerald-800 mt-0.5">
+                      Crée les vraies tournées dans /livraisons sur les dates que tu choisis (semaine par semaine, jour par jour, etc.).
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => setShowGenererPlanning(true)}
+                    className="shrink-0 px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 font-semibold text-sm"
+                  >
+                    📅 Générer planning
+                  </button>
+                </div>
+
                 <div className="mt-3 text-[11px] text-gray-500 italic">
                   💡 Voronoi : chaque client → entrepôt le + proche. Volumes &gt; {result.seuilGrosVolume}v → cartons (gros, montage chez client) ; sinon montés (rapide). Hypothèse capacités moyennes flotte.
                 </div>
+              </>
+            ) : (
+              <div className="text-sm text-gray-500 italic">Aucun résultat</div>
+            )}
+          </div>
+        )}
+
+        <div className="mt-4 flex justify-end">
+          <button onClick={onClose} className="px-3 py-1.5 text-sm border rounded hover:bg-gray-50">Fermer</button>
+        </div>
+      </div>
+      {showGenererPlanning && result?.ok && (
+        <GenererPlanningModal
+          rayonKm={rayonKm}
+          seuilGrosVolume={seuilGrosVolume}
+          camionIds={Array.from(camionIdsSelectionnes)}
+          nbChauffeurs={nbChauffeurs === "" ? null : nbChauffeurs}
+          onClose={() => setShowGenererPlanning(false)}
+        />
+      )}
+    </div>
+  );
+}
+
+// GenererPlanningModal — Yoann 2026-05-03
+// Sélection multi-dates + génération en mode preview puis apply.
+// Permet de planifier semaine par semaine, jour par jour, ou range custom.
+type GenererPlanningProps = {
+  rayonKm: number;
+  seuilGrosVolume: number;
+  camionIds: string[];
+  nbChauffeurs: number | null;
+  onClose: () => void;
+};
+type PlanningStop = { clientId: string; entreprise: string; nbVelos: number; ville: string; estParis: boolean };
+type PlanningTournee = {
+  entrepotId: string;
+  entrepotNom: string;
+  modeMontage: "atelier" | "client";
+  camionId: string;
+  camionNom: string;
+  capacite: number;
+  totalVelos: number;
+  nbStops: number;
+  stops: PlanningStop[];
+};
+type PlanningJour = {
+  date: string;
+  nbTournees: number;
+  totalVelos: number;
+  tournees: PlanningTournee[];
+};
+type GenererPlanningResult = {
+  ok?: boolean;
+  error?: string;
+  apply?: boolean;
+  nbTotalSlots?: number;
+  nbSlotsPlanifies?: number;
+  nbSlotsNonPlanifies?: number;
+  capaciteTotaleJournees?: number;
+  tourneesParJour?: number;
+  nbVehiculesParJour?: number;
+  totalTourneesPlanifiees?: number;
+  totalVelosPlanifies?: number;
+  tourneesCreees?: number;
+  livraisonsCreees?: number;
+  erreurs?: string[];
+  dates?: string[];
+  planning?: PlanningJour[];
+};
+
+function GenererPlanningModal({ rayonKm, seuilGrosVolume, camionIds, nbChauffeurs, onClose }: GenererPlanningProps) {
+  // Date picker multi-dates : 1 input liste les dates sélectionnées.
+  // Helpers pour preset Aujourd hui / Cette semaine / Semaine prochaine.
+  const todayIso = () => {
+    const d = new Date();
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  };
+  const startOfWeekIso = (offset = 0) => {
+    const d = new Date();
+    d.setDate(d.getDate() + offset * 7);
+    const day = d.getDay() || 7; // lundi=1, dimanche=7
+    d.setDate(d.getDate() - (day - 1));
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  };
+  const addDays = (iso: string, n: number) => {
+    const d = new Date(iso);
+    d.setDate(d.getDate() + n);
+    return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+  };
+  const [dates, setDates] = useState<Set<string>>(() => new Set([todayIso()]));
+  const [datePicker, setDatePicker] = useState(todayIso());
+
+  const presetCetteSemaine = () => {
+    const start = startOfWeekIso(0);
+    const newSet = new Set<string>();
+    for (let i = 0; i < 5; i++) newSet.add(addDays(start, i)); // lun-ven
+    setDates(newSet);
+  };
+  const presetSemaineProchaine = () => {
+    const start = startOfWeekIso(1);
+    const newSet = new Set<string>();
+    for (let i = 0; i < 5; i++) newSet.add(addDays(start, i));
+    setDates(newSet);
+  };
+  const addDate = () => {
+    if (datePicker) setDates((prev) => new Set([...prev, datePicker]));
+  };
+  const removeDate = (d: string) => {
+    setDates((prev) => {
+      const n = new Set(prev);
+      n.delete(d);
+      return n;
+    });
+  };
+
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<GenererPlanningResult | null>(null);
+
+  const run = async (apply: boolean) => {
+    if (dates.size === 0) {
+      alert("Sélectionne au moins 1 date");
+      return;
+    }
+    if (apply) {
+      if (!confirm(`Créer ${result?.totalTourneesPlanifiees ?? "?"} tournées en base sur les dates sélectionnées ?\n\nLes livraisons seront créées en statut "planifiee" et visibles dans /livraisons.`)) return;
+    }
+    setBusy(true);
+    if (!apply) setResult(null); // preview = remplace
+    try {
+      const { gasPost } = await import("@/lib/gas");
+      const r = (await gasPost("genererPlanningOperation", {
+        rayonKm,
+        seuilGrosVolume,
+        camionIds,
+        nbChauffeurs: nbChauffeurs ?? undefined,
+        dates: [...dates].sort(),
+        apply,
+      })) as GenererPlanningResult;
+      setResult(r);
+      if (apply && r.ok && r.tourneesCreees) {
+        setTimeout(() => alert(`✓ ${r.tourneesCreees} tournées créées · ${r.livraisonsCreees} livraisons. Va sur /livraisons pour les voir.`), 100);
+      }
+    } catch (e) {
+      setResult({ ok: false, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-[2100] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-4xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <div>
+            <h2 className="text-lg font-semibold">📅 Générer le planning</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Sélectionne les dates où tu veux générer les tournées (jour par jour, semaine par semaine, ou range custom).
+              Mode preview d abord, apply explicite ensuite.
+            </p>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+
+        {/* Sélecteur dates */}
+        <div className="bg-emerald-50 border border-emerald-200 rounded p-3 mb-3">
+          <div className="text-xs font-semibold text-emerald-900 mb-2">📅 Dates de planification ({dates.size} jour{dates.size > 1 ? "s" : ""})</div>
+          <div className="flex flex-wrap gap-2 mb-2">
+            <button
+              onClick={() => setDates(new Set([todayIso()]))}
+              className="px-2 py-1 text-[11px] bg-white border border-emerald-300 rounded hover:bg-emerald-100"
+            >
+              Aujourd&apos;hui
+            </button>
+            <button
+              onClick={() => setDates(new Set([addDays(todayIso(), 1)]))}
+              className="px-2 py-1 text-[11px] bg-white border border-emerald-300 rounded hover:bg-emerald-100"
+            >
+              Demain
+            </button>
+            <button
+              onClick={presetCetteSemaine}
+              className="px-2 py-1 text-[11px] bg-white border border-emerald-300 rounded hover:bg-emerald-100"
+            >
+              Cette semaine (lun-ven)
+            </button>
+            <button
+              onClick={presetSemaineProchaine}
+              className="px-2 py-1 text-[11px] bg-white border border-emerald-300 rounded hover:bg-emerald-100"
+            >
+              Semaine prochaine
+            </button>
+            <button
+              onClick={() => setDates(new Set())}
+              className="px-2 py-1 text-[11px] bg-rose-50 border border-rose-300 rounded hover:bg-rose-100 text-rose-700"
+            >
+              Tout effacer
+            </button>
+          </div>
+          <div className="flex items-center gap-2 mb-2">
+            <input
+              type="date"
+              value={datePicker}
+              onChange={(e) => setDatePicker(e.target.value)}
+              className="px-2 py-1.5 border rounded text-sm"
+            />
+            <button
+              onClick={addDate}
+              className="px-2 py-1.5 text-sm bg-emerald-600 text-white rounded hover:bg-emerald-700"
+            >
+              + Ajouter
+            </button>
+          </div>
+          {dates.size > 0 && (
+            <div className="flex flex-wrap gap-1 mt-2">
+              {[...dates].sort().map((d) => (
+                <span
+                  key={d}
+                  className="inline-flex items-center gap-1 px-2 py-0.5 bg-white border border-emerald-300 rounded text-[11px]"
+                >
+                  {d}
+                  <button onClick={() => removeDate(d)} className="text-rose-500 hover:text-rose-700">×</button>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <button
+          onClick={() => run(false)}
+          disabled={busy || dates.size === 0}
+          className="w-full px-3 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-50 font-semibold mb-3"
+        >
+          {busy ? "🔍 Calcul..." : "🔍 Preview du planning (sans créer)"}
+        </button>
+
+        {result && (
+          <div>
+            {result.error ? (
+              <div className="bg-red-50 border border-red-200 rounded p-3 text-sm text-red-800">❌ {result.error}</div>
+            ) : result.ok && result.planning ? (
+              <>
+                <div className="bg-emerald-50 border border-emerald-300 rounded p-3 mb-3">
+                  <div className="text-base font-bold text-emerald-900">
+                    {result.apply ? "✓ Planning CRÉÉ" : "🔍 Preview"} · {result.totalTourneesPlanifiees} tournées · {result.totalVelosPlanifies} vélos
+                  </div>
+                  <div className="text-xs text-emerald-800 mt-1">
+                    {result.dates?.length} jour{(result.dates?.length || 0) > 1 ? "s" : ""} · {result.tourneesParJour} tournées/jour max ({result.nbVehiculesParJour} véh./jour) · capacité totale = {result.capaciteTotaleJournees} tournées
+                  </div>
+                  {(result.nbSlotsNonPlanifies ?? 0) > 0 && (
+                    <div className="text-xs text-amber-800 mt-1 font-semibold">
+                      ⚠️ {result.nbSlotsNonPlanifies} tournées non planifiées (manque de jours sélectionnés). Ajoute plus de dates ou plus de véhicules.
+                    </div>
+                  )}
+                  {result.apply && result.tourneesCreees != null && (
+                    <div className="text-xs text-emerald-900 mt-1 font-semibold">
+                      ✓ {result.tourneesCreees} tournées et {result.livraisonsCreees} livraisons créées en base.
+                    </div>
+                  )}
+                  {result.erreurs && result.erreurs.length > 0 && (
+                    <div className="text-xs text-rose-800 mt-1">
+                      Erreurs : {result.erreurs.join(" · ")}
+                    </div>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  {result.planning.map((j) => (
+                    <div key={j.date} className="border rounded-lg overflow-hidden">
+                      <div className="bg-gray-50 border-b px-3 py-2 flex items-center justify-between">
+                        <div className="font-bold">{j.date}</div>
+                        <div className="text-xs text-gray-600">
+                          {j.nbTournees} tournée{j.nbTournees > 1 ? "s" : ""} · {j.totalVelos} vélos
+                        </div>
+                      </div>
+                      {j.tournees.length === 0 ? (
+                        <div className="p-3 text-xs text-gray-400 italic">Pas de tournée ce jour-là.</div>
+                      ) : (
+                        <div className="divide-y">
+                          {j.tournees.map((t, i) => (
+                            <div key={i} className="p-2 text-xs flex items-start justify-between gap-2">
+                              <div className="flex-1 min-w-0">
+                                <div className="font-semibold truncate">
+                                  {t.modeMontage === "atelier" ? "🔧" : "📦"} {t.entrepotNom} · {t.camionNom}
+                                  <span className="text-gray-500 font-normal ml-1">({t.totalVelos}/{t.capacite}v · {t.nbStops} stops)</span>
+                                </div>
+                                <div className="text-[10px] text-gray-600 mt-0.5">
+                                  {t.stops.slice(0, 5).map((s) => `${s.entreprise} (${s.nbVelos}v${s.estParis ? " ⚠️" : ""})`).join(" · ")}
+                                  {t.stops.length > 5 ? ` … +${t.stops.length - 5}` : ""}
+                                </div>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+
+                {!result.apply && result.totalTourneesPlanifiees != null && result.totalTourneesPlanifiees > 0 && (
+                  <button
+                    onClick={() => run(true)}
+                    disabled={busy}
+                    className="w-full mt-3 px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 font-semibold"
+                  >
+                    {busy ? "Création..." : `✓ Créer le planning en base (${result.totalTourneesPlanifiees} tournées)`}
+                  </button>
+                )}
               </>
             ) : (
               <div className="text-sm text-gray-500 italic">Aucun résultat</div>

@@ -272,6 +272,7 @@ export const FIRESTORE_ACTIONS = new Set<string>([
   "detectAnomaliesClients",
   // Yoann 2026-05-03 : simulation macro Opération Paris (1 bouton, full plan)
   "simulationOperationComplete",
+  "genererPlanningOperation",
   // parcelle cadastrale (vague 3) — APIs publiques, pas de Cloud Function
   "fetchParcelle",
   "autoFetchParcelles",
@@ -5019,6 +5020,9 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
       const seuilGrosVolumeS = Number(body.seuilGrosVolume || 30);
       const dureeJourneeMinS = Number(body.dureeJourneeMin || 510); // 8h30
       const overrideChauffeursS = body.nbChauffeurs != null ? Number(body.nbChauffeurs) : null;
+      // Yoann 2026-05-03 : sélection précise des camions dispo (au lieu de
+      // tous les camions actifs). Si non fourni → tous les actifs.
+      const camionIdsSelectionS = Array.isArray(body.camionIds) ? (body.camionIds as string[]) : null;
 
       // Charge entrepôts éligibles (non-fournisseur, non-éphémère)
       const eSnapS = await getDocs(collection(db, "entrepots"));
@@ -5083,11 +5087,11 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
       // Charge flotte active
       const flSnapS = await getDocs(collection(db, "flotte"));
       type CamS = { id: string; nom: string; capaciteCartons: number; capaciteVelosMontes: number; peutEntrerParis: boolean };
-      const camionsS: CamS[] = [];
+      const camionsAll: CamS[] = [];
       for (const d of flSnapS.docs) {
         const o = d.data() as { nom?: string; type?: string; capaciteCartons?: number; capaciteVelosMontes?: number; capaciteVelos?: number; peutEntrerParis?: boolean; actif?: boolean };
         if (o.actif === false) continue;
-        camionsS.push({
+        camionsAll.push({
           id: d.id,
           nom: String(o.nom || ""),
           capaciteCartons: Number(o.capaciteCartons || o.capaciteVelos || 50),
@@ -5095,7 +5099,11 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
           peutEntrerParis: o.peutEntrerParis === true,
         });
       }
-      // Capacités moyennes pondérées par camion (utilisées pour estimation)
+      // Si sélection explicite → filtre ; sinon tous les actifs
+      const camionsS: CamS[] = camionIdsSelectionS && camionIdsSelectionS.length > 0
+        ? camionsAll.filter((c) => camionIdsSelectionS.includes(c.id))
+        : camionsAll;
+      // Capacités moyennes pondérées par camion sélectionné (utilisées pour estimation)
       const capMontesMoyenne = camionsS.length > 0
         ? Math.round(camionsS.reduce((s, c) => s + c.capaciteVelosMontes, 0) / camionsS.length)
         : 30;
@@ -5227,6 +5235,13 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
         nbVehiculesParJour,
         capMontesMoyenne,
         capCartonsMoyenne,
+        camionsSelectionnes: camionsS.map((c) => ({
+          id: c.id,
+          nom: c.nom,
+          capaciteCartons: c.capaciteCartons,
+          capaciteVelosMontes: c.capaciteVelosMontes,
+          peutEntrerParis: c.peutEntrerParis,
+        })),
         totalClients,
         totalVelos,
         totalTournees,
@@ -5239,6 +5254,399 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
         totalCibleMontes,
         dureeJourneeMin: dureeJourneeMinS,
         entrepots: result,
+      };
+    }
+
+    case "genererPlanningOperation": {
+      // Yoann 2026-05-03 — Génère le planning réel : à partir de la simulation
+      // Voronoi, crée les vraies tournées en base sur des dates choisies
+      // (range : ex semaine du 6 au 12, ou un seul jour, etc.).
+      //
+      // Mode preview (apply=false) par défaut → calcule sans écrire.
+      // Mode apply=true → écrit les tournées + livraisons (idempotent par
+      // [date+entrepotId+ordreSlot] grâce à un tag externalKey unique).
+      const datesArr = Array.isArray(body.dates) ? (body.dates as string[]).filter((s) => /^\d{4}-\d{2}-\d{2}$/.test(s)) : [];
+      if (datesArr.length === 0) return { error: "dates[] requis (au moins 1 date YYYY-MM-DD)" };
+      const apply = body.apply === true;
+      const rayonKmG = Number(body.rayonKm || 130);
+      const centerLatG = Number(body.centerLat || 48.8566);
+      const centerLngG = Number(body.centerLng || 2.3522);
+      const seuilGrosVolumeG = Number(body.seuilGrosVolume || 30);
+      const overrideChauffeursG = body.nbChauffeurs != null ? Number(body.nbChauffeurs) : null;
+      const camionIdsSelG = Array.isArray(body.camionIds) ? (body.camionIds as string[]) : null;
+
+      // Charge entrepôts éligibles
+      const eSnapG = await getDocs(collection(db, "entrepots"));
+      type EntG = { id: string; nom: string; ville: string; lat: number; lng: number; stockCartons: number; stockVelosMontes: number };
+      const entrepotsG: EntG[] = [];
+      const groupesEphG = new Set<string>();
+      for (const d of eSnapG.docs) {
+        const o = d.data() as { nom?: string; ville?: string; lat?: number; lng?: number; stockCartons?: number; stockVelosMontes?: number; role?: string; dateArchivage?: unknown; groupeClient?: string };
+        if (o.dateArchivage) continue;
+        if (o.role === "fournisseur") continue;
+        if (o.role === "ephemere") {
+          if (o.groupeClient) groupesEphG.add(String(o.groupeClient).toLowerCase());
+          continue;
+        }
+        if (typeof o.lat !== "number" || typeof o.lng !== "number") continue;
+        entrepotsG.push({
+          id: d.id,
+          nom: String(o.nom || ""),
+          ville: String(o.ville || ""),
+          lat: o.lat,
+          lng: o.lng,
+          stockCartons: Number(o.stockCartons || 0),
+          stockVelosMontes: Number(o.stockVelosMontes || 0),
+        });
+      }
+      if (entrepotsG.length === 0) return { error: "Aucun entrepôt éligible" };
+
+      // Charge clients restants dans rayon (exclus groupes éphémères)
+      const cSnapG = await getDocs(collection(db, "clients"));
+      const lvSnapG = await getDocs(collection(db, "livraisons"));
+      const planifG = new Map<string, number>();
+      for (const d of lvSnapG.docs) {
+        const o = d.data() as { statut?: string; clientId?: string; nbVelos?: number };
+        if (String(o.statut || "").toLowerCase() !== "planifiee") continue;
+        const cid = String(o.clientId || "");
+        if (!cid) continue;
+        planifG.set(cid, (planifG.get(cid) || 0) + (Number(o.nbVelos) || 0));
+      }
+      type CliG = {
+        id: string;
+        entreprise: string;
+        ville: string;
+        codePostal: string;
+        adresse: string;
+        lat: number;
+        lng: number;
+        reste: number;
+        estParis: boolean;
+        apporteurLower: string | null;
+        creneauLivraison: string | null;
+      };
+      const clientsG: CliG[] = [];
+      for (const d of cSnapG.docs) {
+        const o = d.data() as {
+          entreprise?: string; ville?: string; codePostal?: string; departement?: string;
+          adresse?: string; latitude?: number; longitude?: number;
+          nbVelosCommandes?: number; stats?: { livres?: number };
+          groupe?: string; groupeClient?: string;
+          apporteur?: string; apporteurLower?: string;
+          creneauLivraison?: string;
+        };
+        if (typeof o.latitude !== "number" || typeof o.longitude !== "number") continue;
+        const reste = Math.max(0, Number(o.nbVelosCommandes || 0) - Number(o.stats?.livres || 0) - (planifG.get(d.id) || 0));
+        if (reste <= 0) continue;
+        const grpc = (o.groupe || o.groupeClient || "").toLowerCase();
+        if (grpc && groupesEphG.has(grpc)) continue;
+        if (haversineKmFs(centerLatG, centerLngG, o.latitude, o.longitude) > rayonKmG) continue;
+        const cp = String(o.codePostal || "");
+        clientsG.push({
+          id: d.id,
+          entreprise: String(o.entreprise || ""),
+          ville: String(o.ville || ""),
+          codePostal: cp,
+          adresse: String(o.adresse || ""),
+          lat: o.latitude,
+          lng: o.longitude,
+          reste,
+          estParis: /^75\d{3}$/.test(cp),
+          apporteurLower: o.apporteurLower || (o.apporteur ? String(o.apporteur).trim().toLowerCase() : null),
+          creneauLivraison: typeof o.creneauLivraison === "string" && o.creneauLivraison.trim() ? o.creneauLivraison.trim() : null,
+        });
+      }
+
+      // Charge flotte sélectionnée
+      const flSnapG = await getDocs(collection(db, "flotte"));
+      type CamG = { id: string; nom: string; capaciteCartons: number; capaciteVelosMontes: number; peutEntrerParis: boolean };
+      const camionsAllG: CamG[] = [];
+      for (const d of flSnapG.docs) {
+        const o = d.data() as { nom?: string; capaciteCartons?: number; capaciteVelosMontes?: number; capaciteVelos?: number; peutEntrerParis?: boolean; actif?: boolean };
+        if (o.actif === false) continue;
+        camionsAllG.push({
+          id: d.id,
+          nom: String(o.nom || ""),
+          capaciteCartons: Number(o.capaciteCartons || o.capaciteVelos || 50),
+          capaciteVelosMontes: Number(o.capaciteVelosMontes || 25),
+          peutEntrerParis: o.peutEntrerParis === true,
+        });
+      }
+      const camionsG = camionIdsSelG && camionIdsSelG.length > 0
+        ? camionsAllG.filter((c) => camionIdsSelG.includes(c.id))
+        : camionsAllG;
+      if (camionsG.length === 0) return { error: "Aucun camion sélectionné" };
+
+      // Charge équipe
+      const eqSnapG = await getDocs(collection(db, "equipe"));
+      let nbChauffeursG = 0;
+      for (const d of eqSnapG.docs) {
+        const o = d.data() as { role?: string; actif?: boolean };
+        if (o.actif === false) continue;
+        if (o.role === "chauffeur") nbChauffeursG++;
+      }
+      if (overrideChauffeursG != null) nbChauffeursG = overrideChauffeursG;
+      const nbVehicJourG = Math.min(nbChauffeursG, camionsG.length) || 1;
+      // Tournées par jour : 1.5 montés (rapide) ou 1 cartons (long)
+      // Mix : on applique 1.25 par véhicule en moyenne (compromis)
+      const tourneesParJour = Math.max(1, Math.floor(nbVehicJourG * 1.25));
+
+      // Voronoi : chaque client → entrepôt le + proche
+      type Bucket = { entrepot: EntG; clientsMontes: CliG[]; clientsCartons: CliG[]; demandeMontes: number; demandeCartons: number };
+      const buckets = new Map<string, Bucket>();
+      for (const e of entrepotsG) {
+        buckets.set(e.id, { entrepot: e, clientsMontes: [], clientsCartons: [], demandeMontes: 0, demandeCartons: 0 });
+      }
+      for (const c of clientsG) {
+        let bestE: EntG | null = null;
+        let bestD = Infinity;
+        for (const e of entrepotsG) {
+          const d = haversineKmFs(c.lat, c.lng, e.lat, e.lng);
+          if (d < bestD) { bestD = d; bestE = e; }
+        }
+        if (!bestE) continue;
+        const b = buckets.get(bestE.id)!;
+        if (c.reste > seuilGrosVolumeG) {
+          b.clientsCartons.push(c);
+          b.demandeCartons += c.reste;
+        } else {
+          b.clientsMontes.push(c);
+          b.demandeMontes += c.reste;
+        }
+      }
+
+      // Pour chaque entrepôt, split en tournées (greedy par client distance entrepôt)
+      type TourneeSlot = {
+        entrepotId: string;
+        entrepotNom: string;
+        modeMontage: "atelier" | "client";
+        camionId: string;
+        camionNom: string;
+        capacite: number;
+        stops: Array<{ clientId: string; entreprise: string; nbVelos: number; ville: string; estParis: boolean; creneauLivraison: string | null; apporteurLower: string | null; lat: number; lng: number; codePostal: string; adresse: string }>;
+        totalVelos: number;
+      };
+      const slots: TourneeSlot[] = [];
+      // Choix camion : pour mode atelier (montés) on préfère le + grand des
+      // camions montés. Pour cartons, le + grand cartons. Si Paris dans
+      // les stops → priorité aux camions peutEntrerParis.
+      const choisirCamion = (mode: "atelier" | "client", besoinParis: boolean): CamG => {
+        const candidats = besoinParis ? camionsG.filter((c) => c.peutEntrerParis) : camionsG;
+        const pool = candidats.length > 0 ? candidats : camionsG;
+        const sorted = [...pool].sort((a, b) =>
+          (mode === "atelier" ? b.capaciteVelosMontes - a.capaciteVelosMontes : b.capaciteCartons - a.capaciteCartons),
+        );
+        return sorted[0];
+      };
+      for (const b of buckets.values()) {
+        // Tri par distance entrepôt (plus proches d abord)
+        const sortByDist = (arr: CliG[]) =>
+          arr.sort((x, y) => haversineKmFs(b.entrepot.lat, b.entrepot.lng, x.lat, x.lng)
+            - haversineKmFs(b.entrepot.lat, b.entrepot.lng, y.lat, y.lng));
+        sortByDist(b.clientsMontes);
+        sortByDist(b.clientsCartons);
+        // Slot montés (priorité)
+        let i = 0;
+        while (i < b.clientsMontes.length) {
+          const besoinParis = b.clientsMontes.slice(i).some((c) => c.estParis);
+          const cam = choisirCamion("atelier", besoinParis);
+          const slot: TourneeSlot = {
+            entrepotId: b.entrepot.id,
+            entrepotNom: b.entrepot.nom,
+            modeMontage: "atelier",
+            camionId: cam.id,
+            camionNom: cam.nom,
+            capacite: cam.capaciteVelosMontes,
+            stops: [],
+            totalVelos: 0,
+          };
+          let reste = cam.capaciteVelosMontes;
+          while (i < b.clientsMontes.length && reste > 0) {
+            const c = b.clientsMontes[i];
+            // Skip si Paris et camion ne peut pas
+            if (c.estParis && !cam.peutEntrerParis) { i++; continue; }
+            const nb = Math.min(c.reste, reste);
+            slot.stops.push({
+              clientId: c.id,
+              entreprise: c.entreprise,
+              nbVelos: nb,
+              ville: c.ville,
+              estParis: c.estParis,
+              creneauLivraison: c.creneauLivraison,
+              apporteurLower: c.apporteurLower,
+              lat: c.lat,
+              lng: c.lng,
+              codePostal: c.codePostal,
+              adresse: c.adresse,
+            });
+            slot.totalVelos += nb;
+            reste -= nb;
+            // Si client n est pas servi totalement, il faudra revenir → on laisse tel quel
+            if (nb < c.reste) {
+              c.reste -= nb;
+            } else {
+              i++;
+            }
+          }
+          if (slot.stops.length === 0) break;
+          slots.push(slot);
+        }
+        // Slot cartons (gros volumes)
+        i = 0;
+        while (i < b.clientsCartons.length) {
+          const besoinParis = b.clientsCartons.slice(i).some((c) => c.estParis);
+          const cam = choisirCamion("client", besoinParis);
+          const slot: TourneeSlot = {
+            entrepotId: b.entrepot.id,
+            entrepotNom: b.entrepot.nom,
+            modeMontage: "client",
+            camionId: cam.id,
+            camionNom: cam.nom,
+            capacite: cam.capaciteCartons,
+            stops: [],
+            totalVelos: 0,
+          };
+          let reste = cam.capaciteCartons;
+          while (i < b.clientsCartons.length && reste > 0) {
+            const c = b.clientsCartons[i];
+            if (c.estParis && !cam.peutEntrerParis) { i++; continue; }
+            const nb = Math.min(c.reste, reste);
+            slot.stops.push({
+              clientId: c.id,
+              entreprise: c.entreprise,
+              nbVelos: nb,
+              ville: c.ville,
+              estParis: c.estParis,
+              creneauLivraison: c.creneauLivraison,
+              apporteurLower: c.apporteurLower,
+              lat: c.lat,
+              lng: c.lng,
+              codePostal: c.codePostal,
+              adresse: c.adresse,
+            });
+            slot.totalVelos += nb;
+            reste -= nb;
+            if (nb < c.reste) { c.reste -= nb; }
+            else { i++; }
+          }
+          if (slot.stops.length === 0) break;
+          slots.push(slot);
+        }
+      }
+
+      // Distribution sur les dates fournies (round-robin entrepôt pour ne
+      // pas mettre toutes les tournées d un même entrepôt le même jour)
+      const datesSorted = [...datesArr].sort();
+      type PlanJour = { date: string; tournees: TourneeSlot[] };
+      const planning: PlanJour[] = datesSorted.map((d) => ({ date: d, tournees: [] }));
+      const capaciteTotaleJournees = datesSorted.length * tourneesParJour;
+      const slotsPlanifies = slots.slice(0, capaciteTotaleJournees);
+      const slotsNonPlanifies = slots.slice(capaciteTotaleJournees);
+      for (let k = 0; k < slotsPlanifies.length; k++) {
+        const jourIdx = Math.floor(k / tourneesParJour);
+        if (jourIdx < planning.length) planning[jourIdx].tournees.push(slotsPlanifies[k]);
+      }
+
+      // Si apply=true : crée les tournées + livraisons en base
+      let tourneesCreees = 0;
+      let livraisonsCreees = 0;
+      const erreurs: string[] = [];
+      if (apply) {
+        // Numéro tournée global : max + 1
+        let nextNumero = 1;
+        try {
+          const top = await getDocs(query(collection(db, "livraisons"), orderBy("tourneeNumero", "desc"), limit(1)));
+          if (!top.empty) {
+            const n = (top.docs[0].data() as { tourneeNumero?: number }).tourneeNumero;
+            if (typeof n === "number") nextNumero = n + 1;
+          }
+        } catch {}
+
+        for (const j of planning) {
+          for (const s of j.tournees) {
+            try {
+              const tRef = await addDoc(collection(db, "tournees"), {
+                datePrevue: j.date,
+                mode: s.modeMontage,
+                modeMontage: s.modeMontage,
+                entrepotOrigineId: s.entrepotId,
+                camionId: s.camionId,
+                statut: "planifiee",
+                notes: `Auto-généré · simulation Opération · ${s.camionNom}`,
+                createdAt: ts(),
+              });
+              const tourneeNumero = nextNumero++;
+              for (let ii = 0; ii < s.stops.length; ii++) {
+                const stop = s.stops[ii];
+                await addDoc(collection(db, "livraisons"), {
+                  clientId: stop.clientId,
+                  nbVelos: stop.nbVelos,
+                  ordre: ii + 1,
+                  datePrevue: j.date,
+                  mode: s.modeMontage,
+                  modeMontage: s.modeMontage,
+                  entrepotOrigineId: s.entrepotId,
+                  tourneeId: tRef.id,
+                  tourneeNumero,
+                  apporteurLower: stop.apporteurLower,
+                  clientSnapshot: {
+                    entreprise: stop.entreprise,
+                    ville: stop.ville,
+                    adresse: stop.adresse,
+                    codePostal: stop.codePostal,
+                    lat: stop.lat,
+                    lng: stop.lng,
+                  },
+                  statut: "planifiee",
+                  createdAt: ts(),
+                });
+                livraisonsCreees++;
+              }
+              tourneesCreees++;
+            } catch (e) {
+              erreurs.push(`Erreur tournée ${s.entrepotNom} ${j.date} : ${e instanceof Error ? e.message : String(e)}`);
+            }
+          }
+        }
+      }
+
+      const totalTourneesPlanifiees = planning.reduce((s, j) => s + j.tournees.length, 0);
+      const totalVelosPlanifies = planning.reduce(
+        (s, j) => s + j.tournees.reduce((sj, t) => sj + t.totalVelos, 0),
+        0,
+      );
+
+      return {
+        ok: true,
+        apply,
+        nbTotalSlots: slots.length,
+        nbSlotsPlanifies: slotsPlanifies.length,
+        nbSlotsNonPlanifies: slotsNonPlanifies.length,
+        capaciteTotaleJournees,
+        tourneesParJour,
+        nbVehiculesParJour: nbVehicJourG,
+        totalTourneesPlanifiees,
+        totalVelosPlanifies,
+        tourneesCreees,
+        livraisonsCreees,
+        erreurs,
+        dates: datesSorted,
+        planning: planning.map((j) => ({
+          date: j.date,
+          nbTournees: j.tournees.length,
+          totalVelos: j.tournees.reduce((s, t) => s + t.totalVelos, 0),
+          tournees: j.tournees.map((t) => ({
+            entrepotId: t.entrepotId,
+            entrepotNom: t.entrepotNom,
+            modeMontage: t.modeMontage,
+            camionId: t.camionId,
+            camionNom: t.camionNom,
+            capacite: t.capacite,
+            totalVelos: t.totalVelos,
+            nbStops: t.stops.length,
+            stops: t.stops.map((st) => ({ clientId: st.clientId, entreprise: st.entreprise, nbVelos: st.nbVelos, ville: st.ville, estParis: st.estParis })),
+          })),
+        })),
       };
     }
 
