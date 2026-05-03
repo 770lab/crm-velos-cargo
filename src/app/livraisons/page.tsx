@@ -181,6 +181,7 @@ export default function LivraisonsPage() {
   const [showPlanner, setShowPlanner] = useState(false);
   const [showBriefJour, setShowBriefJour] = useState(false);
   const [showFeuilleJour, setShowFeuilleJour] = useState(false);
+  const [showWhatsAppClients, setShowWhatsAppClients] = useState(false);
   const [feuilleJourData, setFeuilleJourData] = useState<{ date: Date; chauffeurId: string } | null>(null);
   const [batchAxdis, setBatchAxdis] = useState<{ date: Date; tournees: Tournee[] } | null>(null);
   // Yoann 2026-05-03 : "+ Tournée" depuis /livraisons. Étape 1 = pick entrepôt,
@@ -699,6 +700,13 @@ export default function LivraisonsPage() {
                 📋 Brief du jour
               </button>
               <button
+                onClick={() => setShowWhatsAppClients(true)}
+                className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium whitespace-nowrap"
+                title="Liste des clients du jour avec bouton WhatsApp pour leur envoyer un rappel"
+              >
+                📱 WhatsApp clients
+              </button>
+              <button
                 onClick={() => setShowFeuilleJour(true)}
                 className="px-3 py-1.5 bg-blue-100 text-blue-800 border border-blue-300 rounded-lg hover:bg-blue-200 text-sm font-medium whitespace-nowrap"
                 title="Imprime une feuille de route consolidée par chauffeur (toutes ses tournées de la journée enchaînées)"
@@ -889,6 +897,16 @@ export default function LivraisonsPage() {
           tourneeDepartures={tourneeDepartures}
           sessionsAtelier={sessionsAtelier}
           onClose={() => setShowBriefJour(false)}
+        />
+      )}
+      {showWhatsAppClients && (
+        <WhatsAppClientsModal
+          refDate={refDate}
+          tournees={chauffeurFilteredTournees}
+          clientInfo={clientInfo}
+          tourneeDepartures={tourneeDepartures}
+          equipe={equipe}
+          onClose={() => setShowWhatsAppClients(false)}
         />
       )}
       {showFeuilleJour && !feuilleJourData && (
@@ -3293,45 +3311,71 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                 <span className="text-sm text-gray-800">{names.join(", ")}</span>
               </div>
             ) : null;
-          // Yoann 2026-05-03 : bouton WhatsApp pour le chauffeur (brief jour-J).
-          // Visible si le chauffeur est un membre Yoann (pas "__client__") avec
-          // un téléphone renseigné.
+          // Yoann 2026-05-03 : bouton WhatsApp pour chaque membre équipe
+          // (chauffeur, chef, monteurs, préparateurs). Brief jour-J court,
+          // l'utilisateur peut copier-coller le détail derrière.
           const totalVelos = tournee.totalVelos;
           const nbClients = tournee.livraisons.length;
           const heureDepart = liv0?.heureDepartTournee || null;
-          const onWhatsAppChauffeur = () => {
-            if (!chauffeurMember?.telephone) return;
-            const datePrev = liv0?.datePrevue || null;
-            const ok = openWhatsApp(chauffeurMember.telephone, tplBriefChauffeur({
-              prenom: chauffeurMember.nom || null,
+          const datePrev = liv0?.datePrevue || null;
+          const sendBriefTo = (member: EquipeMember | undefined) => {
+            if (!member?.telephone) return;
+            const ok = openWhatsApp(member.telephone, tplBriefChauffeur({
+              prenom: member.nom || null,
               datePrevue: datePrev,
               nbClients,
               nbVelos: totalVelos,
               heureDepart,
               signature: currentUser?.nom || "Vélos Cargo",
             }));
-            if (!ok) alert("Numéro de téléphone du chauffeur invalide.");
+            if (!ok) alert(`Numéro de téléphone invalide pour ${member.nom}.`);
           };
+          const renderMemberPill = (member: EquipeMember | undefined, fallbackName?: string) => {
+            const name = member?.nom || fallbackName || "?";
+            return (
+              <span key={member?.id || name} className="inline-flex items-center gap-1 bg-white border border-gray-200 rounded px-1.5 py-0.5 text-xs">
+                <span>{name}</span>
+                {member?.telephone && (
+                  <button
+                    onClick={(e) => { e.stopPropagation(); sendBriefTo(member); }}
+                    className="text-green-600 hover:text-green-700 leading-none"
+                    title={`WhatsApp ${member.nom} (${member.telephone})`}
+                  >
+                    📱
+                  </button>
+                )}
+              </span>
+            );
+          };
+          const renderEquipeLine = (icon: string, label: string, members: Array<{ id: string; nom: string }>) => {
+            if (members.length === 0) return null;
+            return (
+              <div className="flex flex-wrap gap-1.5 items-center">
+                <span className="text-[11px] uppercase tracking-wide text-gray-500 w-24">{icon} {label}</span>
+                <div className="flex flex-wrap gap-1">
+                  {members.map((m) => renderMemberPill(findMember(m.id)))}
+                </div>
+              </div>
+            );
+          };
+          const chefMembers = chefIds.map((id) => ({ id, nom: find(id) || "?" })).filter((m) => m.nom !== "?");
+          const monteurMembers = (liv0?.monteurIds || []).map((id) => ({ id, nom: find(id) || "?" })).filter((m) => m.nom !== "?");
+          const prepMembers = (liv0?.preparateurIds || []).map((id) => ({ id, nom: find(id) || "?" })).filter((m) => m.nom !== "?");
           return (
             <div className="mb-3 px-3 py-2 rounded-lg border bg-gray-50 space-y-1">
               {chauffeur && (
-                <div className="flex flex-wrap gap-1.5 items-baseline">
+                <div className="flex flex-wrap gap-1.5 items-center">
                   <span className="text-[11px] uppercase tracking-wide text-gray-500 w-24">🚐 Chauffeur</span>
-                  <span className="text-sm text-gray-800">{chauffeur}</span>
-                  {chauffeurMember?.telephone && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onWhatsAppChauffeur(); }}
-                      className="ml-1 px-1.5 py-0.5 text-[10px] bg-white border border-green-400 text-green-700 rounded hover:bg-green-50"
-                      title={`Ouvrir WhatsApp avec ${chauffeurMember.nom} (${chauffeurMember.telephone})`}
-                    >
-                      📱
-                    </button>
+                  {liv0?.chauffeurId === "__client__" ? (
+                    <span className="text-sm text-gray-800">{chauffeur}</span>
+                  ) : (
+                    renderMemberPill(chauffeurMember, chauffeur)
                   )}
                 </div>
               )}
-              {renderLine("🚦", "Chef d'équipe", chefs)}
-              {renderLine("🔧", "Monteurs", monteurs)}
-              {renderLine("📦", "Préparateurs", preps)}
+              {renderEquipeLine("🚦", "Chef d'équipe", chefMembers)}
+              {renderEquipeLine("🔧", "Monteurs", monteurMembers)}
+              {renderEquipeLine("📦", "Préparateurs", prepMembers)}
             </div>
           );
         })()}
@@ -6156,6 +6200,221 @@ function BriefJourneeModal({
             {copied ? "✓ Copié dans le presse-papier" : "📋 Copier le brief complet"}
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+// Yoann 2026-05-03 — Modale "WhatsApp clients du jour" : liste les clients
+// avec une livraison planifiée le jour choisi, leur numéro, leur statut de
+// validation. Bouton 📱 par client pour ouvrir WhatsApp avec un message de
+// rappel pré-rempli (créneau + adresse + nb vélos).
+function WhatsAppClientsModal({
+  refDate,
+  tournees,
+  clientInfo,
+  tourneeDepartures,
+  equipe,
+  onClose,
+}: {
+  refDate: Date;
+  tournees: Tournee[];
+  clientInfo: Map<string, ClientPoint>;
+  tourneeDepartures: DepartureMap;
+  equipe: EquipeMember[];
+  onClose: () => void;
+}) {
+  const currentUser = useCurrentUser();
+  const tomorrow = useMemo(() => {
+    const d = new Date(refDate); d.setDate(d.getDate() + 1); return d;
+  }, [refDate]);
+  const initialDate = useMemo(() => {
+    const refIso = isoDate(refDate);
+    const isPlanned = (iso: string) => tournees.some(
+      (t) => t.datePrevue && isoDate(t.datePrevue) === iso && t.statutGlobal !== "annulee",
+    );
+    if (isPlanned(refIso)) return refIso;
+    return isoDate(tomorrow);
+  }, [refDate, tournees, tomorrow]);
+  const [selectedDate, setSelectedDate] = useState<string>(initialDate);
+  void equipe;
+
+  // Liste des livraisons du jour avec infos client
+  const items = useMemo(() => {
+    const day = selectedDate;
+    type Row = {
+      livraisonId: string;
+      tourneeId: string;
+      clientId: string | null;
+      entreprise: string;
+      contact: string | null;
+      telephone: string | null;
+      adresse: string;
+      nbVelos: number;
+      creneau: string | null;
+      validee: boolean;
+      datePrevue: string | null;
+    };
+    const rows: Row[] = [];
+    for (const t of tournees) {
+      if (!t.datePrevue) continue;
+      if (t.statutGlobal === "annulee") continue;
+      if (isoDate(t.datePrevue) !== day) continue;
+      const dep = tourneeDepartures.get(tourneeKeyForDeparture(t));
+      const departMin = dep?.min ?? DEPART_MIN_DEFAULT;
+      const departMax = dep?.max ?? DEPART_MAX_DEFAULT;
+      const monteursCount = (t.livraisons[0]?.monteurIds || []).length || 1;
+      const arrivals = computeArrivalTimes(t, monteursCount, departMin, departMax);
+      const fmtHM = (mins: number) => {
+        const h = Math.floor(mins / 60);
+        const m = mins % 60;
+        return `${h}h${String(m).padStart(2, "0")}`;
+      };
+      for (let i = 0; i < t.livraisons.length; i++) {
+        const l = t.livraisons[i];
+        if (l.statut === "annulee") continue;
+        const c = l.clientId ? clientInfo.get(l.clientId) : null;
+        const adresse = [l.client?.adresse, l.client?.codePostal, l.client?.ville].filter(Boolean).join(", ");
+        const arr = arrivals[i];
+        const creneau = arr ? `${fmtHM(arr.minMin)}-${fmtHM(arr.maxMin)}` : null;
+        rows.push({
+          livraisonId: l.id,
+          tourneeId: t.tourneeId || "",
+          clientId: l.clientId || null,
+          entreprise: l.client?.entreprise || "?",
+          contact: c?.contact || null,
+          telephone: l.client?.telephone || c?.telephone || null,
+          adresse,
+          nbVelos: l.nbVelos || l._count.velos || 0,
+          creneau,
+          validee: !!l.validationClient,
+          datePrevue: l.datePrevue,
+        });
+      }
+    }
+    return rows.sort((a, b) => a.entreprise.localeCompare(b.entreprise));
+  }, [selectedDate, tournees, clientInfo, tourneeDepartures]);
+
+  const sendOne = (row: typeof items[number]) => {
+    const ok = openWhatsApp(row.telephone, tplValidationLivraison({
+      contact: row.contact,
+      entreprise: row.entreprise,
+      nbVelos: row.nbVelos,
+      datePrevue: row.datePrevue,
+      creneau: row.creneau,
+      adresse: row.adresse || null,
+      signature: currentUser?.nom || "Vélos Cargo",
+    }));
+    if (!ok) alert(`Pas de numéro de téléphone valide pour ${row.entreprise}.`);
+  };
+
+  // Ouverture en série avec délai pour contourner le bloqueur de pop-ups
+  // navigateur. Le 1er onglet ouvre direct (action user), les suivants
+  // après un setTimeout — Chrome autorise jusqu'à ~5 onglets en série
+  // depuis un même clic en général.
+  const sendAll = () => {
+    const valid = items.filter((r) => !!r.telephone);
+    if (valid.length === 0) { alert("Aucun numéro à contacter."); return; }
+    if (!confirm(`Ouvrir WhatsApp pour ${valid.length} client(s) ? Le navigateur risque de bloquer si > 5 — clique sur "Toujours autoriser les pop-ups".`)) return;
+    for (let i = 0; i < valid.length; i++) {
+      const row = valid[i];
+      setTimeout(() => sendOne(row), i * 350);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[70] p-4" onClick={onClose}>
+      <div className="bg-white rounded-2xl p-5 w-full max-w-3xl max-h-[90vh] overflow-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3 gap-3">
+          <div className="flex-1 min-w-0">
+            <h2 className="text-lg font-semibold flex items-center gap-2">📱 WhatsApp clients du jour</h2>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Envoie un rappel WhatsApp à chaque client livré ce jour-là (date + créneau + adresse + nb vélos pré-remplis).
+              Tu valides l&apos;envoi dans WhatsApp.
+            </p>
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
+              <label className="text-xs font-medium text-gray-700">Jour :</label>
+              <input
+                type="date"
+                value={selectedDate}
+                onChange={(e) => setSelectedDate(e.target.value)}
+                className="px-2 py-1 border rounded text-sm"
+              />
+              <button
+                onClick={() => setSelectedDate(isoDate(refDate))}
+                className="text-[11px] px-2 py-1 text-gray-600 border border-gray-200 rounded hover:bg-gray-50"
+              >
+                Aujourd&apos;hui
+              </button>
+              <button
+                onClick={() => setSelectedDate(isoDate(tomorrow))}
+                className="text-[11px] px-2 py-1 text-gray-600 border border-gray-200 rounded hover:bg-gray-50"
+              >
+                Demain
+              </button>
+            </div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">×</button>
+        </div>
+
+        {items.length === 0 ? (
+          <div className="text-center py-12 text-gray-400 italic text-sm">
+            Aucun client à livrer ce jour-là.
+          </div>
+        ) : (
+          <>
+            <div className="mb-3 flex items-center justify-between gap-2 flex-wrap">
+              <div className="text-xs text-gray-600">
+                {items.length} client{items.length > 1 ? "s" : ""} ·
+                {" "}{items.filter((r) => r.telephone).length} avec téléphone ·
+                {" "}{items.filter((r) => !r.telephone).length} sans
+              </div>
+              <button
+                onClick={sendAll}
+                disabled={items.filter((r) => !!r.telephone).length === 0}
+                className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium disabled:opacity-50"
+                title="Ouvre WhatsApp pour tous les clients d'un coup (navigateur peut bloquer si > 5)"
+              >
+                📱 Tous ({items.filter((r) => !!r.telephone).length})
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              {items.map((row) => (
+                <div
+                  key={row.livraisonId}
+                  className={`flex items-center gap-2 px-3 py-2 rounded-lg border ${
+                    row.telephone ? "bg-white" : "bg-gray-50 opacity-70"
+                  } ${row.validee ? "border-emerald-200" : "border-amber-200"}`}
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="text-sm font-medium text-gray-900 truncate">
+                      {row.entreprise}
+                      {row.validee ? (
+                        <span className="ml-1.5 text-[10px] text-emerald-700 font-normal">✓ validé</span>
+                      ) : (
+                        <span className="ml-1.5 text-[10px] text-amber-700 font-normal">⚠ non validé</span>
+                      )}
+                    </div>
+                    <div className="text-[11px] text-gray-500 truncate">
+                      {row.contact && <>👤 {row.contact} · </>}
+                      {row.telephone ? <>📞 {row.telephone}</> : <span className="text-red-600">📞 aucun téléphone</span>}
+                      {row.creneau && <> · ⏰ {row.creneau}</>}
+                      {" · "}🚲 {row.nbVelos}v
+                    </div>
+                  </div>
+                  <button
+                    onClick={() => sendOne(row)}
+                    disabled={!row.telephone}
+                    className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-xs font-semibold disabled:bg-gray-300 disabled:text-gray-500 disabled:cursor-not-allowed"
+                    title={row.telephone ? "Ouvrir WhatsApp" : "Aucun téléphone — ajoute-le sur la fiche client"}
+                  >
+                    📱 WhatsApp
+                  </button>
+                </div>
+              ))}
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
