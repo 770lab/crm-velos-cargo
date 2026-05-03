@@ -84,9 +84,20 @@ async function compressImage(file: File, maxDim = 1280, quality = 0.85): Promise
   const blob = await new Promise<Blob>((resolve) =>
     canvas.toBlob((b) => resolve(b!), "image/jpeg", quality),
   );
-  const buf = await blob.arrayBuffer();
-  const bin = String.fromCharCode(...new Uint8Array(buf));
-  return { base64: btoa(bin), mimeType: "image/jpeg" };
+  // Yoann 2026-05-03 : passé à FileReader. Avant : String.fromCharCode(...new
+  // Uint8Array(buf)) qui plantait "Maximum call stack size exceeded" sur
+  // images > qq centaines de KB (le spread crée des centaines de milliers
+  // d args sur la stack).
+  const dataUrl: string = await new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error || new Error("FileReader KO"));
+    reader.readAsDataURL(blob);
+  });
+  // dataUrl = "data:image/jpeg;base64,XXXX"
+  const comma = dataUrl.indexOf(",");
+  const base64 = comma >= 0 ? dataUrl.slice(comma + 1) : "";
+  return { base64, mimeType: "image/jpeg" };
 }
 
 function AtelierPage() {
