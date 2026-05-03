@@ -6,6 +6,7 @@ import Link from "next/link";
 import { gasGet, gasPost, gasUpload } from "@/lib/gas";
 import { useCurrentUser } from "@/lib/current-user";
 import { BASE_PATH } from "@/lib/base-path";
+import { openWhatsApp, tplGenerique } from "@/lib/whatsapp";
 
 export default function ClientDetailWrapper() {
   return (
@@ -332,6 +333,22 @@ function ClientDetailPage() {
               </a>
             );
           })()}
+          {client.telephone && (
+            <button
+              onClick={() => {
+                const ok = openWhatsApp(client.telephone, tplGenerique({
+                  contact: client.contact || null,
+                  entreprise: client.entreprise,
+                  signature: currentUser?.nom || "Vélos Cargo",
+                }));
+                if (!ok) alert("Numéro de téléphone invalide.");
+              }}
+              className="px-3 py-1 text-sm text-green-700 border border-green-400 rounded-lg hover:bg-green-50 whitespace-nowrap"
+              title={`Ouvre WhatsApp avec ${client.telephone}`}
+            >
+              📱 WhatsApp
+            </button>
+          )}
           {client.statut === "annulee" ? (
             <button
               onClick={restoreClient}

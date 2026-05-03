@@ -7,6 +7,7 @@ import { gasGet, gasPost } from "@/lib/gas";
 import { useData, type LivraisonRow, type EquipeMember, type ClientPoint, type EquipeRole } from "@/lib/data-context";
 import { useCurrentUser } from "@/lib/current-user";
 import { callGemini } from "@/lib/gemini-client";
+import { openWhatsApp, tplValidationLivraison, tplBriefChauffeur } from "@/lib/whatsapp";
 import DateLoadPicker, { type DayLoad } from "@/components/date-load-picker";
 import AddClientModal from "@/components/add-client-modal";
 import DayPlannerModal from "@/components/day-planner-modal";
@@ -3269,7 +3270,11 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           // de l'équipe affectée, sans bouton modifier. Pas le « gros carré »
           // d'admin.
           const liv0 = tournee.livraisons[0];
-          const find = (id: string | null | undefined) => id ? equipe.find((m) => m.id === id)?.nom || null : null;
+          const findMember = (id: string | null | undefined) => id ? equipe.find((m) => m.id === id) : undefined;
+          const find = (id: string | null | undefined) => findMember(id)?.nom || null;
+          const chauffeurMember = liv0?.chauffeurId && liv0.chauffeurId !== "__client__"
+            ? findMember(liv0.chauffeurId)
+            : undefined;
           // Sentinel "__client__" = camion client (Yoann 2026-05-01) :
           // pas de chauffeur Yoann, le client redistribue lui-même.
           const chauffeur = liv0?.chauffeurId === "__client__"
@@ -3288,9 +3293,42 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                 <span className="text-sm text-gray-800">{names.join(", ")}</span>
               </div>
             ) : null;
+          // Yoann 2026-05-03 : bouton WhatsApp pour le chauffeur (brief jour-J).
+          // Visible si le chauffeur est un membre Yoann (pas "__client__") avec
+          // un téléphone renseigné.
+          const totalVelos = tournee.totalVelos;
+          const nbClients = tournee.livraisons.length;
+          const heureDepart = liv0?.heureDepartTournee || null;
+          const onWhatsAppChauffeur = () => {
+            if (!chauffeurMember?.telephone) return;
+            const datePrev = liv0?.datePrevue || null;
+            const ok = openWhatsApp(chauffeurMember.telephone, tplBriefChauffeur({
+              prenom: chauffeurMember.nom || null,
+              datePrevue: datePrev,
+              nbClients,
+              nbVelos: totalVelos,
+              heureDepart,
+              signature: currentUser?.nom || "Vélos Cargo",
+            }));
+            if (!ok) alert("Numéro de téléphone du chauffeur invalide.");
+          };
           return (
             <div className="mb-3 px-3 py-2 rounded-lg border bg-gray-50 space-y-1">
-              {chauffeur && renderLine("🚐", "Chauffeur", [chauffeur])}
+              {chauffeur && (
+                <div className="flex flex-wrap gap-1.5 items-baseline">
+                  <span className="text-[11px] uppercase tracking-wide text-gray-500 w-24">🚐 Chauffeur</span>
+                  <span className="text-sm text-gray-800">{chauffeur}</span>
+                  {chauffeurMember?.telephone && (
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onWhatsAppChauffeur(); }}
+                      className="ml-1 px-1.5 py-0.5 text-[10px] bg-white border border-green-400 text-green-700 rounded hover:bg-green-50"
+                      title={`Ouvrir WhatsApp avec ${chauffeurMember.nom} (${chauffeurMember.telephone})`}
+                    >
+                      📱
+                    </button>
+                  )}
+                </div>
+              )}
               {renderLine("🚦", "Chef d'équipe", chefs)}
               {renderLine("🔧", "Monteurs", monteurs)}
               {renderLine("📦", "Préparateurs", preps)}
@@ -3492,6 +3530,29 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                       <div className="mt-1 px-2 py-1.5 text-[11px] bg-red-50 border border-red-300 rounded text-red-800">
                         <div className="font-medium mb-1">⚠ Client pas encore validé — pas de livraison sans confirmation</div>
                         <div className="flex gap-1.5 flex-wrap">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              const tel = l.client?.telephone || null;
+                              const c = l.clientId ? clientInfo.get(l.clientId) : null;
+                              const adresse = [l.client?.adresse, l.client?.codePostal, l.client?.ville]
+                                .filter(Boolean).join(", ");
+                              const ok = openWhatsApp(tel, tplValidationLivraison({
+                                contact: c?.contact || null,
+                                entreprise: l.client?.entreprise || "",
+                                nbVelos: l.nbVelos || l._count.velos || 0,
+                                datePrevue: l.datePrevue,
+                                creneau: null,
+                                adresse: adresse || null,
+                                signature: currentUser?.nom || "Vélos Cargo",
+                              }));
+                              if (!ok) alert(`Pas de numéro de téléphone valide pour ${l.client?.entreprise || "ce client"}.`);
+                            }}
+                            className="px-2 py-0.5 text-[11px] bg-white border border-green-400 text-green-700 rounded hover:bg-green-50"
+                            title="Ouvre WhatsApp avec un message de validation pré-rempli"
+                          >
+                            📱 WhatsApp
+                          </button>
                           <button
                             onClick={(e) => { e.stopPropagation(); validateClient(l.id, "validee_orale", currentUser?.nom || ""); }}
                             className="px-2 py-0.5 text-[11px] bg-white border border-emerald-300 text-emerald-700 rounded hover:bg-emerald-50"
