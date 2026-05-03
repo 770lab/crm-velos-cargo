@@ -750,7 +750,9 @@ export default function LivraisonsPage() {
         <NavBar refDate={refDate} setRefDate={setRefDate} view={view} />
       )}
 
-      {currentUser?.id && <SessionsAtelierBanner monteurId={currentUser.id} />}
+      {currentUser?.id && currentUser?.role === "monteur" && (
+        <SessionsAtelierBanner monteurId={currentUser.id} />
+      )}
 
       {view === "jour" && (
         <DayView
