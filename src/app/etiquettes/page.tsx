@@ -152,6 +152,11 @@ function EtiquettesPage() {
         ? safeData.clients.filter((c) => c.clientId === focusClientId)
         : [...safeData.clients].reverse())
     : [];
+  // Yoann 2026-05-03 — workflow Naomi : 2 étiquettes par carton
+  // (1 sur le carton, 1 dedans pour le monteur qui la collera sur la selle).
+  // Param ?copies=N pour imprimer N copies de chaque étiquette (default 1).
+  const copies = Math.max(1, Math.min(10, Number(sp.get("copies") || "1")));
+
   const items: { client: Client; velo: Velo; index: number; total: number; clientLoadOrder: number; totalClients: number }[] = [];
   let total = 0;
   clients.forEach((c) => { total += c.velos.length; });
@@ -162,8 +167,12 @@ function EtiquettesPage() {
   let i = 0;
   clients.forEach((c, ci) => {
     c.velos.forEach((v) => {
-      i++;
-      items.push({ client: c, velo: v, index: i, total, clientLoadOrder: ci + 1, totalClients });
+      // Duplique copies fois (même contenu, sheets distinctes pour impression
+      // séquentielle sur thermique).
+      for (let k = 0; k < copies; k++) {
+        i++;
+        items.push({ client: c, velo: v, index: i, total, clientLoadOrder: ci + 1, totalClients });
+      }
     });
   });
 

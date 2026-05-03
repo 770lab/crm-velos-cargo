@@ -432,12 +432,12 @@ function AtelierPage() {
           <div>{lastResult.msg}</div>
           {lastResult.ok && lastResult.fnuci && (
             <a
-              href={`/etiquettes?fnuci=${encodeURIComponent(lastResult.fnuci)}`}
+              href={`/etiquettes?fnuci=${encodeURIComponent(lastResult.fnuci)}&copies=2`}
               target="_blank"
               rel="noreferrer"
               className="mt-2 inline-block px-3 py-1.5 bg-emerald-600 text-white rounded text-xs font-semibold hover:bg-emerald-700"
             >
-              🖨 Imprimer étiquette à coller sur le vélo
+              🖨 Imprimer 2 étiquettes (1 sur carton + 1 dedans pour la selle)
             </a>
           )}
         </div>
