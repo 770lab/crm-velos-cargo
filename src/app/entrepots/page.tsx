@@ -2184,7 +2184,16 @@ export function SessionAtelierModal({
           </div>
         </div>
         <div className="mt-4 flex justify-between gap-2">
-          <div>
+          <div className="flex gap-2 flex-wrap">
+            {existingSessionId && statut !== "annulee" && (
+              <a
+                href={`/atelier?id=${encodeURIComponent(existingSessionId)}`}
+                className="px-3 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 font-semibold"
+                title="Page scan chef : affilier les FNUCI aux clients pendant la session atelier"
+              >
+                📷 Ouvrir l atelier
+              </a>
+            )}
             {existingSessionId && statut !== "annulee" && (
               <button
                 onClick={cancelSession}
