@@ -110,7 +110,7 @@ function AtelierPage() {
     let alive = true;
     (async () => {
       setLoading(true);
-      const { collection, doc, getDoc, getDocs, query, where } = await import("firebase/firestore");
+      const { collection, doc, getDoc, getDocs } = await import("firebase/firestore");
       const { db } = await import("@/lib/firebase");
       const sRef = doc(db, "sessionsMontageAtelier", sessionId);
       const sSnap = await getDoc(sRef);
@@ -176,19 +176,22 @@ function AtelierPage() {
         });
       }
 
-      // Compte vélos affiliés (avec FNUCI) par client
-      for (const cid of clientsMap.keys()) {
-        const vQ = query(collection(db, "velos"), where("clientId", "==", cid));
-        const vSnap = await getDocs(vQ);
-        let affilies = 0;
-        for (const vd of vSnap.docs) {
-          const v = vd.data() as { fnuci?: string | null; annule?: boolean };
-          if (v.annule) continue;
-          if (v.fnuci) affilies++;
-        }
-        const c = clientsMap.get(cid)!;
-        c.velosAffilies = affilies;
-        c.reste = Math.max(0, c.nbVelosCommandes - affilies);
+      // Compte vélos affiliés (avec FNUCI) par client — 1 seule query
+      // sur tous les vélos puis group by clientId (au lieu de 326 sub-queries
+      // qui bloquaient la page).
+      const allVSnap = await getDocs(collection(db, "velos"));
+      const affiliesByClient = new Map<string, number>();
+      for (const vd of allVSnap.docs) {
+        const v = vd.data() as { clientId?: string; fnuci?: string | null; annule?: boolean };
+        if (v.annule) continue;
+        if (!v.fnuci) continue;
+        const cid = String(v.clientId || "");
+        if (!cid) continue;
+        affiliesByClient.set(cid, (affiliesByClient.get(cid) || 0) + 1);
+      }
+      for (const c of clientsMap.values()) {
+        c.velosAffilies = affiliesByClient.get(c.id) || 0;
+        c.reste = Math.max(0, c.nbVelosCommandes - c.velosAffilies);
       }
 
       const candidats = Array.from(clientsMap.values())
