@@ -99,7 +99,7 @@ function AtelierPage() {
   const [loading, setLoading] = useState(true);
   const [selectedClientId, setSelectedClientId] = useState<string>("");
   const [scanning, setScanning] = useState(false);
-  const [lastResult, setLastResult] = useState<{ ok: boolean; msg: string } | null>(null);
+  const [lastResult, setLastResult] = useState<{ ok: boolean; msg: string; fnuci?: string } | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [scannetteCode, setScannetteCode] = useState("");
   const scannetteInputRef = useRef<HTMLInputElement | null>(null);
@@ -238,7 +238,7 @@ function AtelierPage() {
         await gasPost("markVeloPrepare", { fnuci, userId });
       }
       const cliNom = clients.find((c) => c.id === selectedClientId)?.entreprise || "?";
-      setLastResult({ ok: true, msg: `✓ ${fnuci} → ${cliNom} (préparé)` });
+      setLastResult({ ok: true, msg: `✓ ${fnuci} → ${cliNom} (préparé)`, fnuci });
       setRefreshKey((k) => k + 1);
     } catch (e) {
       setLastResult({ ok: false, msg: e instanceof Error ? e.message : String(e) });
@@ -429,7 +429,17 @@ function AtelierPage() {
 
       {lastResult && (
         <div className={`border rounded p-3 text-sm ${lastResult.ok ? "bg-emerald-50 border-emerald-300 text-emerald-900" : "bg-red-50 border-red-300 text-red-900"}`}>
-          {lastResult.msg}
+          <div>{lastResult.msg}</div>
+          {lastResult.ok && lastResult.fnuci && (
+            <a
+              href={`/etiquettes?fnuci=${encodeURIComponent(lastResult.fnuci)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="mt-2 inline-block px-3 py-1.5 bg-emerald-600 text-white rounded text-xs font-semibold hover:bg-emerald-700"
+            >
+              🖨 Imprimer étiquette à coller sur le vélo
+            </a>
+          )}
         </div>
       )}
 

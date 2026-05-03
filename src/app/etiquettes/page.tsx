@@ -34,11 +34,61 @@ function EtiquettesPage() {
   const sp = useSearchParams();
   const tourneeId = sp.get("tourneeId") || "";
   const focusClientId = sp.get("clientId") || "";
+  // Yoann 2026-05-03 : mode "vélo unique" pour la session atelier.
+  // Au scan d un FNUCI dans /atelier, on ouvre /etiquettes?fnuci=BCXXX
+  // pour imprimer 1 étiquette à coller sur le vélo monté.
+  const focusFnuci = (sp.get("fnuci") || "").toUpperCase();
   const [data, setData] = useState<Progression | null>(null);
 
   useEffect(() => {
-    if (!tourneeId) return;
     let cancelled = false;
+    // Mode vélo unique (atelier)
+    if (focusFnuci) {
+      (async () => {
+        const { collection, query, where, getDocs, doc, getDoc } = await import("firebase/firestore");
+        const { db } = await import("@/lib/firebase");
+        const vSnap = await getDocs(query(collection(db, "velos"), where("fnuci", "==", focusFnuci)));
+        if (vSnap.empty) {
+          if (!cancelled) setData({ error: `FNUCI ${focusFnuci} introuvable` });
+          return;
+        }
+        const vd = vSnap.docs[0];
+        const v = vd.data() as { clientId?: string; fnuci?: string; cartonToken?: string | null };
+        const clientId = String(v.clientId || "");
+        if (!clientId) {
+          if (!cancelled) setData({ error: `Vélo ${focusFnuci} sans client` });
+          return;
+        }
+        const cDoc = await getDoc(doc(db, "clients", clientId));
+        const cData = cDoc.exists() ? cDoc.data() as Record<string, unknown> : {};
+        // Génère cartonToken si manquant
+        let cartonToken = v.cartonToken || null;
+        if (!cartonToken) {
+          try {
+            const r = (await gasPost("ensureCartonTokensForClient", { clientId })) as EnsureTokensResp;
+            if (r && "ok" in r && r.ok) {
+              const found = r.velos.find((x) => x.veloId === vd.id);
+              if (found) cartonToken = found.cartonToken;
+            }
+          } catch {}
+        }
+        if (cancelled) return;
+        setData({
+          tourneeId: "atelier",
+          datePrevue: null,
+          clients: [{
+            clientId,
+            entreprise: String(cData.entreprise || ""),
+            ville: String(cData.ville || ""),
+            adresse: String(cData.adresse || ""),
+            codePostal: String(cData.codePostal || ""),
+            velos: [{ veloId: vd.id, fnuci: focusFnuci, cartonToken }],
+          }],
+        });
+      })();
+      return () => { cancelled = true; };
+    }
+    if (!tourneeId) return;
     (async () => {
       const prog = (await gasGet("getTourneeProgression", { tourneeId })) as Progression;
       if (cancelled) return;
@@ -83,9 +133,9 @@ function EtiquettesPage() {
       });
     })();
     return () => { cancelled = true; };
-  }, [tourneeId, focusClientId]);
+  }, [tourneeId, focusClientId, focusFnuci]);
 
-  if (!tourneeId) return <div className="p-6 text-red-600">Paramètre tourneeId manquant.</div>;
+  if (!tourneeId && !focusFnuci) return <div className="p-6 text-red-600">Paramètre tourneeId ou fnuci manquant.</div>;
 
   // Bug observé en prod : si gasGet est lent ou silently fail, la page restait
   // bloquée sur "Chargement…" sans header → pas de bouton Imprimer visible.
