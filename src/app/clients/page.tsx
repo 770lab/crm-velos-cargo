@@ -74,16 +74,56 @@ export default function ClientsPage() {
   // non-annulées l'est. Pareil pour déposé. (1 client = 1 livraison en
   // général, donc c'est rarement ambigu.)
   const adminFlagsByClient = useMemo(() => {
-    const map = new Map<string, { dossierConfirme: boolean; depose: boolean }>();
+    const map = new Map<string, {
+      dossierConfirme: boolean;
+      depose: boolean;
+      validee: boolean;
+      // 1ère livraison non-annulée du client → toggle direct depuis la liste
+      // (Yoann 2026-05-03 : "je veux voir aussi depuis la page principale").
+      livraisonId: string | null;
+    }>();
     for (const l of livraisons) {
       if (!l.clientId || l.statut === "annulee") continue;
-      const cur = map.get(l.clientId) || { dossierConfirme: false, depose: false };
+      const cur = map.get(l.clientId) || { dossierConfirme: false, depose: false, validee: false, livraisonId: null };
       if (l.dossierConfirmeAt) cur.dossierConfirme = true;
       if (l.deposeAt) cur.depose = true;
+      const vc = (l as { validationClient?: { status?: string } }).validationClient;
+      if (vc?.status === "validee_orale" || vc?.status === "validee_mail") cur.validee = true;
+      if (!cur.livraisonId) cur.livraisonId = l.id;
       map.set(l.clientId, cur);
     }
     return map;
   }, [livraisons]);
+
+  // Yoann 2026-05-03 : toggles directs depuis la liste /clients sans avoir
+  // à entrer sur la fiche. Sync bidir avec /livraisons.
+  const toggleListDossier = async (livId: string, currentlyOn: boolean) => {
+    const data = currentlyOn
+      ? { dossierConfirmeAt: null, dossierConfirmePar: null }
+      : { dossierConfirmeAt: new Date().toISOString(), dossierConfirmePar: currentUser?.nom || null };
+    await gasPost("updateLivraison", { id: livId, data });
+    refresh("livraisons");
+  };
+  const toggleListDepose = async (livId: string, currentlyOn: boolean) => {
+    const data = currentlyOn
+      ? { deposeAt: null, deposePar: null }
+      : { deposeAt: new Date().toISOString(), deposePar: currentUser?.nom || null };
+    await gasPost("updateLivraison", { id: livId, data });
+    refresh("livraisons");
+  };
+  const toggleListValidation = async (livId: string, currentlyOn: boolean) => {
+    if (currentlyOn) {
+      await gasPost("setLivraisonValidation", { id: livId, status: "non_contacte", par: null, note: null });
+    } else {
+      await gasPost("setLivraisonValidation", {
+        id: livId,
+        status: "validee_orale",
+        par: currentUser?.nom || null,
+        note: null,
+      });
+    }
+    refresh("livraisons");
+  };
 
   const clients = useMemo(() => {
     let result = allClients;
@@ -385,7 +425,13 @@ export default function ClientsPage() {
               <th className="text-center px-4 py-3 font-medium text-gray-600">Bicycle</th>
               <th
                 className="text-center px-4 py-3 font-medium text-gray-600"
-                title="Dossier complet confirmé par le bureau (devis + Kbis + attestation + signature vérifiés)"
+                title="Client contacté/validé par téléphone pour la livraison (clic pour toggle)"
+              >
+                Tél
+              </th>
+              <th
+                className="text-center px-4 py-3 font-medium text-gray-600"
+                title="Dossier complet confirmé par le bureau (clic pour toggle)"
               >
                 Dossier ✓
               </th>
@@ -475,23 +521,60 @@ export default function ClientsPage() {
                 <td className="text-center px-4 py-3">
                   <DocCell ok={c.inscriptionBicycle} lien={c.bicycleLien ?? null} clientId={c.id} docType="inscriptionBicycle" onChange={() => refresh("clients")} />
                 </td>
+                {/* Yoann 2026-05-03 : cellules cliquables depuis la liste
+                    pour toggle direct (sans entrer sur la fiche). Sync
+                    bidir avec /livraisons. */}
                 <td className="text-center px-4 py-3">
                   {(() => {
                     const f = adminFlagsByClient.get(c.id);
-                    return f?.dossierConfirme ? (
-                      <span className="text-emerald-600" title="Dossier confirmé bureau">✅</span>
-                    ) : (
-                      <span className="text-gray-300" title="Pas encore confirmé">○</span>
+                    if (!f?.livraisonId) {
+                      return <span className="text-gray-300" title="Pas de livraison planifiée">—</span>;
+                    }
+                    const on = f.validee;
+                    return (
+                      <button
+                        onClick={() => toggleListValidation(f.livraisonId!, on)}
+                        className="hover:scale-110 transition"
+                        title={on ? "Contacté/validé (clic pour annuler)" : "Marquer client contacté/validé"}
+                      >
+                        {on ? "📞" : <span className="text-gray-300">○</span>}
+                      </button>
                     );
                   })()}
                 </td>
                 <td className="text-center px-4 py-3">
                   {(() => {
                     const f = adminFlagsByClient.get(c.id);
-                    return f?.depose ? (
-                      <span className="text-emerald-600" title="Dossier déposé pour CEE">📥</span>
-                    ) : (
-                      <span className="text-gray-300" title="Pas encore déposé">○</span>
+                    if (!f?.livraisonId) {
+                      return <span className="text-gray-300" title="Pas de livraison planifiée">—</span>;
+                    }
+                    const on = f.dossierConfirme;
+                    return (
+                      <button
+                        onClick={() => toggleListDossier(f.livraisonId!, on)}
+                        className="hover:scale-110 transition"
+                        title={on ? "Dossier confirmé bureau (clic pour annuler)" : "Marquer dossier complet"}
+                      >
+                        {on ? "✅" : <span className="text-gray-300">○</span>}
+                      </button>
+                    );
+                  })()}
+                </td>
+                <td className="text-center px-4 py-3">
+                  {(() => {
+                    const f = adminFlagsByClient.get(c.id);
+                    if (!f?.livraisonId) {
+                      return <span className="text-gray-300" title="Pas de livraison planifiée">—</span>;
+                    }
+                    const on = f.depose;
+                    return (
+                      <button
+                        onClick={() => toggleListDepose(f.livraisonId!, on)}
+                        className="hover:scale-110 transition"
+                        title={on ? "Dossier déposé pour CEE (clic pour annuler)" : "Marquer dossier déposé"}
+                      >
+                        {on ? "📥" : <span className="text-gray-300">○</span>}
+                      </button>
                     );
                   })()}
                 </td>

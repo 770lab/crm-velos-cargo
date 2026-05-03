@@ -1253,7 +1253,18 @@ function ValidationsAdminSection({
   }
   const [busy, setBusy] = useState<string | null>(null);
 
-  if (livs.length === 0) return null;
+  // Yoann 2026-05-03 : on affiche la section même sans livraison pour
+  // éviter qu elle soit invisible pour les clients pas encore planifiés.
+  if (livs.length === 0) {
+    return (
+      <div className="bg-white rounded-xl border p-4 mb-6">
+        <h2 className="font-semibold text-gray-900 mb-2">📋 Suivi administratif</h2>
+        <div className="text-sm text-gray-500 italic">
+          Boutons disponibles dès qu&apos;une tournée est planifiée pour ce client (Validé téléphone, Dossier complet, À déposer, BL à Franck).
+        </div>
+      </div>
+    );
+  }
 
   const toggleDossierConfirme = async (livId: string, current: string | null | undefined) => {
     setBusy(livId);
