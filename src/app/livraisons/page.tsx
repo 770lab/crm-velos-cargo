@@ -6309,8 +6309,11 @@ function PickEntrepotModal({
     };
   }, []);
 
+  // Yoann 2026-05-03 : on inclut les fournisseurs (AXDIS PRO = point de
+  // départ historique des tournées, stock illimité côté planificateur).
+  // On exclut juste éphémères (Firat = camion client) + archivés.
   const eligibles = rows.filter(
-    (r) => !r.archived && r.role !== "fournisseur" && r.role !== "ephemere",
+    (r) => !r.archived && r.role !== "ephemere",
   );
 
   return (
@@ -6332,8 +6335,9 @@ function PickEntrepotModal({
         ) : (
           <div className="space-y-2">
             {eligibles.map((e) => {
+              const isFournisseur = e.role === "fournisseur";
               const total = e.stockCartons + e.stockVelosMontes;
-              const empty = total === 0;
+              const empty = !isFournisseur && total === 0;
               return (
                 <button
                   key={e.id}
@@ -6348,26 +6352,35 @@ function PickEntrepotModal({
                   className={`w-full text-left p-3 border rounded-lg transition ${
                     empty
                       ? "bg-gray-50 border-gray-200 hover:bg-gray-100"
-                      : "bg-white border-blue-300 hover:bg-blue-50"
+                      : isFournisseur
+                        ? "bg-amber-50 border-amber-300 hover:bg-amber-100"
+                        : "bg-white border-blue-300 hover:bg-blue-50"
                   }`}
                 >
                   <div className="flex items-center justify-between gap-2">
                     <div className="min-w-0">
                       <div className="font-semibold text-sm flex items-center gap-1">
-                        {e.isPrimary ? "🏭" : "📦"} {e.nom}
+                        {isFournisseur ? "🚛" : e.isPrimary ? "🏭" : "📦"} {e.nom}
+                        {isFournisseur && <span className="text-[9px] px-1 py-0.5 bg-amber-200 text-amber-900 rounded uppercase">Fournisseur</span>}
                       </div>
                       <div className="text-[11px] text-gray-500">{e.ville}</div>
                     </div>
-                    <div className="flex gap-2 text-[11px] flex-shrink-0">
-                      <div className="bg-orange-50 border border-orange-200 rounded px-2 py-1 text-center">
-                        <div className="font-bold text-orange-900">{e.stockCartons}</div>
-                        <div className="text-[9px] uppercase text-orange-700">Cartons</div>
+                    {isFournisseur ? (
+                      <div className="text-[10px] text-amber-800 font-medium italic flex-shrink-0">
+                        Stock ∞
                       </div>
-                      <div className="bg-emerald-50 border border-emerald-200 rounded px-2 py-1 text-center">
-                        <div className="font-bold text-emerald-900">{e.stockVelosMontes}</div>
-                        <div className="text-[9px] uppercase text-emerald-700">Montés</div>
+                    ) : (
+                      <div className="flex gap-2 text-[11px] flex-shrink-0">
+                        <div className="bg-orange-50 border border-orange-200 rounded px-2 py-1 text-center">
+                          <div className="font-bold text-orange-900">{e.stockCartons}</div>
+                          <div className="text-[9px] uppercase text-orange-700">Cartons</div>
+                        </div>
+                        <div className="bg-emerald-50 border border-emerald-200 rounded px-2 py-1 text-center">
+                          <div className="font-bold text-emerald-900">{e.stockVelosMontes}</div>
+                          <div className="text-[9px] uppercase text-emerald-700">Montés</div>
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </div>
                   {empty && (
                     <div className="text-[10px] text-gray-500 italic mt-1">Stock vide — planif possible mais pas de tournée réelle</div>
