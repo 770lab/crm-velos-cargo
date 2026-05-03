@@ -148,6 +148,90 @@ async function createStockMouvement(params: {
   }
 }
 
+/** Yoann 2026-05-03 : reconcile force-align des livraisons d'un client
+ *  avec son nbVelosCommandes. Appele apres toute modification du total
+ *  commande (updateClient avec nbVelosCommandes, setClientVelosTarget).
+ *  Logique : expected = nbVelosCommandes - velosLivres ; sumLiv = somme
+ *  des nbVelos sur livraisons non annulees non livrees ; on aligne via
+ *  delta en commencant par la livraison la plus tardive ajustable.
+ *  Plancher = max(prepares, charges, livres, montes) pour ne jamais
+ *  descendre sous ce qui est deja prepare. */
+async function reconcileClientLivraisons(clientId: string): Promise<{
+  livAdjustments: Array<{ livraisonId: string; oldNb: number; newNb: number }>;
+  livAdjustWarning: string | null;
+}> {
+  const livAdjustments: Array<{ livraisonId: string; oldNb: number; newNb: number }> = [];
+  let livAdjustWarning: string | null = null;
+  try {
+    const cSnap = await getDoc(doc(db, "clients", clientId));
+    if (!cSnap.exists()) return { livAdjustments, livAdjustWarning };
+    const cd = cSnap.data() as { nbVelosCommandes?: number; stats?: { livres?: number } };
+    const nbCmd = Math.max(0, Number(cd.nbVelosCommandes || 0));
+    const livres = Math.max(0, Number(cd.stats?.livres || 0));
+    const expected = Math.max(0, nbCmd - livres);
+
+    const livSnap = await getDocs(query(
+      collection(db, "livraisons"),
+      where("clientId", "==", clientId),
+    ));
+    type LivShape = {
+      nbVelos?: number;
+      statut?: string;
+      statutGlobal?: string;
+      annule?: boolean;
+      datePrevue?: { toDate?: () => Date } | string | null;
+      counts?: { prepares?: number; charges?: number; livres?: number; montes?: number };
+    };
+    const tsOf = (x: LivShape["datePrevue"]): number => {
+      if (!x) return 0;
+      if (typeof x === "string") return new Date(x).getTime() || 0;
+      const t = x as { toDate?: () => Date };
+      return t?.toDate?.()?.getTime() || 0;
+    };
+    const adjustables = livSnap.docs
+      .map((d) => ({ id: d.id, data: d.data() as LivShape }))
+      .filter((l) => {
+        const st = l.data.statut || l.data.statutGlobal;
+        return l.data.annule !== true && st !== "annulee" && st !== "livree";
+      })
+      .sort((a, b) => tsOf(b.data.datePrevue) - tsOf(a.data.datePrevue));
+    const sumLiv = adjustables.reduce((s, l) => s + Number(l.data.nbVelos || 0), 0);
+    let delta = expected - sumLiv;
+
+    for (const liv of adjustables) {
+      if (delta === 0) break;
+      const cur = Number(liv.data.nbVelos || 0);
+      const c = liv.data.counts || {};
+      const minRequired = Math.max(
+        Number(c.prepares || 0),
+        Number(c.charges || 0),
+        Number(c.livres || 0),
+        Number(c.montes || 0),
+      );
+      let target = cur + delta;
+      target = Math.max(minRequired, target);
+      if (target === cur) continue;
+      const applied = target - cur;
+      await updateDoc(doc(db, "livraisons", liv.id), {
+        nbVelos: target,
+        updatedAt: ts(),
+      });
+      livAdjustments.push({ livraisonId: liv.id, oldNb: cur, newNb: target });
+      delta -= applied;
+    }
+    if (delta !== 0) {
+      livAdjustWarning =
+        delta > 0
+          ? `${delta} vélo(s) en plus non assigné(s) — crée/édite une livraison pour les caler.`
+          : `${Math.abs(delta)} vélo(s) en moins non absorbé(s) — vélos déjà préparés/chargés sur les livraisons en cours.`;
+    }
+  } catch (e) {
+    console.error("[reconcileClientLivraisons]", clientId, e);
+    livAdjustWarning = "Erreur de propagation aux livraisons (vérifie manuellement).";
+  }
+  return { livAdjustments, livAdjustWarning };
+}
+
 /** Trouve l'entrepôt origine + mode montage pour un client. Si tourneeId
  *  fourni, on cherche la livraison de cette tournée. Sinon on prend la
  *  livraison la plus récente non-annulée du client. Renvoie null si
@@ -415,86 +499,10 @@ export async function runFirestoreAction(
       // change pour déclencher la réconciliation des livraisons.
       const willChangeNbVelos = "nbVelosCommandes" in data;
       await updateDoc(doc(db, "clients", id), updates);
-
-      // Réconciliation forcée des livraisons : on calcule la valeur cible
-      // (nbVelosCommandes - velosLivres) et on aligne la somme nbVelos des
-      // livraisons non annulées non livrées. Approche "force align" plus
-      // robuste qu'un calcul de delta — fonctionne même si oldNb avait été
-      // déjà écrit lors d'une tentative précédente.
-      let livAdjustments: Array<{ livraisonId: string; oldNb: number; newNb: number }> = [];
-      let livAdjustWarning: string | null = null;
-      if (willChangeNbVelos) {
-        try {
-          // Lecture du client APRÈS update pour avoir la valeur cible à jour.
-          const cSnap = await getDoc(doc(db, "clients", id));
-          if (cSnap.exists()) {
-            const cd = cSnap.data() as { nbVelosCommandes?: number; stats?: { livres?: number } };
-            const nbCmd = Math.max(0, Number(cd.nbVelosCommandes || 0));
-            const livres = Math.max(0, Number(cd.stats?.livres || 0));
-            const expected = Math.max(0, nbCmd - livres);
-
-            const livSnap = await getDocs(query(
-              collection(db, "livraisons"),
-              where("clientId", "==", id),
-            ));
-            type LivShape = {
-              nbVelos?: number;
-              statut?: string;
-              statutGlobal?: string;
-              annule?: boolean;
-              datePrevue?: { toDate?: () => Date } | string | null;
-              counts?: { prepares?: number; charges?: number; livres?: number; montes?: number };
-            };
-            const tsOf = (x: LivShape["datePrevue"]): number => {
-              if (!x) return 0;
-              if (typeof x === "string") return new Date(x).getTime() || 0;
-              const t = x as { toDate?: () => Date };
-              return t?.toDate?.()?.getTime() || 0;
-            };
-            const adjustables = livSnap.docs
-              .map((d) => ({ id: d.id, data: d.data() as LivShape }))
-              .filter((l) => {
-                const st = l.data.statut || l.data.statutGlobal;
-                return l.data.annule !== true && st !== "annulee" && st !== "livree";
-              })
-              .sort((a, b) => tsOf(b.data.datePrevue) - tsOf(a.data.datePrevue));
-            const sumLiv = adjustables.reduce((s, l) => s + Number(l.data.nbVelos || 0), 0);
-            let delta = expected - sumLiv; // > 0 = il manque, < 0 = trop
-
-            for (const liv of adjustables) {
-              if (delta === 0) break;
-              const cur = Number(liv.data.nbVelos || 0);
-              const c = liv.data.counts || {};
-              const minRequired = Math.max(
-                Number(c.prepares || 0),
-                Number(c.charges || 0),
-                Number(c.livres || 0),
-                Number(c.montes || 0),
-              );
-              let target = cur + delta;
-              target = Math.max(minRequired, target);
-              if (target === cur) continue;
-              const applied = target - cur;
-              await updateDoc(doc(db, "livraisons", liv.id), {
-                nbVelos: target,
-                updatedAt: ts(),
-              });
-              livAdjustments.push({ livraisonId: liv.id, oldNb: cur, newNb: target });
-              delta -= applied;
-            }
-            if (delta !== 0) {
-              livAdjustWarning =
-                delta > 0
-                  ? `${delta} vélo(s) en plus non assigné(s) — crée/édite une livraison pour les caler.`
-                  : `${Math.abs(delta)} vélo(s) en moins non absorbé(s) — vélos déjà préparés/chargés sur les livraisons en cours.`;
-            }
-          }
-        } catch (e) {
-          console.error("[updateClient] propagation livraisons KO", e);
-          livAdjustWarning = "Erreur de propagation aux livraisons (le client est mis à jour, vérifie les livraisons).";
-        }
-      }
-      return { ok: true, livAdjustments, livAdjustWarning };
+      const recon = willChangeNbVelos
+        ? await reconcileClientLivraisons(id)
+        : { livAdjustments: [], livAdjustWarning: null };
+      return { ok: true, livAdjustments: recon.livAdjustments, livAdjustWarning: recon.livAdjustWarning };
     }
 
     case "bulkUpdateClients": {
@@ -695,7 +703,18 @@ export async function runFirestoreAction(
         deletedN = blanks.length;
       }
 
-      return { ok: true, target, createdN, deletedN };
+      // Yoann 2026-05-03 : propagation aux livraisons. Sans ça, modifier
+      // l'effectif via la modal "Corriger l'effectif" (page /clients) laissait
+      // les livraisons figées à l'ancien nbVelos.
+      const recon = await reconcileClientLivraisons(clientId);
+      return {
+        ok: true,
+        target,
+        createdN,
+        deletedN,
+        livAdjustments: recon.livAdjustments,
+        livAdjustWarning: recon.livAdjustWarning,
+      };
     }
 
     // ---------- livraisons ----------

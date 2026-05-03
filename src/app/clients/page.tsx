@@ -1260,8 +1260,23 @@ function EditVelosModal({ client, onClose, onSaved }: { client: ClientRow; onClo
     if (target < livres) { setError(`Tu ne peux pas descendre en dessous de ${livres} (vélos déjà livrés)`); return; }
     setLoading(true); setError(null);
     try {
-      const res = await gasPost("setClientVelosTarget", { clientId: client.id, target });
-      if ((res as { error?: string }).error) throw new Error((res as { error?: string }).error);
+      const res = await gasPost("setClientVelosTarget", { clientId: client.id, target }) as {
+        error?: string;
+        livAdjustments?: Array<{ livraisonId: string; oldNb: number; newNb: number }>;
+        livAdjustWarning?: string | null;
+      };
+      if (res.error) throw new Error(res.error);
+      // Yoann 2026-05-03 : si la modif a propagé un changement vers les
+      // livraisons (force-align), on signale à l'utilisateur en alert.
+      if (res.livAdjustments && res.livAdjustments.length > 0) {
+        const lines = res.livAdjustments
+          .map((adj) => `• Livraison ${adj.livraisonId.slice(0, 8)}… : ${adj.oldNb} → ${adj.newNb} vélo(s)`)
+          .join("\n");
+        const warning = res.livAdjustWarning ? `\n\n⚠ ${res.livAdjustWarning}` : "";
+        alert(`Livraison(s) mise(s) à jour automatiquement :\n${lines}${warning}`);
+      } else if (res.livAdjustWarning) {
+        alert(`⚠ ${res.livAdjustWarning}`);
+      }
       onSaved();
       onClose();
     } catch (e) {
