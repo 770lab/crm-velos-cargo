@@ -136,13 +136,68 @@ export default function EquipePage() {
     );
   };
 
+  // Yoann 2026-05-03 — Export CSV identifiants/PINs pour distribution rapide.
+  // Why: les PINs sont stockés hashés en Firestore (impossibles à extraire
+  // en clair). Pour les comptes qui n'ont pas défini de PIN (hasCode !== true),
+  // le PIN par défaut est 0000 (cf. mémoire crm-velos-cargo PIN 0000). Pour
+  // les autres, on indique "(personnel)" — Yoann peut alors réinitialiser
+  // depuis la fiche du membre s'il veut renvoyer 0000.
+  // Format : ; (point-virgule) pour Excel français + BOM UTF-8.
+  const exportCSV = () => {
+    const escapeCell = (s: string): string => {
+      if (s == null) return "";
+      const str = String(s);
+      if (/[";\n\r]/.test(str)) return '"' + str.replace(/"/g, '""') + '"';
+      return str;
+    };
+    const rows: string[][] = [["Nom", "Role", "Telephone", "Email/Identifiant", "PIN"]];
+    const allActifs = equipe.filter((m) => m.actif !== false);
+    const cmp = new Intl.Collator("fr", { sensitivity: "base" }).compare;
+    const sorted = [...allActifs].sort((a, b) => {
+      const r = (ROLE_LABEL[a.role] || "").localeCompare(ROLE_LABEL[b.role] || "");
+      if (r !== 0) return r;
+      return cmp(a.nom || "", b.nom || "");
+    });
+    for (const m of sorted) {
+      rows.push([
+        m.nom || "",
+        ROLE_LABEL[m.role] || m.role,
+        m.telephone || "",
+        m.email || "",
+        m.hasCode === true ? "(personnel)" : "0000",
+      ]);
+    }
+    const csv = rows.map((r) => r.map(escapeCell).join(";")).join("\r\n");
+    const blob = new Blob(["﻿" + csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `equipe-velos-cargo-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="max-w-5xl mx-auto">
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold">Équipe</h1>
-        <p className="text-sm text-gray-500 mt-1">
-          Chauffeurs, chefs d&apos;équipe, préparateurs et monteurs affectables aux tournées. Les apporteurs d&apos;affaires sont mis en CC des mails clients quand leur nom est renseigné sur la fiche.
-        </p>
+      <div className="mb-6 flex items-start justify-between gap-3 flex-wrap">
+        <div>
+          <h1 className="text-2xl font-bold">Équipe</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            Chauffeurs, chefs d&apos;équipe, préparateurs et monteurs affectables aux tournées. Les apporteurs d&apos;affaires sont mis en CC des mails clients quand leur nom est renseigné sur la fiche.
+          </p>
+        </div>
+        {fullAccess && (
+          <button
+            onClick={exportCSV}
+            className="text-sm px-3 py-2 bg-gray-900 text-white rounded-lg hover:bg-gray-700 flex items-center gap-2 shrink-0"
+            title="Exporte la liste (nom, rôle, téléphone, email, PIN) au format CSV — pratique pour distribuer les accès"
+          >
+            <span>📥</span>
+            <span>Exporter CSV</span>
+          </button>
+        )}
       </div>
 
       <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
