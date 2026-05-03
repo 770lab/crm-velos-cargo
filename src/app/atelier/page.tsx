@@ -123,7 +123,7 @@ function AtelierPage() {
     let alive = true;
     (async () => {
       setLoading(true);
-      const { collection, doc, getDoc, getDocs } = await import("firebase/firestore");
+      const { collection, doc, getDoc, getDocs, query, where } = await import("firebase/firestore");
       const { db } = await import("@/lib/firebase");
       const sRef = doc(db, "sessionsMontageAtelier", sessionId);
       const sSnap = await getDoc(sRef);
@@ -148,45 +148,95 @@ function AtelierPage() {
       if (!alive) return;
       setSession(sessionData);
 
-      // Voronoi : récupère tous les entrepôts non-fournisseur non-éphémère
-      const allESnap = await getDocs(collection(db, "entrepots"));
-      type Ent = { id: string; lat: number; lng: number };
-      const allE: Ent[] = [];
-      for (const d of allESnap.docs) {
-        const o = d.data() as Record<string, unknown>;
-        if (o.dateArchivage) continue;
-        if (o.role === "fournisseur" || o.role === "ephemere") continue;
-        if (typeof o.lat !== "number" || typeof o.lng !== "number") continue;
-        allE.push({ id: d.id, lat: o.lat, lng: o.lng });
-      }
-
-      // Clients candidats : Voronoi → ceux dont CET entrepôt est le + proche
-      const cSnap = await getDocs(collection(db, "clients"));
+      // Yoann 2026-05-04 : si la session a tourneeIds, on liste les clients
+      // des tournées sélectionnées (priorité). Sinon fallback Voronoi
+      // (clients géographiquement les + proches de cet entrepôt).
+      const tourneeIds = Array.isArray(sd.tourneeIds)
+        ? (sd.tourneeIds as unknown[]).filter((x): x is string => typeof x === "string")
+        : [];
       const clientsMap = new Map<string, Client>();
-      for (const d of cSnap.docs) {
-        const o = d.data() as Record<string, unknown>;
-        if (typeof o.latitude !== "number" || typeof o.longitude !== "number") continue;
-        const cmd = Number(o.nbVelosCommandes || 0);
-        if (cmd <= 0) continue;
-        let bestId = "";
-        let bestD = Infinity;
-        for (const e of allE) {
-          const dist = haversineKm(o.latitude as number, o.longitude as number, e.lat, e.lng);
-          if (dist < bestD) { bestD = dist; bestId = e.id; }
+
+      if (tourneeIds.length > 0) {
+        // Mode "tournées sélectionnées" : récupère les clientIds depuis les
+        // livraisons de ces tournées, puis hydrate avec les docs clients.
+        // Firestore `where in` limité à 30 par chunk.
+        const clientIdsSet = new Set<string>();
+        for (let i = 0; i < tourneeIds.length; i += 30) {
+          const chunk = tourneeIds.slice(i, i + 30);
+          const livSnap = await getDocs(query(
+            collection(db, "livraisons"),
+            where("tourneeId", "in", chunk),
+          ));
+          for (const ld of livSnap.docs) {
+            const lo = ld.data() as { clientId?: string; statut?: string };
+            if (lo.statut === "annulee") continue;
+            if (lo.clientId) clientIdsSet.add(lo.clientId);
+          }
         }
-        if (bestId !== sessionData.entrepotId) continue;
-        const stats = (o.stats as { livres?: number } | undefined) || {};
-        clientsMap.set(d.id, {
-          id: d.id,
-          entreprise: String(o.entreprise || ""),
-          ville: String(o.ville || ""),
-          codePostal: String(o.codePostal || ""),
-          nbVelosCommandes: cmd,
-          velosLivres: Number(stats.livres || 0),
-          velosAffilies: 0,
-          reste: 0,
-          distance: bestD,
-        });
+        const clientIds = Array.from(clientIdsSet);
+        for (let i = 0; i < clientIds.length; i += 30) {
+          const chunk = clientIds.slice(i, i + 30);
+          if (chunk.length === 0) continue;
+          // Pas de "in" sur __name__ avec >30 ; on lit doc par doc — N petit
+          for (const cid of chunk) {
+            const cDoc = await getDoc(doc(db, "clients", cid));
+            if (!cDoc.exists()) continue;
+            const o = cDoc.data() as Record<string, unknown>;
+            const cmd = Number(o.nbVelosCommandes || 0);
+            if (cmd <= 0) continue;
+            const stats = (o.stats as { livres?: number } | undefined) || {};
+            clientsMap.set(cDoc.id, {
+              id: cDoc.id,
+              entreprise: String(o.entreprise || ""),
+              ville: String(o.ville || ""),
+              codePostal: String(o.codePostal || ""),
+              nbVelosCommandes: cmd,
+              velosLivres: Number(stats.livres || 0),
+              velosAffilies: 0,
+              reste: 0,
+              distance: 0, // pas pertinent en mode tournée
+            });
+          }
+        }
+      } else {
+        // Fallback Voronoi : clients dont CET entrepôt est le + proche
+        const allESnap = await getDocs(collection(db, "entrepots"));
+        type Ent = { id: string; lat: number; lng: number };
+        const allE: Ent[] = [];
+        for (const d of allESnap.docs) {
+          const o = d.data() as Record<string, unknown>;
+          if (o.dateArchivage) continue;
+          if (o.role === "fournisseur" || o.role === "ephemere") continue;
+          if (typeof o.lat !== "number" || typeof o.lng !== "number") continue;
+          allE.push({ id: d.id, lat: o.lat, lng: o.lng });
+        }
+
+        const cSnap = await getDocs(collection(db, "clients"));
+        for (const d of cSnap.docs) {
+          const o = d.data() as Record<string, unknown>;
+          if (typeof o.latitude !== "number" || typeof o.longitude !== "number") continue;
+          const cmd = Number(o.nbVelosCommandes || 0);
+          if (cmd <= 0) continue;
+          let bestId = "";
+          let bestD = Infinity;
+          for (const e of allE) {
+            const dist = haversineKm(o.latitude as number, o.longitude as number, e.lat, e.lng);
+            if (dist < bestD) { bestD = dist; bestId = e.id; }
+          }
+          if (bestId !== sessionData.entrepotId) continue;
+          const stats = (o.stats as { livres?: number } | undefined) || {};
+          clientsMap.set(d.id, {
+            id: d.id,
+            entreprise: String(o.entreprise || ""),
+            ville: String(o.ville || ""),
+            codePostal: String(o.codePostal || ""),
+            nbVelosCommandes: cmd,
+            velosLivres: Number(stats.livres || 0),
+            velosAffilies: 0,
+            reste: 0,
+            distance: bestD,
+          });
+        }
       }
 
       // Compte vélos affiliés (avec FNUCI) par client — 1 seule query.
