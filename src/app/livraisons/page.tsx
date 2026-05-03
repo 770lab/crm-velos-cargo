@@ -882,6 +882,7 @@ export default function LivraisonsPage() {
           equipe={equipe}
           clientInfo={clientInfo}
           tourneeDepartures={tourneeDepartures}
+          sessionsAtelier={sessionsAtelier}
           onClose={() => setShowBriefJour(false)}
         />
       )}
@@ -5334,12 +5335,28 @@ function RappelVeilleModal({
 // Modale « Brief du jour » : génère un texte narratif POUR TOUTES les
 // tournées de la date affichée. Trie par heure de départ chaînée et met en
 // évidence les enchaînements chauffeur (T1 puis T2 du même chauffeur).
+type SessionAtelierForBrief = {
+  id: string;
+  date: string;
+  heureDebut?: string | null;
+  heureFin?: string | null;
+  entrepotId: string;
+  entrepotNom: string;
+  monteurIds: string[];
+  monteurNoms: string[];
+  chefId?: string | null;
+  chefNom?: string | null;
+  quantitePrevue?: number | null;
+  statut: "planifiee" | "en_cours" | "terminee" | "annulee";
+};
+
 function BriefJourneeModal({
   refDate,
   tournees,
   equipe,
   clientInfo,
   tourneeDepartures,
+  sessionsAtelier = [],
   onClose,
 }: {
   refDate: Date;
@@ -5347,6 +5364,7 @@ function BriefJourneeModal({
   equipe: EquipeMember[];
   clientInfo: Map<string, ClientPoint>;
   tourneeDepartures: DepartureMap;
+  sessionsAtelier?: SessionAtelierForBrief[];
   onClose: () => void;
 }) {
   // Permet de générer le brief pour n'importe quel jour. Défaut = date
@@ -5625,6 +5643,38 @@ function BriefJourneeModal({
       if (c) allChauffeurs.add(c);
     }
     lines.push(`${sorted.length} tournée${sorted.length > 1 ? "s" : ""} · ${totalVelos} vélos · ${allChauffeurs.size} chauffeur${allChauffeurs.size > 1 ? "s" : ""}`);
+    // Yoann 2026-05-03 — Sessions atelier du jour : insérées dans le brief
+    // pour que Gemini ait visibilité (qui monte où, quand). Les monteurs
+    // affectés à une session atelier ne sont PAS sur la tournée → critical
+    // contexte pour le résumé.
+    const sessionsDuJour = (sessionsAtelier || []).filter(
+      (s) => s.date === dayISOref && s.statut !== "annulee",
+    );
+    if (sessionsDuJour.length > 0) {
+      lines.push("");
+      lines.push("🔧 *SESSIONS ATELIER DU JOUR*");
+      for (const s of sessionsDuJour) {
+        const chef = s.chefNom ? `chef ${s.chefNom}` : null;
+        const monteurs = (s.monteurNoms || []).filter(Boolean);
+        const equipeStr = [chef, monteurs.length > 0 ? `${monteurs.length} monteur${monteurs.length > 1 ? "s" : ""} (${monteurs.join(", ")})` : null]
+          .filter(Boolean)
+          .join(" + ");
+        const fmtH = (h: string | null | undefined): string => {
+          if (!h) return "";
+          const m = /^(\d{2}):(\d{2})$/.exec(h);
+          if (!m) return h;
+          const hh = parseInt(m[1], 10);
+          const mn = m[2];
+          return `${hh}h${mn === "00" ? "" : mn}`;
+        };
+        let creneau = "";
+        if (s.heureDebut && s.heureFin) creneau = ` ${fmtH(s.heureDebut)}–${fmtH(s.heureFin)}`;
+        else if (s.heureDebut) creneau = ` dès ${fmtH(s.heureDebut)}`;
+        else if (s.heureFin) creneau = ` jusqu'à ${fmtH(s.heureFin)}`;
+        const qte = s.quantitePrevue ? ` · ${s.quantitePrevue} vélos prévus` : "";
+        lines.push(`• Atelier ${s.entrepotNom}${creneau} · ${equipeStr || "(personnel à affecter)"}${qte}`);
+      }
+    }
     // Marqueur insertion note pour générer textBare (sans note) en parallèle.
     const NOTE_PLACEHOLDER = "__NOTE_BLOCK_PLACEHOLDER__";
     lines.push(NOTE_PLACEHOLDER);
@@ -5699,7 +5749,7 @@ function BriefJourneeModal({
       // textBare : strip placeholder + ligne vide précédente si vide
       textBare: raw.replace(`\n${NOTE_PLACEHOLDER}`, "").replace(NOTE_PLACEHOLDER, ""),
     };
-  }, [briefDate, tournees, equipe, clientInfo, tourneeDepartures, notesJour]);
+  }, [briefDate, tournees, equipe, clientInfo, tourneeDepartures, notesJour, sessionsAtelier]);
   void findName;
 
   // Brief affiché : version Gemini si présente, sinon brief auto.
@@ -5798,6 +5848,7 @@ function BriefJourneeModal({
         "",
         "OBJECTIF : produire UN SEUL brief NARRATIF UNIFIÉ, court et lisible style WhatsApp, qui mélange dans UN flow chronologique :",
         "- la cascade décrite par Yoann (qui fait quoi, quand, où, avec qui, dans quel ordre)",
+        "- les SESSIONS ATELIER du jour (montage en entrepôt, listées sous '🔧 SESSIONS ATELIER DU JOUR' dans le brief auto). C'est CRITIQUE : les monteurs affectés à une session atelier NE SONT PAS sur la tournée, ils montent en entrepôt. Le chauffeur récupère des vélos déjà montés.",
         "- les données opérationnelles essentielles (clients, adresses, horaires, vélos, validations)",
         "",
         "INTERDIT ABSOLU : faire un résumé/stratégie en tête PUIS répéter le détail des tournées en dessous. C'est UN seul brief intégré. Pas de doublon.",
@@ -5816,6 +5867,11 @@ function BriefJourneeModal({
         "      • <CLIENT 1> · <Ville/CP> · <Nv> vélos · <HHhMM-HHhMM> <📞 tél> <⚠ si non validé>",
         "      • <CLIENT 2> · ...",
         "   ```",
+        "",
+        "5bis. Pour chaque session atelier (pré-montage en entrepôt), insère un bloc dédié dans le créneau temporel cohérent (matin pour ateliers ouverts le matin, etc.) :",
+        "   Format compact :",
+        "   `🔧 *Atelier <ENTREPÔT>* · <chef si pertinent> · <N> monteurs (<noms>) · <V> vélos prévus · <créneau si renseigné>`",
+        "   Mentionne que les vélos seront montés sur place (prêts à charger). Si une tournée du jour part de cet entrepôt après la session, fais le lien explicite (ex : \"vélos prêts pour la tournée Zinedine\").",
         "",
         "6. Termine par une ligne vide puis `Bonne tournée à tous 🚴‍♂️`.",
         "",
