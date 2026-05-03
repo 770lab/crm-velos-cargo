@@ -1228,22 +1228,52 @@ export async function runFirestoreAction(
           alreadySameClient,
         };
       }
-      const q = query(
-        collection(db, "velos"),
-        where("clientId", "==", clientId),
-        where("fnuci", "==", null),
-      );
-      const snap = await getDocs(q);
-      if (snap.empty) {
-        return { ok: false, error: "Tous les vélos de ce client ont déjà un FNUCI" };
-      }
-      const veloDoc = snap.docs[0];
-      await updateDoc(veloDoc.ref, {
-        fnuci,
-        datePreparation: ts(),
-        updatedAt: ts(),
+      // Yoann 2026-05-03 : à la session atelier, les vélos n existent pas
+      // forcément encore (pas de tournée planifiée → pas de vélos créés).
+      // Si pas de vélo dispo MAIS le client a une commande non-pleine,
+      // on CRÉE un vélo vierge à la volée et on lui assigne le FNUCI.
+      // Récupère client (pour nbVelosCommandes + apporteur)
+      const cDoc = await getDoc(doc(db, "clients", clientId));
+      if (!cDoc.exists()) return { ok: false, error: "Client introuvable" };
+      const cData = cDoc.data() as { nbVelosCommandes?: number; apporteur?: string; apporteurLower?: string };
+      const nbCmd = Number(cData.nbVelosCommandes || 0);
+      // Compte vélos existants du client
+      const existsSnap = await getDocs(query(collection(db, "velos"), where("clientId", "==", clientId)));
+      const totalExist = existsSnap.docs.filter((d) => !(d.data() as { annule?: boolean }).annule).length;
+      // Cherche un vélo existant SANS FNUCI
+      const sansFnuci = existsSnap.docs.find((d) => {
+        const o = d.data() as { fnuci?: string | null; annule?: boolean };
+        return !o.annule && !o.fnuci;
       });
-      return { ok: true, veloId: veloDoc.id };
+      if (sansFnuci) {
+        // Vélo existant → assigne FNUCI
+        await updateDoc(sansFnuci.ref, {
+          fnuci,
+          datePreparation: ts(),
+          updatedAt: ts(),
+        });
+        return { ok: true, veloId: sansFnuci.id, created: false };
+      }
+      // Pas de vélo dispo : si commande non pleine, on crée un vélo vierge
+      if (nbCmd > 0 && totalExist < nbCmd) {
+        const apporteurLower = cData.apporteurLower
+          || (cData.apporteur ? String(cData.apporteur).trim().toLowerCase() : null);
+        const newVeloRef = await addDoc(collection(db, "velos"), {
+          clientId,
+          apporteurLower,
+          fnuci,
+          datePreparation: ts(),
+          dateChargement: null,
+          dateLivraisonScan: null,
+          dateMontage: null,
+          createdAt: ts(),
+          updatedAt: ts(),
+          // marqueur audit : vélo créé au moment de l affiliation atelier
+          createdByAffiliation: true,
+        });
+        return { ok: true, veloId: newVeloRef.id, created: true };
+      }
+      return { ok: false, error: "Tous les vélos de ce client sont déjà affiliés (FNUCI complets)" };
     }
 
     case "updateVelos": {

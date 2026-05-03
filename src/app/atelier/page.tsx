@@ -176,9 +176,12 @@ function AtelierPage() {
         });
       }
 
-      // Compte vélos affiliés (avec FNUCI) par client — 1 seule query
-      // sur tous les vélos puis group by clientId (au lieu de 326 sub-queries
-      // qui bloquaient la page).
+      // Compte vélos affiliés (avec FNUCI) par client — 1 seule query.
+      // Yoann 2026-05-03 : à la session atelier les vélos peuvent ne pas
+      // encore exister (pas de tournée planifiée). Le compteur affiché =
+      // vélos avec FNUCI = "déjà scannés/affiliés à la session". reste =
+      // nbVelosCommandes - velosAvecFnuci, peu importe que les vélos
+      // existent ou pas (ils seront créés à la volée par assignFnuciToClient).
       const allVSnap = await getDocs(collection(db, "velos"));
       const affiliesByClient = new Map<string, number>();
       for (const vd of allVSnap.docs) {
