@@ -211,9 +211,16 @@ service cloud.firestore {
     // Paiements équipe (Yoann 2026-05-01) : grand livre traçabilité
     // comptable. Salaires payés, avances, primes par membre.
     // Lecture admin/superadmin (RH sensible), écriture admin.
+    function isChef() {
+      return isSignedIn() && isActive() && role() == "chef";
+    }
     match /paiementsEquipe/{id} {
-      allow read: if isAdmin();
-      allow write: if isAdmin();
+      // Yoann 2026-05-03 : les chefs d équipe (Ricky/ETHAN/...) doivent
+      // pouvoir lire + écrire les paiements de leurs monteurs (grand livre
+      // pointeuse). Le filtre par équipe se fait côté frontend (sur chefId
+      // du monteur). Admin garde l accès complet.
+      allow read: if isAdmin() || isChef();
+      allow write: if isAdmin() || isChef();
     }
 
     // Sessions de montage atelier (Yoann 2026-05-01) : journées où des
