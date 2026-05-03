@@ -11,7 +11,7 @@ import DateLoadPicker, { type DayLoad } from "@/components/date-load-picker";
 import AddClientModal from "@/components/add-client-modal";
 import DayPlannerModal from "@/components/day-planner-modal";
 // Yoann 2026-05-03 : édition session atelier au click depuis la card calendrier
-import { SessionAtelierModal } from "@/app/entrepots/page";
+import { SessionAtelierModal, PlanifierJourneeModal } from "@/app/entrepots/page";
 
 import { BASE_PATH } from "@/lib/base-path";
 // Étapes accessibles par rôle.
@@ -169,6 +169,10 @@ export default function LivraisonsPage() {
   const [showFeuilleJour, setShowFeuilleJour] = useState(false);
   const [feuilleJourData, setFeuilleJourData] = useState<{ date: Date; chauffeurId: string } | null>(null);
   const [batchAxdis, setBatchAxdis] = useState<{ date: Date; tournees: Tournee[] } | null>(null);
+  // Yoann 2026-05-03 : "+ Tournée" depuis /livraisons. Étape 1 = pick entrepôt,
+  // étape 2 = PlanifierJourneeModal sur l entrepôt choisi.
+  const [showPickEntrepot, setShowPickEntrepot] = useState(false);
+  const [entrepotPourPlan, setEntrepotPourPlan] = useState<{ id: string; nom: string; stockCartons: number; stockVelosMontes: number } | null>(null);
 
   useEffect(() => {
     refresh("livraisons");
@@ -647,6 +651,13 @@ export default function LivraisonsPage() {
                 📄 Feuille de route chauffeur
               </button>
               <button
+                onClick={() => setShowPickEntrepot(true)}
+                className="px-3 py-1.5 bg-emerald-700 text-white rounded-lg hover:bg-emerald-800 text-sm font-medium whitespace-nowrap"
+                title="Ajouter une tournée directement depuis le planning (sans changer de page)"
+              >
+                + Tournée
+              </button>
+              <button
                 onClick={() => setShowAddClient(true)}
                 className="px-3 py-1.5 bg-green-600 text-white rounded-lg hover:bg-green-700 text-sm font-medium whitespace-nowrap"
               >
@@ -761,6 +772,31 @@ export default function LivraisonsPage() {
           onClose={() => {
             setShowAddClient(false);
             refresh("clients");
+            refresh("carte");
+          }}
+        />
+      )}
+      {/* Yoann 2026-05-03 — étape 1 du "+ Tournée" : choisir l entrepôt
+          de départ. La liste se charge depuis Firestore. Click → ouvre
+          PlanifierJourneeModal sur l entrepôt sélectionné. */}
+      {showPickEntrepot && (
+        <PickEntrepotModal
+          onClose={() => setShowPickEntrepot(false)}
+          onPick={(e) => {
+            setEntrepotPourPlan(e);
+            setShowPickEntrepot(false);
+          }}
+        />
+      )}
+      {entrepotPourPlan && (
+        <PlanifierJourneeModal
+          entrepotId={entrepotPourPlan.id}
+          entrepotNom={entrepotPourPlan.nom}
+          stockCartons={entrepotPourPlan.stockCartons}
+          stockVelosMontes={entrepotPourPlan.stockVelosMontes}
+          onClose={() => {
+            setEntrepotPourPlan(null);
+            refresh("livraisons");
             refresh("carte");
           }}
         />
@@ -6211,6 +6247,136 @@ function SessionsAtelierBanner({ monteurId }: { monteurId: string }) {
             </div>
           </div>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// PickEntrepotModal — Yoann 2026-05-03
+// Étape 1 du bouton "+ Tournée" depuis /livraisons : on choisit
+// l entrepôt de départ. Liste filtrée (non-fournisseur, non-éphémère,
+// non-archivé, avec stock > 0). Click → renvoie l entrepôt au parent
+// qui ouvrira PlanifierJourneeModal.
+function PickEntrepotModal({
+  onClose,
+  onPick,
+}: {
+  onClose: () => void;
+  onPick: (e: { id: string; nom: string; stockCartons: number; stockVelosMontes: number }) => void;
+}) {
+  type Row = {
+    id: string;
+    nom: string;
+    ville: string;
+    role: string;
+    isPrimary: boolean;
+    archived: boolean;
+    stockCartons: number;
+    stockVelosMontes: number;
+  };
+  const [rows, setRows] = useState<Row[]>([]);
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const { collection, onSnapshot } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const unsub = onSnapshot(collection(db, "entrepots"), (snap) => {
+        if (!alive) return;
+        const list: Row[] = [];
+        for (const d of snap.docs) {
+          const data = d.data();
+          list.push({
+            id: d.id,
+            nom: String(data.nom || ""),
+            ville: String(data.ville || ""),
+            role: String(data.role || "stock"),
+            isPrimary: !!data.isPrimary,
+            archived: !!data.dateArchivage,
+            stockCartons: Number(data.stockCartons || 0),
+            stockVelosMontes: Number(data.stockVelosMontes || 0),
+          });
+        }
+        list.sort((a, b) => {
+          if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1;
+          return a.nom.localeCompare(b.nom);
+        });
+        setRows(list);
+      });
+      return () => unsub();
+    })();
+    return () => {
+      alive = false;
+    };
+  }, []);
+
+  const eligibles = rows.filter(
+    (r) => !r.archived && r.role !== "fournisseur" && r.role !== "ephemere",
+  );
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-white rounded-xl max-w-lg w-full p-5 max-h-[85vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-start justify-between mb-3">
+          <div>
+            <h2 className="text-base font-bold text-gray-900">+ Nouvelle tournée</h2>
+            <div className="text-xs text-gray-500 mt-0.5">Choisis l&apos;entrepôt de départ</div>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">
+            ×
+          </button>
+        </div>
+        {eligibles.length === 0 ? (
+          <div className="text-sm text-gray-500 italic py-6 text-center">
+            Aucun entrepôt éligible (non-fournisseur, non-éphémère, non-archivé).
+          </div>
+        ) : (
+          <div className="space-y-2">
+            {eligibles.map((e) => {
+              const total = e.stockCartons + e.stockVelosMontes;
+              const empty = total === 0;
+              return (
+                <button
+                  key={e.id}
+                  onClick={() =>
+                    onPick({
+                      id: e.id,
+                      nom: e.nom,
+                      stockCartons: e.stockCartons,
+                      stockVelosMontes: e.stockVelosMontes,
+                    })
+                  }
+                  className={`w-full text-left p-3 border rounded-lg transition ${
+                    empty
+                      ? "bg-gray-50 border-gray-200 hover:bg-gray-100"
+                      : "bg-white border-blue-300 hover:bg-blue-50"
+                  }`}
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-sm flex items-center gap-1">
+                        {e.isPrimary ? "🏭" : "📦"} {e.nom}
+                      </div>
+                      <div className="text-[11px] text-gray-500">{e.ville}</div>
+                    </div>
+                    <div className="flex gap-2 text-[11px] flex-shrink-0">
+                      <div className="bg-orange-50 border border-orange-200 rounded px-2 py-1 text-center">
+                        <div className="font-bold text-orange-900">{e.stockCartons}</div>
+                        <div className="text-[9px] uppercase text-orange-700">Cartons</div>
+                      </div>
+                      <div className="bg-emerald-50 border border-emerald-200 rounded px-2 py-1 text-center">
+                        <div className="font-bold text-emerald-900">{e.stockVelosMontes}</div>
+                        <div className="text-[9px] uppercase text-emerald-700">Montés</div>
+                      </div>
+                    </div>
+                  </div>
+                  {empty && (
+                    <div className="text-[10px] text-gray-500 italic mt-1">Stock vide — planif possible mais pas de tournée réelle</div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </div>
     </div>
   );

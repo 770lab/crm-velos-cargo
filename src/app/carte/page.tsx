@@ -329,7 +329,11 @@ export default function CartePage() {
   }, [firstSplitStops]);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-5rem)] lg:h-[calc(100vh-4rem)]">
+    // Yoann 2026-05-03 — sur mobile, on laisse le scroll naturel de la
+    // page (pas de h-[calc(100vh-...)]). Sinon la map reste fixée et la
+    // sidebar a un scroll interne qui rend la nav confuse. Sur desktop on
+    // garde la hauteur fixe pour bénéficier de la sidebar à droite.
+    <div className="flex flex-col lg:h-[calc(100vh-4rem)]">
       {/* Dashboard bandeau — Yoann 2026-05-03 : layout responsive
           (grid 3x2 mobile, flex-wrap desktop) pour ne plus déborder sur iPhone. */}
       <div className="bg-white border-b px-2 sm:px-4 py-2 sm:py-3 flex-shrink-0">
@@ -435,7 +439,7 @@ export default function CartePage() {
         />
       </div>
 
-      <div className={`w-full lg:w-96 bg-white border-t lg:border-t-0 lg:border-l overflow-y-auto lg:max-h-none ${selected ? "flex-1" : "max-h-[50vh]"}`}>
+      <div className={`w-full lg:w-96 bg-white border-t lg:border-t-0 lg:border-l lg:overflow-y-auto lg:max-h-none ${selected ? "lg:flex-1" : "lg:max-h-[50vh]"}`}>
         {(vue === "entrepots" || vue === "hybride") && <EntrepotsPanel />}
         {(vue === "clients" || vue === "hybride") && (
         <>
