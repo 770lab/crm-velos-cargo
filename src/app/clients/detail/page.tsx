@@ -148,7 +148,23 @@ function ClientDetailPage() {
 
   const updateField = async (field: string, value: unknown) => {
     setSaving(field);
-    await gasPost("updateClient", { id, data: { [field]: value } });
+    const r = await gasPost("updateClient", { id, data: { [field]: value } }) as {
+      ok?: boolean;
+      livAdjustments?: Array<{ livraisonId: string; oldNb: number; newNb: number }>;
+      livAdjustWarning?: string | null;
+    };
+    // Yoann 2026-05-03 : si nbVelosCommandes a propagé un changement vers
+    // les livraisons, on remonte un toast/alert. Cas typique : client passe
+    // de 6 → 5 vélos → la livraison du 4 mai descend à 5.
+    if (r && Array.isArray(r.livAdjustments) && r.livAdjustments.length > 0) {
+      const lines = r.livAdjustments
+        .map((adj) => `• Livraison ${adj.livraisonId.slice(0, 8)}… : ${adj.oldNb} → ${adj.newNb} vélo(s)`)
+        .join("\n");
+      const warning = r.livAdjustWarning ? `\n\n⚠ ${r.livAdjustWarning}` : "";
+      alert(`Livraison(s) mise(s) à jour automatiquement :\n${lines}${warning}`);
+    } else if (r && r.livAdjustWarning) {
+      alert(`⚠ ${r.livAdjustWarning}`);
+    }
     load();
     setSaving(null);
   };
