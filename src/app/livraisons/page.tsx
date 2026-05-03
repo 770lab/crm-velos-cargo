@@ -1842,7 +1842,12 @@ function TourneeCard({
             );
           })}
         </div>
-        <span className="font-mono opacity-70 whitespace-nowrap">{tournee.totalVelos}v/{tournee.livraisons.length}A</span>
+        <div className="flex flex-col items-end leading-tight whitespace-nowrap">
+          <span className="font-mono opacity-70">{tournee.totalVelos}v/{tournee.livraisons.length}A</span>
+          {tournee.numero != null && (
+            <span className="font-mono text-[9px] opacity-60 mt-0.5">T{tournee.numero}</span>
+          )}
+        </div>
       </div>
       {peutAjouter && (
         <div className="mt-0.5 inline-flex items-center gap-1 px-1 rounded bg-green-100 text-green-800 text-[9px] font-semibold leading-tight">
