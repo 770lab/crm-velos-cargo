@@ -616,9 +616,16 @@ export default function LivraisonsPage() {
       : `${windowedTournees.length} tournée${windowedTournees.length > 1 ? "s" : ""} · ${windowedLivraisons} livraison${windowedLivraisons > 1 ? "s" : ""} · ${windowedVelos} vélo${windowedVelos > 1 ? "s" : ""}${windowSuffix ? " " + windowSuffix : ""}`;
   }
 
+  const isApporteurReadOnly = currentUser?.role === "apporteur";
+
   return (
     <TourneeDeparturesContext.Provider value={tourneeDepartures}>
     <div>
+      {isApporteurReadOnly && (
+        <div className="mb-3 px-3 py-2 bg-amber-50 border border-amber-200 rounded-lg text-sm text-amber-900">
+          👁 <strong>Mode lecture seule</strong> — vous consultez vos dossiers ; toute modification est désactivée.
+        </div>
+      )}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
         <div className="min-w-0">
           <h1 className="text-2xl font-bold text-gray-900">{pageTitle}</h1>
@@ -1958,13 +1965,15 @@ function TourneeModal({
   //   - monteur normal                    : ni admin blocs, ni équipe
   const perms = useMemo(() => {
     const role = currentUser?.role;
+    const isApporteurLocal = role === "apporteur";
     const isChefMonteurLocal = role === "monteur" && currentUser?.estChefMonteur === true;
     const isFullAdmin = role === "admin" || role === "superadmin" || role === "chef";
-    const canSeeAdminBlocs = isFullAdmin || role === "preparateur";
-    const canSeeBonAxdis = canSeeAdminBlocs || role === "chauffeur";
-    const canEditEquipe = isFullAdmin || isChefMonteurLocal;
-    const canSeeEquipeRecap = canEditEquipe || role === "chauffeur" || role === "preparateur";
-    return { canSeeAdminBlocs, canSeeBonAxdis, canEditEquipe, canSeeEquipeRecap };
+    // Yoann 2026-05-03 : apporteur en lecture seule. Aucune édition possible.
+    const canSeeAdminBlocs = !isApporteurLocal && (isFullAdmin || role === "preparateur");
+    const canSeeBonAxdis = !isApporteurLocal && (canSeeAdminBlocs || role === "chauffeur");
+    const canEditEquipe = !isApporteurLocal && (isFullAdmin || isChefMonteurLocal);
+    const canSeeEquipeRecap = !isApporteurLocal && (canEditEquipe || role === "chauffeur" || role === "preparateur");
+    return { canSeeAdminBlocs, canSeeBonAxdis, canEditEquipe, canSeeEquipeRecap, isApporteurLocal };
   }, [currentUser?.role, currentUser?.estChefMonteur]);
   const [showRappel, setShowRappel] = useState(false);
   const [showBrief, setShowBrief] = useState(false);
@@ -2664,7 +2673,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             </div>
           </div>
           <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-            {tournee.tourneeId && (
+            {!perms.isApporteurLocal && tournee.tourneeId && (
               <a
                 href={`/tournee-execute?id=${encodeURIComponent(tournee.tourneeId)}`}
                 target="_blank"
@@ -2675,13 +2684,15 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                 📱 Chef d&apos;équipe
               </a>
             )}
-            <button
-              onClick={() => setShowRappel(true)}
-              className="px-2 sm:px-3 py-1 text-[11px] sm:text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-1"
-              title="Envoie un rappel par mail à chaque client de la tournée avec sa fenêtre de passage estimée"
-            >
-              📧 Rappels veille
-            </button>
+            {!perms.isApporteurLocal && (
+              <button
+                onClick={() => setShowRappel(true)}
+                className="px-2 sm:px-3 py-1 text-[11px] sm:text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-1"
+                title="Envoie un rappel par mail à chaque client de la tournée avec sa fenêtre de passage estimée"
+              >
+                📧 Rappels veille
+              </button>
+            )}
             {perms.canSeeAdminBlocs && (
               <button
                 onClick={() => setShowBrief(true)}
@@ -2691,6 +2702,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                 📋 Brief équipe
               </button>
             )}
+            {!perms.isApporteurLocal && (
             <button
               onClick={async () => {
                 const { url } = buildAxdisCommandeMail(tournee);
@@ -2715,6 +2727,8 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             >
               {tournee.bonCommandeEnvoyeAt ? "✅ Commande AXDIS envoyée" : "📧 Commande AXDIS"}
             </button>
+            )}
+            {!perms.isApporteurLocal && (
             <button
               onClick={() => setShowPrint(true)}
               className="px-2 sm:px-3 py-1 text-[11px] sm:text-xs bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-1"
@@ -2724,6 +2738,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
               </svg>
               Feuille de route
             </button>
+            )}
             <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none ml-auto">×</button>
           </div>
         </div>
@@ -3323,7 +3338,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                       ⊘ Annulée : {l.raisonAnnulation}
                     </div>
                   )}
-                  {l.statut !== "annulee" && (
+                  {l.statut !== "annulee" && !perms.isApporteurLocal && (
                     <div className="mt-1">
                       {l.dejaChargee ? (
                         <div className="px-2 py-1 text-[11px] bg-indigo-50 border border-indigo-200 rounded text-indigo-800 flex items-center gap-2 flex-wrap">
@@ -3565,42 +3580,53 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                       {!deployPlan.steps[i].camionAttend && " →"}
                     </span>
                   )}
-                  <select
-                    value={l.statut}
-                    disabled={busy === l.id}
-                    onChange={(e) => updateStatut(l.id, e.target.value)}
-                    className="text-xs px-2 py-1 border rounded"
-                  >
-                    <option value="planifiee">Planifiée</option>
-                    <option value="en_cours">En cours</option>
-                    <option value="livree">Livrée</option>
-                    <option value="annulee">Annulée</option>
-                  </select>
-                  {l.statut === "annulee" ? (
-                    <button
-                      onClick={() => restaurer(l.id)}
-                      disabled={busy === l.id}
-                      className="text-emerald-500 hover:text-emerald-700 text-xs whitespace-nowrap"
-                    >
-                      ↺ restaurer
-                    </button>
+                  {perms.isApporteurLocal ? (
+                    <span className="text-xs px-2 py-1 bg-gray-100 text-gray-700 rounded">
+                      {l.statut === "planifiee" ? "Planifiée"
+                        : l.statut === "en_cours" ? "En cours"
+                        : l.statut === "livree" ? "Livrée"
+                        : l.statut === "annulee" ? "Annulée" : l.statut}
+                    </span>
                   ) : (
                     <>
-                      <button
-                        onClick={() => reporter(l.id, l.client?.entreprise || "ce client")}
+                      <select
+                        value={l.statut}
                         disabled={busy === l.id}
-                        className="text-blue-500 hover:text-blue-700 text-xs whitespace-nowrap"
-                        title="Reporter cette livraison à un autre jour (sort de la tournée courante)"
+                        onChange={(e) => updateStatut(l.id, e.target.value)}
+                        className="text-xs px-2 py-1 border rounded"
                       >
-                        📅 reporter
-                      </button>
-                      <button
-                        onClick={() => annuler(l.id)}
-                        disabled={busy === l.id}
-                        className="text-amber-500 hover:text-amber-700 text-xs whitespace-nowrap"
-                      >
-                        annuler
-                      </button>
+                        <option value="planifiee">Planifiée</option>
+                        <option value="en_cours">En cours</option>
+                        <option value="livree">Livrée</option>
+                        <option value="annulee">Annulée</option>
+                      </select>
+                      {l.statut === "annulee" ? (
+                        <button
+                          onClick={() => restaurer(l.id)}
+                          disabled={busy === l.id}
+                          className="text-emerald-500 hover:text-emerald-700 text-xs whitespace-nowrap"
+                        >
+                          ↺ restaurer
+                        </button>
+                      ) : (
+                        <>
+                          <button
+                            onClick={() => reporter(l.id, l.client?.entreprise || "ce client")}
+                            disabled={busy === l.id}
+                            className="text-blue-500 hover:text-blue-700 text-xs whitespace-nowrap"
+                            title="Reporter cette livraison à un autre jour (sort de la tournée courante)"
+                          >
+                            📅 reporter
+                          </button>
+                          <button
+                            onClick={() => annuler(l.id)}
+                            disabled={busy === l.id}
+                            className="text-amber-500 hover:text-amber-700 text-xs whitespace-nowrap"
+                          >
+                            annuler
+                          </button>
+                        </>
+                      )}
                     </>
                   )}
                 </div>
@@ -3617,6 +3643,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
           )}
         </div>
 
+        {!perms.isApporteurLocal && (
         <div className="mt-3">
           {addingClient ? (
             <div className="border rounded-lg p-3 bg-gray-50 space-y-2">
@@ -3716,6 +3743,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             </button>
           )}
         </div>
+        )}
 
         <div className="flex justify-between gap-3 mt-4 pt-3 border-t">
           <button

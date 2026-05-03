@@ -415,17 +415,31 @@ export function FirebaseDataProvider({ children }: { children: ReactNode }) {
       },
       onErr("equipe"),
     );
-    const unsubCamions = onSnapshot(collection(db, "camions"), (snap) => {
-      const rows: Camion[] = [];
-      snap.forEach((doc) => rows.push(camionFromDoc(doc.id, doc.data())));
-      setFlotte(rows);
+    // Yoann 2026-05-03 : RBAC apporteur durci côté rules — les apporteurs
+    // n ont plus le droit de lire camions / bonsEnlevement (sensibles
+    // logistique). On évite donc les onSnapshot qui plantent côté frontend
+    // ("Missing or insufficient permissions") en skippant pour ce rôle.
+    const isApporteur = currentUser?.role === "apporteur";
+    const unsubCamions = isApporteur
+      ? () => {}
+      : onSnapshot(collection(db, "camions"), (snap) => {
+          const rows: Camion[] = [];
+          snap.forEach((doc) => rows.push(camionFromDoc(doc.id, doc.data())));
+          setFlotte(rows);
+          setLoadedFlags((f) => ({ ...f, flotte: true }));
+        }, onErr("camions"));
+    const unsubBons = isApporteur
+      ? () => {}
+      : onSnapshot(collection(db, "bonsEnlevement"), (snap) => {
+          const rows: BonEnlevement[] = [];
+          snap.forEach((doc) => rows.push(bonFromDoc(doc.id, doc.data())));
+          setBonsEnlevement(rows);
+        }, onErr("bonsEnlevement"));
+    if (isApporteur) {
+      // Marquer tout de suite la flotte comme "chargée" (vide) sinon le
+      // bootTimedOut affiche "Connexion KO" à tort.
       setLoadedFlags((f) => ({ ...f, flotte: true }));
-    }, onErr("camions"));
-    const unsubBons = onSnapshot(collection(db, "bonsEnlevement"), (snap) => {
-      const rows: BonEnlevement[] = [];
-      snap.forEach((doc) => rows.push(bonFromDoc(doc.id, doc.data())));
-      setBonsEnlevement(rows);
-    }, onErr("bonsEnlevement"));
+    }
 
     // Filet de sécurité : si après 15s on n'a toujours pas tout chargé, on
     // débloque l'UI avec ce qu'on a. Le terrain sur 4G très instable mérite
