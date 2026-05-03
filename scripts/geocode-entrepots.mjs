@@ -34,39 +34,65 @@ for (const d of snap.docs) {
 
 console.log(`\n${todo.length} entrepôts à géocoder\n`);
 
+// Yoann 2026-05-03 : Nominatim échoue sur des adresses FR avec typos
+// (ex "rue Pierre Lescop" au lieu de "Allée Pierre Lescot"). Fallback
+// sur l API BAN data.gouv.fr (officielle, gratuite, autocorrige souvent).
+async function geocodeBan(adresse) {
+  try {
+    const r = await fetch(
+      `https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(adresse)}&limit=1`,
+    );
+    const j = await r.json();
+    const f = j?.features?.[0];
+    if (!f?.geometry?.coordinates) return null;
+    const [lng, lat] = f.geometry.coordinates;
+    return { lat, lng, formatted: f.properties?.label || adresse, score: f.properties?.score };
+  } catch {
+    return null;
+  }
+}
+
 for (const t of todo) {
   // Nominatim respect : User-Agent obligatoire + 1 req/sec max
   const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(t.adresse)}&format=json&limit=1&countrycodes=fr`;
+  let result = null;
   try {
     const r = await fetch(url, {
       headers: { "User-Agent": "crm-velos-cargo-geocode/1.0 (yoann@artisansverts.energy)" },
     });
     const j = await r.json();
-    if (!Array.isArray(j) || j.length === 0) {
-      console.log(`❌ ${t.nom} : pas de résultat — ${t.adresse}`);
-      await sleep(1100);
-      continue;
+    if (Array.isArray(j) && j.length > 0) {
+      result = { lat: parseFloat(j[0].lat), lng: parseFloat(j[0].lon), formatted: j[0].display_name, source: "nominatim" };
     }
-    const lat = parseFloat(j[0].lat);
-    const lng = parseFloat(j[0].lon);
-    const formatted = j[0].display_name;
-    console.log(`✓ ${t.nom.padEnd(30)} ${lat.toFixed(6)}, ${lng.toFixed(6)}  (${formatted.slice(0, 80)})`);
-    if (APPLY) {
-      await t.ref.set(
-        {
-          lat,
-          lng,
-          adresseGeocodee: formatted,
-          geocodedAt: admin.firestore.FieldValue.serverTimestamp(),
-          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
-        },
-        { merge: true },
-      );
-    }
-  } catch (e) {
-    console.log(`❌ ${t.nom} : exception ${e}`);
-  }
+  } catch {}
   await sleep(1100); // respect rate limit Nominatim
+
+  // Fallback BAN gouv.fr (autocorrige typos)
+  if (!result) {
+    const ban = await geocodeBan(t.adresse);
+    if (ban && (ban.score ?? 0) > 0.4) {
+      result = { ...ban, source: "ban-gouv" };
+    }
+  }
+
+  if (!result) {
+    console.log(`❌ ${t.nom} : pas de résultat — ${t.adresse}`);
+    continue;
+  }
+
+  console.log(`✓ ${t.nom.padEnd(30)} ${result.lat.toFixed(6)}, ${result.lng.toFixed(6)}  [${result.source}] (${result.formatted.slice(0, 80)})`);
+  if (APPLY) {
+    await t.ref.set(
+      {
+        lat: result.lat,
+        lng: result.lng,
+        adresseGeocodee: result.formatted,
+        geocodedAt: admin.firestore.FieldValue.serverTimestamp(),
+        updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      },
+      { merge: true },
+    );
+  }
 }
 
 if (!APPLY) console.log(`\n(dry-run, relance avec --apply pour persister)\n`);
