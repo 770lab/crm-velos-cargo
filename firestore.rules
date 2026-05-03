@@ -175,6 +175,14 @@ service cloud.firestore {
       }
     }
 
+    // Flotte de camions (Yoann 2026-05-03) : capacités cartons/montés,
+    // restrictions Paris. Lecture staff (utilisé par planificateur côté
+    // client), écriture admin uniquement.
+    match /flotte/{id} {
+      allow read: if isStaff();
+      allow write: if isAdmin();
+    }
+
     // Commandes de camions complets passées à Tiffany (Yoann 2026-05-01).
     // Numéro incrémental "VELO CARGO - COMMANDE N" pour matching avec les
     // bons de retour AXDIS.
