@@ -3731,13 +3731,23 @@ type PlanningTournee = {
   capacite: number;
   totalVelos: number;
   nbStops: number;
+  monteursRequis?: number;
   stops: PlanningStop[];
 };
 type PlanningJour = {
   date: string;
   nbTournees: number;
   totalVelos: number;
+  nbSlotsCartons?: number;
+  velosCartonsJour?: number;
+  nbMonteursRequisJour?: number;
   tournees: PlanningTournee[];
+};
+type ClientMultiCamion = {
+  clientId: string;
+  entreprise: string;
+  ville: string;
+  reste: number;
 };
 type ReapproEntrepot = {
   entrepotId: string;
@@ -3786,6 +3796,9 @@ type GenererPlanningResult = {
   camionsUtilises?: CamionUtilise[];
   reappros?: ReapproEntrepot[];
   clientsBloques?: ClientBloque[];
+  clientsMultiCamion?: ClientMultiCamion[];
+  capaMaxMontes?: number;
+  capaMaxCartons?: number;
   leadTimeJours?: number;
   tourneesParVehMontes?: number;
   tourneesParVehCartons?: number;
@@ -4073,6 +4086,35 @@ function GenererPlanningModal({ rayonKm, seuilGrosVolume, camionIds, nbChauffeur
                   </div>
                 )}
 
+                {/* Yoann 2026-05-03 : clients trop gros pour 1 seul camion (multi-camions parallèles requis) */}
+                {result.clientsMultiCamion && result.clientsMultiCamion.length > 0 && (
+                  <div className="bg-purple-50 border border-purple-300 rounded p-3 mb-3">
+                    <div className="text-sm font-bold text-purple-900 mb-1">
+                      🚚🚚 {result.clientsMultiCamion.length} client{result.clientsMultiCamion.length > 1 ? "s" : ""} nécessite{result.clientsMultiCamion.length > 1 ? "nt" : ""} 2 camions parallèles
+                    </div>
+                    <div className="text-[11px] text-purple-800 mb-1">
+                      Volume &gt; capa max 1 camion ({result.capaMaxCartons}v en cartons). À planifier manuellement avec 2 camions le même jour. Mode cartons recommandé (capa supérieure aux montés).
+                    </div>
+                    <div className="space-y-0.5 text-[11px]">
+                      {result.clientsMultiCamion.map((c) => (
+                        <div key={c.clientId} className="flex items-center gap-2">
+                          <a
+                            href={`/clients/detail?id=${encodeURIComponent(c.clientId)}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="font-semibold hover:underline"
+                          >
+                            {c.entreprise}
+                          </a>
+                          <span className="text-gray-500">{c.ville}</span>
+                          <span className="font-bold text-purple-700">{c.reste}v</span>
+                          <span className="text-[10px] text-gray-500 italic">→ Prévoir 2 camions + monteurs sur place</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 {/* Yoann 2026-05-03 : clients non plannifiés faute de stock */}
                 {result.clientsBloques && result.clientsBloques.length > 0 && (
                   <div className="bg-rose-50 border border-rose-300 rounded p-3 mb-3">
@@ -4115,8 +4157,13 @@ function GenererPlanningModal({ rayonKm, seuilGrosVolume, camionIds, nbChauffeur
                     <div key={j.date} className="border rounded-lg overflow-hidden">
                       <div className="bg-gray-50 border-b px-3 py-2 flex items-center justify-between">
                         <div className="font-bold">{j.date}</div>
-                        <div className="text-xs text-gray-600">
-                          {j.nbTournees} tournée{j.nbTournees > 1 ? "s" : ""} · {j.totalVelos} vélos
+                        <div className="text-xs text-gray-600 flex flex-wrap gap-2 justify-end items-center">
+                          <span>{j.nbTournees} tournée{j.nbTournees > 1 ? "s" : ""} · {j.totalVelos} vélos</span>
+                          {(j.nbMonteursRequisJour ?? 0) > 0 && (
+                            <span className="px-1.5 py-0.5 bg-amber-100 text-amber-900 rounded font-semibold">
+                              🔧 {j.nbMonteursRequisJour} monteurs requis
+                            </span>
+                          )}
                         </div>
                       </div>
                       {j.tournees.length === 0 ? (

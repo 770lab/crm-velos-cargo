@@ -5397,12 +5397,27 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
       const tourneesParVehMontes = Number(body.tourneesParVehMontes || 2.5);
       const tourneesParVehCartons = Number(body.tourneesParVehCartons || 1);
 
+      // Yoann 2026-05-03 : capacités max selon la flotte sélectionnée
+      // - capaMaxMontes : si client.reste > → DOIT aller en cartons
+      //   (sinon il serait splitté sur plusieurs jours en montés)
+      // - capaMaxCartons : si client.reste > → 2 camions parallèles requis
+      //   (Yoann gère manuellement, on signale)
+      const capaMaxMontes = camionsG.length > 0 ? Math.max(...camionsG.map((c) => c.capaciteVelosMontes)) : 0;
+      const capaMaxCartons = camionsG.length > 0 ? Math.max(...camionsG.map((c) => c.capaciteCartons)) : 0;
+
       // Voronoi : chaque client → entrepôt le + proche
+      // Routing mode :
+      //   - Client ≤ capaMaxMontes → mode atelier (priorité Yoann)
+      //   - Client > capaMaxMontes → mode cartons (capa supérieure, 1 jour
+      //     suffit même si client > 40v, jusqu à 77v en grand camion)
+      //   - Client > capaMaxCartons → multi-camions parallèles requis,
+      //     marqué pour Yoann (signal dans clientsBloques avec note spéciale)
       type Bucket = { entrepot: EntG; clientsMontes: CliG[]; clientsCartons: CliG[]; demandeMontes: number; demandeCartons: number };
       const buckets = new Map<string, Bucket>();
       for (const e of entrepotsG) {
         buckets.set(e.id, { entrepot: e, clientsMontes: [], clientsCartons: [], demandeMontes: 0, demandeCartons: 0 });
       }
+      const clientsMultiCamion: CliG[] = []; // > capaMaxCartons, multi-camions requis
       for (const c of clientsG) {
         let bestE: EntG | null = null;
         let bestD = Infinity;
@@ -5412,7 +5427,14 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
         }
         if (!bestE) continue;
         const b = buckets.get(bestE.id)!;
-        if (c.reste > seuilGrosVolumeG) {
+        // Cas extrême : client > capa max cartons → multi-camions parallèles
+        if (c.reste > capaMaxCartons && capaMaxCartons > 0) {
+          clientsMultiCamion.push(c);
+          continue; // Pas dans le planning auto, à gérer manuellement
+        }
+        // Bascule auto : > capaMaxMontes → cartons (pour rester sur 1 jour)
+        // Sinon → montés (priorité Yoann atelier)
+        if (c.reste > capaMaxMontes) {
           b.clientsCartons.push(c);
           b.demandeCartons += c.reste;
         } else {
@@ -5495,20 +5517,46 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
             totalVelos: 0,
           };
           let reste = capaEff;
+          // Yoann 2026-05-03 : RÈGLE MÉTIER — un client va EN ENTIER dans
+          // son slot, JAMAIS splitté entre 2 jours. Si volume > capa du slot
+          // courant ET on a déjà des stops → break (ouvrira un nouveau slot
+          // au prochain tour). Si client > capa max camion → tout dans 1 slot
+          // (warn signalé via splitMultiCamion).
           while (i < b.clientsMontes.length && reste > 0) {
             const c = b.clientsMontes[i];
             if (c.estParis && !cam.peutEntrerParis) { i++; continue; }
-            const nb = Math.min(c.reste, reste);
+            // Cas 1 : client tient entier dans le reste → on l ajoute
+            if (c.reste <= reste) {
+              slot.stops.push({
+                clientId: c.id, entreprise: c.entreprise, nbVelos: c.reste,
+                ville: c.ville, estParis: c.estParis, creneauLivraison: c.creneauLivraison,
+                apporteurLower: c.apporteurLower, lat: c.lat, lng: c.lng,
+                codePostal: c.codePostal, adresse: c.adresse,
+              });
+              slot.totalVelos += c.reste;
+              reste -= c.reste;
+              i++;
+              continue;
+            }
+            // Cas 2 : client > reste mais slot a déjà des stops → fermer
+            // ce slot, le prochain tour ouvrira un nouveau slot dédié.
+            if (slot.stops.length > 0) break;
+            // Cas 3 : slot vide ET client > capa max — slot dédié à ce
+            // client avec sa capa max (le reste sera dans clientsBloques
+            // ou nécessite multi-camions parallèles → on signale).
             slot.stops.push({
-              clientId: c.id, entreprise: c.entreprise, nbVelos: nb,
+              clientId: c.id, entreprise: c.entreprise, nbVelos: reste,
               ville: c.ville, estParis: c.estParis, creneauLivraison: c.creneauLivraison,
               apporteurLower: c.apporteurLower, lat: c.lat, lng: c.lng,
               codePostal: c.codePostal, adresse: c.adresse,
             });
-            slot.totalVelos += nb;
-            reste -= nb;
-            if (nb < c.reste) { c.reste -= nb; }
-            else { i++; }
+            slot.totalVelos += reste;
+            c.reste -= reste;
+            reste = 0;
+            // Le client n est pas servi totalement, mais son reste sera
+            // marqué bloqué (pas de re-split sur un autre jour). Yoann
+            // décidera manuellement (commande supplémentaire ou multi-camions).
+            break;
           }
           if (slot.stops.length === 0) break;
           slots.push(slot);
@@ -5540,20 +5588,35 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
             totalVelos: 0,
           };
           let reste = capaEff;
+          // Même règle métier "1 client = 1 jour" en mode cartons.
           while (i < b.clientsCartons.length && reste > 0) {
             const c = b.clientsCartons[i];
             if (c.estParis && !cam.peutEntrerParis) { i++; continue; }
-            const nb = Math.min(c.reste, reste);
+            if (c.reste <= reste) {
+              slot.stops.push({
+                clientId: c.id, entreprise: c.entreprise, nbVelos: c.reste,
+                ville: c.ville, estParis: c.estParis, creneauLivraison: c.creneauLivraison,
+                apporteurLower: c.apporteurLower, lat: c.lat, lng: c.lng,
+                codePostal: c.codePostal, adresse: c.adresse,
+              });
+              slot.totalVelos += c.reste;
+              reste -= c.reste;
+              i++;
+              continue;
+            }
+            if (slot.stops.length > 0) break;
+            // Client trop gros pour 1 camion → on prend la capa max du
+            // camion (slot dédié), le reste sera dans clientsBloques
             slot.stops.push({
-              clientId: c.id, entreprise: c.entreprise, nbVelos: nb,
+              clientId: c.id, entreprise: c.entreprise, nbVelos: reste,
               ville: c.ville, estParis: c.estParis, creneauLivraison: c.creneauLivraison,
               apporteurLower: c.apporteurLower, lat: c.lat, lng: c.lng,
               codePostal: c.codePostal, adresse: c.adresse,
             });
-            slot.totalVelos += nb;
-            reste -= nb;
-            if (nb < c.reste) { c.reste -= nb; }
-            else { i++; }
+            slot.totalVelos += reste;
+            c.reste -= reste;
+            reste = 0;
+            break;
           }
           if (slot.stops.length === 0) break;
           slots.push(slot);
@@ -5761,27 +5824,45 @@ Réponds STRICTEMENT en JSON valide (sans markdown), structure exacte :
         camionsUtilises: camionsG.map((c) => ({ id: c.id, nom: c.nom, capaciteCartons: c.capaciteCartons, capaciteVelosMontes: c.capaciteVelosMontes, peutEntrerParis: c.peutEntrerParis })),
         reappros, // Yoann 2026-05-03 : suggestion réappro par entrepôt
         clientsBloques, // Yoann 2026-05-03 : clients non plannifiés faute de stock
+        clientsMultiCamion: clientsMultiCamion.map((c) => ({ clientId: c.id, entreprise: c.entreprise, ville: c.ville, reste: c.reste })),
+        capaMaxMontes,
+        capaMaxCartons,
         leadTimeJours,
         tourneesParVehMontes,
         tourneesParVehCartons,
         ratioMontes: Math.round(ratioMontes * 100) / 100,
         dates: datesSorted,
-        planning: planning.map((j) => ({
-          date: j.date,
-          nbTournees: j.tournees.length,
-          totalVelos: j.tournees.reduce((s, t) => s + t.totalVelos, 0),
-          tournees: j.tournees.map((t) => ({
-            entrepotId: t.entrepotId,
-            entrepotNom: t.entrepotNom,
-            modeMontage: t.modeMontage,
-            camionId: t.camionId,
-            camionNom: t.camionNom,
-            capacite: t.capacite,
-            totalVelos: t.totalVelos,
-            nbStops: t.stops.length,
-            stops: t.stops.map((st) => ({ clientId: st.clientId, entreprise: st.entreprise, nbVelos: st.nbVelos, ville: st.ville, estParis: st.estParis })),
-          })),
-        })),
+        planning: planning.map((j) => {
+          // Yoann 2026-05-03 : calcul monteurs requis pour le jour
+          // Mode cartons : chaque slot consomme nbVélos × 12min de montage
+          // En supposant ${monteursParTournee} monteurs/tournée cartons :
+          // - tot_velos_cartons × 12min / monteursParTournee = durée arrêt cumul
+          // - On retourne juste nbMonteursRequis = monteursParTournee × nbSlotsCartons
+          //   pour que Yoann sache combien de monteurs prévoir ce jour-là.
+          const slotsCartonsJour = j.tournees.filter((t) => t.modeMontage === "client");
+          const velosCartonsJour = slotsCartonsJour.reduce((s, t) => s + t.totalVelos, 0);
+          const nbMonteursRequisJour = slotsCartonsJour.length * 2; // 2 monteurs/tournée par défaut
+          return {
+            date: j.date,
+            nbTournees: j.tournees.length,
+            totalVelos: j.tournees.reduce((s, t) => s + t.totalVelos, 0),
+            nbSlotsCartons: slotsCartonsJour.length,
+            velosCartonsJour,
+            nbMonteursRequisJour,
+            tournees: j.tournees.map((t) => ({
+              entrepotId: t.entrepotId,
+              entrepotNom: t.entrepotNom,
+              modeMontage: t.modeMontage,
+              camionId: t.camionId,
+              camionNom: t.camionNom,
+              capacite: t.capacite,
+              totalVelos: t.totalVelos,
+              nbStops: t.stops.length,
+              monteursRequis: t.modeMontage === "client" ? 2 : 0, // par tournée cartons
+              stops: t.stops.map((st) => ({ clientId: st.clientId, entreprise: st.entreprise, nbVelos: st.nbVelos, ville: st.ville, estParis: st.estParis })),
+            })),
+          };
+        }),
       };
     }
 
