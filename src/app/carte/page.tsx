@@ -383,7 +383,19 @@ export default function CartePage() {
       </div>
 
       <div className="flex flex-col lg:flex-row flex-1 min-h-0">
-      <div className="flex-1 relative min-h-[300px]">
+      {/* isolate + z-0 : crée un stacking context pour que les markers
+          Leaflet (z-index 400+) ne passent JAMAIS au-dessus du drawer
+          mobile (z-40/z-50). Yoann 2026-05-03 — bug iPhone visible sur
+          le menu hamburger qui restait sous la map.
+          Hauteur dynamique : réduite quand un client est sélectionné
+          pour laisser plus de place au panel sidebar (mobile only). */}
+      <div
+        className={`relative isolate z-0 ${
+          selected
+            ? "h-[28vh] lg:h-auto lg:flex-1 min-h-[200px]"
+            : "h-[55vh] lg:h-auto lg:flex-1 min-h-[300px]"
+        }`}
+      >
         <MapView
           clients={clients}
           selectedId={selected}
@@ -423,7 +435,7 @@ export default function CartePage() {
         />
       </div>
 
-      <div className="w-full lg:w-96 bg-white border-t lg:border-t-0 lg:border-l overflow-y-auto max-h-[50vh] lg:max-h-none">
+      <div className={`w-full lg:w-96 bg-white border-t lg:border-t-0 lg:border-l overflow-y-auto lg:max-h-none ${selected ? "flex-1" : "max-h-[50vh]"}`}>
         {(vue === "entrepots" || vue === "hybride") && <EntrepotsPanel />}
         {(vue === "clients" || vue === "hybride") && (
         <>

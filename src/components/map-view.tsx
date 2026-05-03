@@ -121,6 +121,25 @@ function FitBounds({ clients }: { clients: ClientPoint[] }) {
   return null;
 }
 
+// Yoann 2026-05-03 — quand le conteneur de la map change de taille
+// (ex sélection client → la map se rétrécit pour laisser place à la
+// sidebar), Leaflet ne le détecte pas seul et la map reste avec ses
+// anciennes dimensions (espace blanc / marker hors écran). On observe
+// le conteneur et on appelle invalidateSize à chaque resize.
+function InvalidateOnResize() {
+  const map = useMap();
+  useEffect(() => {
+    const container = map.getContainer();
+    if (!container) return;
+    const ro = new ResizeObserver(() => {
+      map.invalidateSize({ animate: false });
+    });
+    ro.observe(container);
+    return () => ro.disconnect();
+  }, [map]);
+  return null;
+}
+
 export default function MapView({
   clients,
   selectedId,
@@ -150,6 +169,7 @@ export default function MapView({
         url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
       />
       <FitBounds clients={clients} />
+      <InvalidateOnResize />
 
       {routeLine.length > 1 && (
         <Polyline
