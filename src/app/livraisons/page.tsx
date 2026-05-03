@@ -5401,6 +5401,97 @@ function BriefJourneeModal({
     return () => clearTimeout(t);
   }, [notesDirty, notesJour, saveNotesJour]);
 
+  // Yoann 2026-05-03 — Dictée vocale (Yoann en voiture, mains libres).
+  // Why: speech-to-text natif évite de taper le brief au volant.
+  // webkitSpeechRecognition supporté Chrome Mac/Android + Safari iOS 14.5+,
+  // mode continu fr-FR, append des transcripts finaux à la note existante.
+  // L'interim s'affiche en grisé pour feedback live.
+  const recognitionRef = useRef<unknown>(null);
+  const [isRecording, setIsRecording] = useState(false);
+  const [interimText, setInterimText] = useState("");
+  const speechSupported = useMemo(() => {
+    if (typeof window === "undefined") return false;
+    return "webkitSpeechRecognition" in window || "SpeechRecognition" in window;
+  }, []);
+  const toggleRecording = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const w = window as unknown as {
+      SpeechRecognition?: new () => unknown;
+      webkitSpeechRecognition?: new () => unknown;
+    };
+    const SR = w.SpeechRecognition || w.webkitSpeechRecognition;
+    if (!SR) {
+      alert("Ton navigateur ne supporte pas la dictée vocale. Utilise Chrome ou Safari iOS récent.");
+      return;
+    }
+    if (isRecording) {
+      try {
+        (recognitionRef.current as { stop?: () => void } | null)?.stop?.();
+      } catch {
+        // ignore
+      }
+      return;
+    }
+    const r = new SR() as {
+      lang: string;
+      continuous: boolean;
+      interimResults: boolean;
+      onresult: (ev: { resultIndex: number; results: ArrayLike<ArrayLike<{ transcript: string }> & { isFinal: boolean }> }) => void;
+      onerror: (e: { error?: string }) => void;
+      onend: () => void;
+      start: () => void;
+      stop: () => void;
+    };
+    r.lang = "fr-FR";
+    r.continuous = true;
+    r.interimResults = true;
+    r.onresult = (ev) => {
+      let finalChunk = "";
+      let interimChunk = "";
+      for (let i = ev.resultIndex; i < ev.results.length; i++) {
+        const res = ev.results[i];
+        const txt = res[0].transcript;
+        if (res.isFinal) finalChunk += txt;
+        else interimChunk += txt;
+      }
+      setInterimText(interimChunk);
+      if (finalChunk) {
+        setNotesJour((prev) => {
+          const t = finalChunk.trim();
+          if (!t) return prev;
+          const sep = prev && !/\s$/.test(prev) ? " " : "";
+          return prev + sep + t;
+        });
+      }
+    };
+    r.onerror = (e) => {
+      console.error("[dictée]", e?.error || e);
+      setIsRecording(false);
+      setInterimText("");
+    };
+    r.onend = () => {
+      setIsRecording(false);
+      setInterimText("");
+    };
+    recognitionRef.current = r;
+    try {
+      r.start();
+      setIsRecording(true);
+    } catch (e) {
+      console.error("[dictée] start failed", e);
+    }
+  }, [isRecording]);
+  // Stop micro à l'unmount pour ne pas laisser le permission ouvert.
+  useEffect(() => {
+    return () => {
+      try {
+        (recognitionRef.current as { stop?: () => void } | null)?.stop?.();
+      } catch {
+        // ignore
+      }
+    };
+  }, []);
+
   const findName = (id: string | null | undefined) =>
     id ? equipe.find((m) => m.id === id)?.nom || "?" : null;
   const fmtHM = (mins: number) => {
@@ -5617,6 +5708,20 @@ function BriefJourneeModal({
                       ? "✓ Sauvegardé"
                       : ""}
               </span>
+              {speechSupported && (
+                <button
+                  onClick={toggleRecording}
+                  className={`text-[11px] px-2 py-1 rounded font-medium flex items-center gap-1 ${
+                    isRecording
+                      ? "bg-red-600 text-white animate-pulse"
+                      : "bg-white text-amber-700 border border-amber-300 hover:bg-amber-100"
+                  }`}
+                  title={isRecording ? "Arrêter la dictée" : "Dicter (mains libres en voiture)"}
+                >
+                  <span>{isRecording ? "⏹️" : "🎤"}</span>
+                  <span>{isRecording ? "Stop" : "Dicter"}</span>
+                </button>
+              )}
               <button
                 onClick={() => void saveNotesJour()}
                 disabled={!notesDirty || notesJourSaving}
@@ -5636,6 +5741,14 @@ function BriefJourneeModal({
             placeholder="Ex : ETHAN finit FIRAT 11h puis rejoint Armel chez ALDI pour montage in situ pendant que Zinédine fait des navettes Lisses↔Chelles."
             className="w-full h-20 px-2 py-1.5 border border-amber-300 rounded text-xs resize-y bg-white"
           />
+          {isRecording && (
+            <div className="mt-1 text-[11px] text-amber-800 flex items-start gap-1.5">
+              <span className="text-red-600 animate-pulse">●</span>
+              <span className="italic text-gray-600">
+                {interimText || "À l'écoute…"}
+              </span>
+            </div>
+          )}
         </div>
         <textarea
           value={text}
