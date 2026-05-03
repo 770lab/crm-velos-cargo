@@ -4470,6 +4470,7 @@ function EquipeAssignBlock({
   onMonteurCountChange?: (count: number) => void;
 }) {
   const { equipe } = useData();
+  const currentUser = useCurrentUser();
   // Filtre les IDs orphelins (anciens membres supprimés ou jamais migrés)
   // dès l'initialisation : sinon le compteur affiche "1 sélectionné" sans
   // qu'aucun pill ne soit highlighté → l'utilisateur ne peut pas le retirer.
