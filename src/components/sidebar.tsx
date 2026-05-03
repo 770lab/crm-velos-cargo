@@ -184,16 +184,15 @@ export function Sidebar() {
         {user && (
           <div className="p-4 border-t border-gray-700">
             <div className="text-xs text-gray-500 mb-1">{ROLE_LABEL[user.role]}</div>
-            <div className="flex items-center justify-between">
-              <div className="text-sm font-medium truncate">{user.nom}</div>
-              <button
-                onClick={logout}
-                className="text-xs text-gray-400 hover:text-white px-2 py-1 rounded hover:bg-gray-800"
-                title="Se déconnecter"
-              >
-                ⏻
-              </button>
-            </div>
+            <div className="text-sm font-medium truncate mb-2">{user.nom}</div>
+            <button
+              onClick={logout}
+              className="w-full flex items-center justify-center gap-2 text-xs text-gray-200 px-3 py-1.5 rounded bg-gray-800 hover:bg-red-700 hover:text-white transition-colors"
+              title="Se déconnecter"
+            >
+              <span>⏻</span>
+              <span className="font-medium">Se déconnecter</span>
+            </button>
           </div>
         )}
       </aside>
