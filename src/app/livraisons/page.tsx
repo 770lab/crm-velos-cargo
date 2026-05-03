@@ -5515,7 +5515,11 @@ function BriefJourneeModal({
     return `${h}h${String(m).padStart(2, "0")}`;
   };
 
-  const text = useMemo(() => {
+  // Yoann 2026-05-03 — useMemo retourne 2 variantes :
+  //   text     : brief complet avec section "NOTES DU JOUR" en tête (affichage par défaut)
+  //   textBare : même brief SANS la note brute (envoyé à Gemini pour réécriture
+  //              afin d'éviter que Gemini ne garde la note en double).
+  const { text, textBare } = useMemo(() => {
     const dayISOref = isoDate(briefDate);
     const dateStr = briefDate.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
 
@@ -5526,7 +5530,8 @@ function BriefJourneeModal({
       return isoDate(t.datePrevue) === dayISOref;
     });
     if (ofDay.length === 0) {
-      return `Aucune tournée planifiée pour ${dateStr}.`;
+      const empty = `Aucune tournée planifiée pour ${dateStr}.`;
+      return { text: empty, textBare: empty };
     }
 
     // Tri par heure de départ chaînée
@@ -5586,17 +5591,9 @@ function BriefJourneeModal({
       if (c) allChauffeurs.add(c);
     }
     lines.push(`${sorted.length} tournée${sorted.length > 1 ? "s" : ""} · ${totalVelos} vélos · ${allChauffeurs.size} chauffeur${allChauffeurs.size > 1 ? "s" : ""}`);
-    // Yoann 2026-05-03 — Note du jour : on l'affiche brute UNIQUEMENT si pas
-    // de réécriture Gemini en cours (le bouton "Appliquer au brief" intègre
-    // la note dans le corps du brief). Cette logique est gérée côté affichage
-    // via briefDisplayed, mais on garde la version brute en tête comme
-    // fallback si l'utilisateur ne lance pas la réécriture.
-    const notesTrim = notesJour.trim();
-    if (notesTrim) {
-      lines.push("");
-      lines.push("📝 *NOTES DU JOUR*");
-      lines.push(notesTrim);
-    }
+    // Marqueur insertion note pour générer textBare (sans note) en parallèle.
+    const NOTE_PLACEHOLDER = "__NOTE_BLOCK_PLACEHOLDER__";
+    lines.push(NOTE_PLACEHOLDER);
     lines.push("");
     lines.push("═".repeat(40));
 
@@ -5658,7 +5655,16 @@ function BriefJourneeModal({
     lines.push("");
     lines.push("═".repeat(40));
     lines.push("Bonne tournée à tous 🚴‍♂️");
-    return lines.join("\n");
+    const raw = lines.join("\n");
+    const notesTrim = notesJour.trim();
+    const noteBlock = notesTrim
+      ? `\n📝 *NOTES DU JOUR*\n${notesTrim}`
+      : "";
+    return {
+      text: raw.replace(NOTE_PLACEHOLDER, noteBlock),
+      // textBare : strip placeholder + ligne vide précédente si vide
+      textBare: raw.replace(`\n${NOTE_PLACEHOLDER}`, "").replace(NOTE_PLACEHOLDER, ""),
+    };
   }, [briefDate, tournees, equipe, clientInfo, tourneeDepartures, notesJour]);
   void findName;
 
@@ -5669,53 +5675,94 @@ function BriefJourneeModal({
   // note dictée (cascades, horaires, qui rejoint qui). Contraintes strictes :
   // ne JAMAIS inventer client/vélo/adresse/horaire ; garder le format WhatsApp ;
   // peut ajouter une section narrative + annotations par tournée/client.
+  // Décode une réponse Gemini qui peut arriver wrappée en JSON string
+  // (`"...\n..."`), en fence markdown (` ```...``` `) ou avec des `\n`
+  // littéraux non échappés. Garantit qu'on récupère du texte brut avec de
+  // vrais retours à la ligne, prêt à coller dans WhatsApp.
+  const decodeGeminiBrief = (raw: string): string => {
+    let s = raw.trim();
+    // 1) Strip markdown fences ``` lang ... ```
+    if (s.startsWith("```")) {
+      s = s.replace(/^```[a-zA-Z]*\n?/, "").replace(/```\s*$/, "").trim();
+    }
+    // 2) Si la réponse est une string JSON ("..." avec \n échappés), la parser
+    if (s.startsWith('"') && s.endsWith('"') && s.length > 1) {
+      try {
+        const parsed = JSON.parse(s);
+        if (typeof parsed === "string") s = parsed;
+      } catch {
+        // fallback : retire juste les guillemets externes
+        s = s.slice(1, -1);
+      }
+    }
+    // 3) Si pas de vrais newlines mais des \n littéraux → décoder
+    if (!s.includes("\n") && s.includes("\\n")) {
+      s = s.replace(/\\n/g, "\n").replace(/\\t/g, "\t").replace(/\\"/g, '"').replace(/\\\\/g, "\\");
+    }
+    return s.trim();
+  };
+
   const rewriteBriefFromNotes = useCallback(async () => {
     const note = notesJour.trim();
     if (!note) {
       alert("Ajoute d'abord ta note (texte ou dictée) puis clique sur Appliquer.");
       return;
     }
-    if (!text || text.startsWith("Aucune tournée")) {
+    if (!textBare || textBare.startsWith("Aucune tournée")) {
       alert("Pas de tournée planifiée pour ce jour.");
       return;
     }
     setRewriting(true);
     setRewriteError(null);
     try {
+      // textBare ne contient PAS la section "NOTES DU JOUR" — la note est
+      // passée séparément pour que Gemini la fonde dans le corps du brief.
       const prompt = [
         "Tu es l'assistant logistique de Vélos Cargo (Artisans Verts Energy).",
-        "Tu reçois deux entrées :",
-        "1) Le BRIEF AUTO d'un jour (planning généré par le CRM, format WhatsApp).",
-        "2) Une NOTE dictée par Yoann (le boss) qui complète le brief : cascades inter-équipes, qui rejoint qui, qui finit où, navettes, horaires précis, etc.",
+        "Tu reçois 2 entrées :",
+        "1) BRIEF AUTO : planning du jour généré par le CRM (format WhatsApp).",
+        "2) NOTE : texte dicté par Yoann (le boss) qui décrit les cascades inter-équipes du jour : qui finit où, qui rejoint qui, à quelle heure, qui fait quoi sur place, navettes entre entrepôts, etc.",
         "",
-        "Ta tâche : RÉÉCRIRE le brief en intégrant la note de Yoann directement dans le corps du brief.",
+        "OBJECTIF : produire UN SEUL brief unifié, lisible, dans lequel la note de Yoann est *fusionnée* dans le corps du brief tournée par tournée. Le but : un chauffeur qui lit le brief comprend immédiatement son rôle dans la cascade, sans avoir à lire un encart de notes séparé.",
+        "",
+        "STRUCTURE OBLIGATOIRE (dans cet ordre exact) :",
+        "1. Ligne 1 : `📅 *PLANNING DU <JOUR DATE>*`",
+        "2. Ligne 2 : `<N> tournée(s) · <V> vélos · <C> chauffeur(s)`",
+        "3. Bloc `🎯 *STRATÉGIE DU JOUR*` : 2 à 4 lignes en français propre qui résument la logique d'enchaînement décrite dans la note (ex : qui démarre, qui rejoint qui, navettes prévues). Reformulation propre, fautes corrigées.",
+        "4. Séparateur `════════════════════════════════════════`",
+        "5. Pour chaque tournée, dans l'ORDRE CHRONOLOGIQUE des heures de départ (plus tôt en premier) : recopier le bloc tournée du BRIEF AUTO (titre, départ, chauffeur, chef, monteurs, prep, puis chaque arrêt avec adresse/tél/horaires/vélos/validation).",
+        "6. Au sein de chaque bloc de tournée : insérer une ligne `🔄 *Cascade :* …` juste après l'en-tête (sous Préparation matin), UNIQUEMENT si la note concerne directement cette tournée (qui rejoint qui, à quelle heure, qui repart où après).",
+        "7. Au sein d'un arrêt client : ajouter une ligne `✏️ <annotation>` UNIQUEMENT si la note précise quelque chose pour ce client précis (ex : montage in situ, pas besoin de monteur, etc.).",
+        "8. Séparateur final + `Bonne tournée à tous 🚴‍♂️`.",
         "",
         "RÈGLES STRICTES (zéro tolérance) :",
-        "- Tu NE PEUX PAS inventer ou modifier : noms de clients, adresses, téléphones, nb de vélos, statuts validation. Recopie-les à l'identique.",
-        "- Tu PEUX modifier/ajouter : horaires si la note les précise, affectations chauffeur/chef/monteurs si la note le dit, annotations par tournée/client (cascades, navettes, points d'attention).",
-        "- Garde le format WhatsApp : titres en *gras*, emojis (🚛 📍 🚐 🚦 🔧 📦 ⏰ 🚲 ⚠ 📧 📞 🤝), séparateurs ═══.",
-        "- Garde la même structure (en-tête puis 1 bloc par tournée puis liste des arrêts).",
-        "- Si la note évoque une cascade qui touche plusieurs tournées, ajoute une ligne 🔄 *Cascade :* sous le bloc concerné.",
-        "- Si la note est confuse ou contradictoire avec le brief auto, INTERPRÈTE prudemment et ajoute ⚠ à la ligne concernée.",
-        "- Corrige les fautes de dictée évidentes (Naomie → Naomi, etc.) en t'aidant des noms déjà présents dans le brief.",
-        "- N'ajoute AUCUN commentaire de ta part hors du brief lui-même (pas de 'voici le brief', pas de meta).",
-        "- Réponds UNIQUEMENT par le brief réécrit, prêt à coller dans WhatsApp.",
+        "- INTERDIT d'inventer ou modifier : noms de clients, adresses, téléphones, nb de vélos, statuts de validation. Recopie ces données à l'identique du BRIEF AUTO.",
+        "- AUTORISÉ d'ajuster : horaires de départ/arrivée si la note les précise EXPLICITEMENT, affectations chauffeur/chef/monteurs si la note les modifie EXPLICITEMENT.",
+        "- INTERDIT de garder une section `📝 NOTES DU JOUR` brute : la note doit être ABSORBÉE dans la stratégie + les cascades par tournée.",
+        "- Corrige les fautes de dictée évidentes (avecsur → avec sur, garsils → Gursil, monteur von → monteurs vont, etc.) en t'aidant des noms réels déjà présents dans le brief.",
+        "- Format WhatsApp : `*gras*`, emojis (🚛 📍 🚐 🚦 🔧 📦 ⏰ 🚲 ⚠ 📧 📞 🤝 🎯 🔄 ✏️), séparateur `═══`.",
+        "",
+        "FORMAT DE SORTIE (CRITIQUE) :",
+        "- Réponds UNIQUEMENT en TEXTE BRUT, AVEC de vrais retours à la ligne (touche Entrée).",
+        "- INTERDIT : encadrer la réponse de guillemets `\"...\"`, encadrer en bloc markdown ```...```, échapper les retours à la ligne en `\\n` littéraux.",
+        "- INTERDIT : ajouter le moindre commentaire avant/après le brief (pas de \"Voici le brief\", pas de note de bas de page).",
         "",
         "=== BRIEF AUTO ===",
-        text,
+        textBare,
         "",
         "=== NOTE DE YOANN ===",
         note,
         "",
-        "=== BRIEF RÉÉCRIT ===",
+        "=== BRIEF UNIFIÉ (texte brut, retours à la ligne réels) ===",
       ].join("\n");
       const r = await callGemini(prompt);
       if (r.ok && r.text) {
-        let out = r.text.trim();
-        if (out.startsWith("```")) {
-          out = out.replace(/^```[a-zA-Z]*\n?/, "").replace(/```$/, "").trim();
+        const out = decodeGeminiBrief(r.text);
+        if (!out) {
+          setRewriteError("Réponse Gemini vide après décodage");
+        } else {
+          setBriefRewritten(out);
         }
-        setBriefRewritten(out);
       } else {
         setRewriteError(r.ok ? "Réponse Gemini vide" : (r.error || "Erreur Gemini"));
       }
@@ -5724,7 +5771,7 @@ function BriefJourneeModal({
     } finally {
       setRewriting(false);
     }
-  }, [notesJour, text]);
+  }, [notesJour, textBare]);
 
   const [copied, setCopied] = useState(false);
   const copy = async () => {
