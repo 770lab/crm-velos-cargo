@@ -318,6 +318,53 @@ function AtelierPage() {
     }
   }, [selectedClientId]);
 
+  // Yoann 2026-05-03 — Ouvre le BL du client sélectionné. En mode atelier on
+  // n'a pas de tourneeId direct ; on cherche la livraison non-annulée la plus
+  // récente du client et on redirige vers /bl?tourneeId=…&clientId=…
+  const openBLForClient = async (clientId: string) => {
+    if (!clientId) return;
+    try {
+      const { collection, doc, getDoc, getDocs, query, where } = await import("firebase/firestore");
+      const { db } = await import("@/lib/firebase");
+      const livSnap = await getDocs(query(
+        collection(db, "livraisons"),
+        where("clientId", "==", clientId),
+      ));
+      type LivShape = {
+        tourneeId?: unknown;
+        statut?: unknown;
+        annule?: unknown;
+        datePrevue?: { toDate?: () => Date } | string | null;
+      };
+      const livs = livSnap.docs
+        .map((d) => ({ id: d.id, data: d.data() as LivShape }))
+        .filter((l) => l.data.annule !== true && l.data.statut !== "annulee" && typeof l.data.tourneeId === "string");
+      if (livs.length === 0) {
+        // Pas de livraison planifiée → bascule sur livraison du client si BL doc existe directement
+        // Plus probable : pas encore de tournée. Message clair.
+        alert("Pas de livraison planifiée pour ce client.\nCrée une tournée depuis /livraisons pour générer le BL.");
+        return;
+      }
+      const tsOf = (x: LivShape["datePrevue"]): number => {
+        if (!x) return 0;
+        if (typeof x === "string") return new Date(x).getTime() || 0;
+        const t = x as { toDate?: () => Date };
+        return t?.toDate?.()?.getTime() || 0;
+      };
+      livs.sort((a, b) => tsOf(b.data.datePrevue) - tsOf(a.data.datePrevue));
+      const tourneeId = String(livs[0].data.tourneeId);
+      // Vérif que la tournée existe encore (cas rare : doc orphelin)
+      const tSnap = await getDoc(doc(db, "tournees", tourneeId));
+      if (!tSnap.exists()) {
+        alert("Tournée introuvable. La livraison pointe vers une tournée supprimée.");
+        return;
+      }
+      window.open(`/bl?tourneeId=${encodeURIComponent(tourneeId)}&clientId=${encodeURIComponent(clientId)}`, "_blank");
+    } catch (e) {
+      alert("Erreur lors de l'ouverture du BL : " + (e instanceof Error ? e.message : "inconnue"));
+    }
+  };
+
   if (!sessionId) {
     return (
       <div className="p-6 text-center">
@@ -459,14 +506,23 @@ function AtelierPage() {
         <div className={`border rounded p-3 text-sm ${lastResult.ok ? "bg-emerald-50 border-emerald-300 text-emerald-900" : "bg-red-50 border-red-300 text-red-900"}`}>
           <div>{lastResult.msg}</div>
           {lastResult.ok && lastResult.fnuci && (
+            <div className="mt-2 flex flex-wrap gap-2">
             <a
               href={`/etiquettes?fnuci=${encodeURIComponent(lastResult.fnuci)}&copies=1`}
               target="_blank"
               rel="noreferrer"
-              className="mt-2 inline-block px-3 py-1.5 bg-emerald-600 text-white rounded text-xs font-semibold hover:bg-emerald-700"
+              className="inline-block px-3 py-1.5 bg-emerald-600 text-white rounded text-xs font-semibold hover:bg-emerald-700"
             >
               🖨 Imprimer l&apos;étiquette du carton
             </a>
+            <button
+              type="button"
+              onClick={() => void openBLForClient(selectedClientId)}
+              className="inline-block px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-semibold hover:bg-blue-700"
+            >
+              🖨 Imprimer le BL
+            </button>
+            </div>
           )}
         </div>
       )}
