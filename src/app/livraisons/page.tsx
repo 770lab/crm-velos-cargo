@@ -172,7 +172,7 @@ export default function LivraisonsPage() {
   // Yoann 2026-05-03 : "+ Tournée" depuis /livraisons. Étape 1 = pick entrepôt,
   // étape 2 = PlanifierJourneeModal sur l entrepôt choisi.
   const [showPickEntrepot, setShowPickEntrepot] = useState(false);
-  const [entrepotPourPlan, setEntrepotPourPlan] = useState<{ id: string; nom: string; stockCartons: number; stockVelosMontes: number } | null>(null);
+  const [entrepotPourPlan, setEntrepotPourPlan] = useState<{ id: string; nom: string; stockCartons: number; stockVelosMontes: number; isFournisseur: boolean } | null>(null);
 
   useEffect(() => {
     refresh("livraisons");
@@ -794,6 +794,7 @@ export default function LivraisonsPage() {
           entrepotNom={entrepotPourPlan.nom}
           stockCartons={entrepotPourPlan.stockCartons}
           stockVelosMontes={entrepotPourPlan.stockVelosMontes}
+          isFournisseur={entrepotPourPlan.isFournisseur}
           onClose={() => {
             setEntrepotPourPlan(null);
             refresh("livraisons");
@@ -6262,7 +6263,7 @@ function PickEntrepotModal({
   onPick,
 }: {
   onClose: () => void;
-  onPick: (e: { id: string; nom: string; stockCartons: number; stockVelosMontes: number }) => void;
+  onPick: (e: { id: string; nom: string; stockCartons: number; stockVelosMontes: number; isFournisseur: boolean }) => void;
 }) {
   type Row = {
     id: string;
@@ -6347,6 +6348,7 @@ function PickEntrepotModal({
                       nom: e.nom,
                       stockCartons: e.stockCartons,
                       stockVelosMontes: e.stockVelosMontes,
+                      isFournisseur,
                     })
                   }
                   className={`w-full text-left p-3 border rounded-lg transition ${

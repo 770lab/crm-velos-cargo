@@ -2687,6 +2687,7 @@ export function PlanifierJourneeModal({
   entrepotNom,
   stockCartons,
   stockVelosMontes,
+  isFournisseur = false,
   initialParams,
   onClose,
 }: {
@@ -2694,6 +2695,9 @@ export function PlanifierJourneeModal({
   entrepotNom: string;
   stockCartons: number;
   stockVelosMontes: number;
+  /** Yoann 2026-05-03 : true pour AXDIS et autres fournisseurs — stock
+   *  considéré comme illimité (ne bloque pas le bouton, affichage "∞"). */
+  isFournisseur?: boolean;
   initialParams?: {
     mode?: "gros" | "moyen" | "petit" | "camionnette";
     modeMontage?: "client" | "atelier" | "client_redistribue";
@@ -2721,6 +2725,10 @@ export function PlanifierJourneeModal({
   const [created, setCreated] = useState<{ count: number } | null>(null);
 
   const stockSelectMontage = modeMontage === "client" ? stockCartons : stockVelosMontes;
+  // Fournisseur (AXDIS PRO) : stock illimité — Tiffany confirme la dispo
+  // au cas par cas, on n a pas à le tracer côté CRM. Bypass garde-fou.
+  const stockEffectif = isFournisseur ? Infinity : stockSelectMontage;
+  const stockLabel = isFournisseur ? "∞ (fournisseur)" : String(stockSelectMontage);
 
   const run = async () => {
     setBusy(true);
@@ -2808,7 +2816,7 @@ export function PlanifierJourneeModal({
               <option value="atelier">🔧 Montés</option>
               <option value="client_redistribue">🟣 Éphémère</option>
             </select>
-            <div className="text-[10px] text-gray-500 mt-0.5">Stock : {stockSelectMontage}</div>
+            <div className="text-[10px] text-gray-500 mt-0.5">Stock : {stockLabel}</div>
           </div>
           <div>
             <label className="text-xs text-gray-600">Max tournées</label>
@@ -2838,7 +2846,7 @@ export function PlanifierJourneeModal({
           </div>
         </div>
 
-        <button onClick={run} disabled={busy || stockSelectMontage <= 0} className="w-full px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 font-semibold">
+        <button onClick={run} disabled={busy || stockEffectif <= 0} className="w-full px-3 py-2 bg-purple-600 text-white rounded-lg hover:bg-purple-700 disabled:opacity-50 font-semibold">
           {busy ? "🤖 Calcul..." : `📅 Planifier la journée (max ${maxTournees} tournées)`}
         </button>
 
