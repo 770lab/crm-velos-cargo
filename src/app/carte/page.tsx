@@ -330,54 +330,55 @@ export default function CartePage() {
 
   return (
     <div className="flex flex-col h-[calc(100vh-5rem)] lg:h-[calc(100vh-4rem)]">
-      {/* Dashboard bandeau */}
-      <div className="bg-white border-b px-4 py-3 flex-shrink-0">
-        <div className="flex flex-wrap gap-3 items-center">
+      {/* Dashboard bandeau — Yoann 2026-05-03 : layout responsive
+          (grid 3x2 mobile, flex-wrap desktop) pour ne plus déborder sur iPhone. */}
+      <div className="bg-white border-b px-2 sm:px-4 py-2 sm:py-3 flex-shrink-0">
+        <div className="grid grid-cols-3 sm:flex sm:flex-wrap gap-1.5 sm:gap-3 sm:items-center">
           <DashCard label="Commandés" value={dashStats.totalVelos} unit="vélos" color="gray" />
           <DashCard label="Livrés" value={dashStats.velosLivres} unit="vélos" color="green" />
           <DashCard label="Planifiés" value={dashStats.velosPlanifies} unit="vélos" color="blue" />
           <DashCard label="Restants" value={dashStats.velosRestants} unit="vélos" color={dashStats.velosRestants > 0 ? "orange" : "green"} />
           <DashCard label="Tournées" value={dashStats.nbTournees} color="purple" />
           <DashCard label="Clients à livrer" value={dashStats.clientsRestants} color="red" />
-          <div className="flex items-center gap-2 ml-auto">
-            {/* Toggle vue (Yoann 2026-05-01) : clients / entrepôts / hybride */}
-            <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden">
-              <button
-                onClick={() => setVue("clients")}
-                className={`px-3 py-1.5 text-xs font-medium ${
-                  vue === "clients" ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
-                }`}
-                title="Vue clients à livrer uniquement"
-              >
-                🏢 Clients
-              </button>
-              <button
-                onClick={() => setVue("entrepots")}
-                className={`px-3 py-1.5 text-xs font-medium border-l border-gray-300 ${
-                  vue === "entrepots" ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
-                }`}
-                title="Vue entrepôts + stocks uniquement"
-              >
-                🏬 Entrepôts
-              </button>
-              <button
-                onClick={() => setVue("hybride")}
-                className={`px-3 py-1.5 text-xs font-medium border-l border-gray-300 ${
-                  vue === "hybride" ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
-                }`}
-                title="Vue hybride : clients + entrepôts en même temps"
-              >
-                🔀 Les deux
-              </button>
-            </div>
-            <div className="w-32 h-2 bg-gray-200 rounded-full overflow-hidden">
-              <div
-                className="h-full bg-green-500 rounded-full transition-all"
-                style={{ width: `${dashStats.pct}%` }}
-              />
-            </div>
-            <span className="text-xs font-medium text-gray-600">{dashStats.pct}%</span>
+        </div>
+        <div className="flex items-center gap-2 mt-2 sm:mt-0 sm:ml-auto sm:inline-flex sm:float-right">
+          {/* Toggle vue (Yoann 2026-05-01) : clients / entrepôts / hybride */}
+          <div className="inline-flex rounded-lg border border-gray-300 overflow-hidden flex-shrink-0">
+            <button
+              onClick={() => setVue("clients")}
+              className={`px-2 sm:px-3 py-1.5 text-[11px] sm:text-xs font-medium ${
+                vue === "clients" ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
+              }`}
+              title="Vue clients à livrer uniquement"
+            >
+              🏢 Clients
+            </button>
+            <button
+              onClick={() => setVue("entrepots")}
+              className={`px-2 sm:px-3 py-1.5 text-[11px] sm:text-xs font-medium border-l border-gray-300 ${
+                vue === "entrepots" ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
+              }`}
+              title="Vue entrepôts + stocks uniquement"
+            >
+              🏬 Entrepôts
+            </button>
+            <button
+              onClick={() => setVue("hybride")}
+              className={`px-2 sm:px-3 py-1.5 text-[11px] sm:text-xs font-medium border-l border-gray-300 ${
+                vue === "hybride" ? "bg-blue-600 text-white" : "bg-white text-gray-700 hover:bg-gray-50"
+              }`}
+              title="Vue hybride : clients + entrepôts en même temps"
+            >
+              🔀 Les deux
+            </button>
           </div>
+          <div className="flex-1 sm:w-32 sm:flex-initial h-2 bg-gray-200 rounded-full overflow-hidden">
+            <div
+              className="h-full bg-green-500 rounded-full transition-all"
+              style={{ width: `${dashStats.pct}%` }}
+            />
+          </div>
+          <span className="text-xs font-medium text-gray-600 flex-shrink-0">{dashStats.pct}%</span>
         </div>
       </div>
 
@@ -718,9 +719,9 @@ function DashCard({ label, value, unit, color }: { label: string; value: number;
     red: "bg-red-50 text-red-700",
   };
   return (
-    <div className={`px-3 py-1.5 rounded-lg ${colors[color] ?? colors.gray}`}>
-      <div className="text-lg font-bold leading-tight">{value.toLocaleString("fr-FR")}</div>
-      <div className="text-[10px] uppercase tracking-wide opacity-70">{label}{unit ? ` (${unit})` : ""}</div>
+    <div className={`px-2 py-1 sm:px-3 sm:py-1.5 rounded-lg min-w-0 ${colors[color] ?? colors.gray}`}>
+      <div className="text-sm sm:text-lg font-bold leading-tight truncate">{value.toLocaleString("fr-FR")}</div>
+      <div className="text-[9px] sm:text-[10px] uppercase tracking-wide opacity-70 truncate">{label}{unit ? ` (${unit})` : ""}</div>
     </div>
   );
 }

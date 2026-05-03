@@ -2626,13 +2626,13 @@ Réponds STRICTEMENT en JSON sans markdown, format :
               })()}
             </div>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
             {tournee.tourneeId && (
               <a
                 href={`/tournee-execute?id=${encodeURIComponent(tournee.tourneeId)}`}
                 target="_blank"
                 rel="noopener noreferrer"
-                className="px-3 py-1 text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 flex items-center gap-1"
+                className="px-2 sm:px-3 py-1 text-[11px] sm:text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 flex items-center gap-1"
                 title="Ouvrir l'écran mobile pour le chef d'équipe"
               >
                 📱 Chef d&apos;équipe
@@ -2640,7 +2640,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             )}
             <button
               onClick={() => setShowRappel(true)}
-              className="px-3 py-1 text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-1"
+              className="px-2 sm:px-3 py-1 text-[11px] sm:text-xs bg-blue-600 text-white rounded-lg hover:bg-blue-700 flex items-center gap-1"
               title="Envoie un rappel par mail à chaque client de la tournée avec sa fenêtre de passage estimée"
             >
               📧 Rappels veille
@@ -2648,7 +2648,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             {perms.canSeeAdminBlocs && (
               <button
                 onClick={() => setShowBrief(true)}
-                className="px-3 py-1 text-xs bg-purple-600 text-white rounded-lg hover:bg-purple-700 flex items-center gap-1"
+                className="px-2 sm:px-3 py-1 text-[11px] sm:text-xs bg-purple-600 text-white rounded-lg hover:bg-purple-700 flex items-center gap-1"
                 title="Génère un brief texte à copier-coller pour les équipes (WhatsApp / mail)"
               >
                 📋 Brief équipe
@@ -2665,7 +2665,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                   console.error("markBonCommandeEnvoye failed", e);
                 }
               }}
-              className={`px-3 py-1 text-xs rounded-lg flex items-center gap-1 ${
+              className={`px-2 sm:px-3 py-1 text-[11px] sm:text-xs rounded-lg flex items-center gap-1 ${
                 tournee.bonCommandeEnvoyeAt
                   ? "bg-emerald-100 text-emerald-800 hover:bg-emerald-200"
                   : "bg-amber-600 text-white hover:bg-amber-700"
@@ -2680,14 +2680,14 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             </button>
             <button
               onClick={() => setShowPrint(true)}
-              className="px-3 py-1 text-xs bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-1"
+              className="px-2 sm:px-3 py-1 text-[11px] sm:text-xs bg-gray-100 text-gray-700 rounded-lg hover:bg-gray-200 flex items-center gap-1"
             >
               <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
               </svg>
               Feuille de route
             </button>
-            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none">×</button>
+            <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl leading-none ml-auto">×</button>
           </div>
         </div>
 
@@ -3100,7 +3100,7 @@ Réponds STRICTEMENT en JSON sans markdown, format :
                 if (done) cls = "bg-green-100 text-green-800 border-green-300";
                 else if (inProgress) cls = "bg-blue-100 text-blue-800 border-blue-300";
                 return (
-                  <span key={s.key} className={`inline-flex items-center gap-1 text-sm px-3 py-1.5 rounded-full border font-medium ${cls}`}>
+                  <span key={s.key} className={`inline-flex items-center gap-1 text-[11px] sm:text-sm px-2 py-1 sm:px-3 sm:py-1.5 rounded-full border font-medium ${cls}`}>
                     <span>{s.emoji}</span>
                     <span>{s.label}</span>
                     <span className="font-mono">{s.value}/{t.total}</span>
