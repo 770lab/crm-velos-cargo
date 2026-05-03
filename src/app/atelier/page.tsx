@@ -405,25 +405,32 @@ function AtelierPage() {
               Reste à affilier : <strong>{selectedClient.reste} vélo{selectedClient.reste > 1 ? "s" : ""}</strong>.
               La scannette tape le FNUCI dans le champ ci-dessous puis Enter automatique.
             </div>
-            <form onSubmit={onScannetteSubmit} className="mb-3">
+            <div className="mb-3 flex gap-2">
               <input
                 ref={scannetteInputRef}
                 type="text"
                 value={scannetteCode}
                 onChange={(e) => setScannetteCode(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    onScannetteSubmit({ preventDefault: () => {} } as React.FormEvent<HTMLFormElement>);
+                  }
+                }}
                 disabled={scanning}
                 autoFocus
                 placeholder="Scanner ou taper le FNUCI (BC...) puis Enter"
-                className="w-full px-3 py-3 border-2 border-blue-400 rounded-lg text-sm font-mono uppercase focus:border-blue-600 focus:outline-none"
+                className="flex-1 px-3 py-3 border-2 border-blue-400 rounded-lg text-sm font-mono uppercase focus:border-blue-600 focus:outline-none"
               />
               <button
-                type="submit"
+                type="button"
+                onClick={() => onScannetteSubmit({ preventDefault: () => {} } as React.FormEvent<HTMLFormElement>)}
                 disabled={scanning || !scannetteCode.trim()}
-                className="hidden"
+                className="px-4 py-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50"
               >
-                Submit
+                Valider
               </button>
-            </form>
+            </div>
             <div className="text-[10px] text-gray-500 italic mb-2 text-center">
               — ou bien si la scannette ne lit pas le sticker —
             </div>

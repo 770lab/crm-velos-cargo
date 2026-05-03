@@ -1591,12 +1591,14 @@ function SessionsAtelierPanel({
   useEffect(() => {
     let alive = true;
     (async () => {
-      const { collection, query, where, onSnapshot, orderBy } = await import("firebase/firestore");
+      // Yoann 2026-05-03 : retiré orderBy("date", "desc") qui exigeait un
+      // index composite Firestore (where + orderBy = index requis).
+      // Tri fait côté client après chargement (peu de sessions par entrepôt).
+      const { collection, query, where, onSnapshot } = await import("firebase/firestore");
       const { db } = await import("@/lib/firebase");
       const q = query(
         collection(db, "sessionsMontageAtelier"),
         where("entrepotId", "==", entrepotId),
-        orderBy("date", "desc"),
       );
       const unsub = onSnapshot(q, (snap) => {
         if (!alive) return;
@@ -1616,6 +1618,8 @@ function SessionsAtelierPanel({
             notes: typeof data.notes === "string" ? data.notes : undefined,
           });
         }
+        // Tri client-side par date desc (était fait via orderBy + index)
+        rows.sort((a, b) => (b.date || "").localeCompare(a.date || ""));
         setSessions(rows);
       });
       return () => unsub();

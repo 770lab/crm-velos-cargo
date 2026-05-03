@@ -252,6 +252,13 @@ export default function ClientsPage() {
           >
             {autoParcellesBusy ? "Auto-parcelles…" : "Auto-parcelles"}
           </button>
+          <a
+            href="/parc-fnuci"
+            className="px-4 py-2 bg-gray-700 text-white rounded-lg hover:bg-gray-800 text-sm font-medium"
+            title="Base totale de tous les FNUCI scannés sur le parc (préparés / chargés / livrés / annulés)"
+          >
+            🔢 Parc FNUCI
+          </a>
           <button
             onClick={() => setShowAnomalies(true)}
             className="px-4 py-2 bg-gradient-to-r from-rose-600 to-pink-600 text-white rounded-lg hover:opacity-90 text-sm font-medium"
