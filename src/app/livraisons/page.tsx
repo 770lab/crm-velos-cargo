@@ -1645,7 +1645,9 @@ function computeArrivalTimes(
     // on obtient montage=0 et toutes les arrivées des clients consécutifs
     // s'écrasent sur la même heure. Bug observé Yoann 29-04 02h38.
     const nbVelosClient = liv._count?.velos ?? liv.nbVelos ?? 0;
-    const montageMin = (nbVelosClient * MINUTES_PAR_VELO) / eff;
+    // Yoann 2026-05-03 : mode atelier = 2 min/vélo (juste décharger)
+    const minVeloLiv = minutesParVelo(liv.modeMontage);
+    const montageMin = (nbVelosClient * minVeloLiv) / eff;
     out.push({
       // floor au :30 inférieur pour la borne min (arrondi prudent : on ne
       // promet pas plus tôt que ce qui est réaliste)
@@ -1870,7 +1872,8 @@ function capaciteRestante(mode: string | null, totalVelos: number): number {
 }
 
 function estimateTourneeMinutes(tournee: Tournee, monteurs: number = MONTEURS_PAR_EQUIPE): number {
-  const totalMontage = tournee.totalVelos * MINUTES_PAR_VELO;
+  const minVelo = minutesParVelo(tournee.livraisons[0]?.modeMontage);
+  const totalMontage = tournee.totalVelos * minVelo;
   const eff = Math.max(1, monteurs);
   if (tournee.mode === "retrait") {
     return totalMontage / eff;
@@ -1927,13 +1930,17 @@ function estimateDureeChauffeur(tournee: Tournee, monteurs: number): number {
     const km = haversineKm(prev.lat, prev.lng, ENTREPOT.lat, ENTREPOT.lng) * 1.3;
     totalTrajet += km / 0.5;
   }
+  // Yoann 2026-05-03 : en mode atelier (vélos pré-assemblés), pas de
+  // montage chez le client → on prend MINUTES_PAR_VELO_ATELIER (~2 min)
+  // pour TOUS les clients y compris intermédiaires (juste décharger).
+  const minVelo = minutesParVelo(livs[0]?.modeMontage);
   let temps = 0;
   for (let i = 0; i < livs.length; i++) {
     const nbV = livs[i]._count?.velos ?? livs[i].nbVelos ?? 0;
     if (i < livs.length - 1) {
       // Clients intermédiaires : le chauffeur attend que les monteurs finissent
       // (toute l'équipe repart ensemble vers le client suivant dans le camion).
-      temps += (nbV * MINUTES_PAR_VELO) / eff;
+      temps += (nbV * minVelo) / eff;
     } else {
       // Dernier client : juste le déchargement (≈ 1 min/vélo). L'équipe
       // reste sur place pour le montage, le chauffeur file au dépôt.
@@ -1970,6 +1977,14 @@ function StatutPill({ statut }: { statut: Tournee["statutGlobal"] }) {
 }
 
 const MINUTES_PAR_VELO = 12;
+// Yoann 2026-05-03 : en mode atelier (vélos pré-assemblés en entrepôt), le
+// temps sur place se réduit à décharger + signer BL ; on prend 2 min/vélo
+// au lieu de 12. Sans ça, le système croyait qu'une livraison de 22 vélos
+// montés prenait 3h alors qu'il faut ~45 min en réalité.
+const MINUTES_PAR_VELO_ATELIER = 2;
+function minutesParVelo(mode: string | null | undefined): number {
+  return mode === "atelier" ? MINUTES_PAR_VELO_ATELIER : MINUTES_PAR_VELO;
+}
 const HEURES_JOURNEE = 8;
 const SEUIL_SPLIT_MIN = 90;
 const MAX_TEMPS_SUR_PLACE_MIN = 120; // 2h max chez un client, au-delà alerte effectif d'urgence
@@ -1986,9 +2001,10 @@ interface DeployStep {
 }
 
 function computeDeployPlan(
-  livraisons: { _count: { velos: number } }[],
+  livraisons: { _count: { velos: number }; modeMontage?: string | null }[],
   segments: { trajetMin: number }[],
-  monteurs: number
+  monteurs: number,
+  modeMontageOverride?: string | null
 ): { steps: DeployStep[]; totalElapsed: number } {
   const steps: DeployStep[] = [];
   let camionTime = 0;
@@ -2006,7 +2022,12 @@ function computeDeployPlan(
       }
     }
 
-    const montageTotal = livraisons[i]._count.velos * MINUTES_PAR_VELO;
+    // Yoann 2026-05-03 : minutes par vélo varie selon modeMontage de la
+    // livraison (atelier = 2 min/vélo car juste déchargement, client = 12).
+    // Override possible au niveau tournée (modeMontageOverride) qui prime.
+    const liv = livraisons[i] as { _count: { velos: number }; modeMontage?: string | null };
+    const minVelo = minutesParVelo(modeMontageOverride ?? liv.modeMontage);
+    const montageTotal = livraisons[i]._count.velos * minVelo;
     const effectifIci = Math.max(1, monteursDisponibles);
     const tempsSurPlace = montageTotal / effectifIci;
 
@@ -4244,7 +4265,7 @@ function FeuilleDeRoute({
   onBack: () => void;
 }) {
   const totalTrajet = segments.reduce((s, seg) => s + seg.trajetMin, 0) + retourSegment.trajetMin;
-  const totalMontage = tournee.totalVelos * MINUTES_PAR_VELO;
+  const totalMontage = tournee.totalVelos * minutesParVelo(tournee.livraisons[0]?.modeMontage);
   const totalDist = segments.reduce((s, seg) => s + seg.distKm, 0) + retourSegment.distKm;
   const fmtDuree = (min: number) => {
     const h = Math.floor(min / 60);
@@ -5208,7 +5229,7 @@ function RappelVeilleModal({
     return tournee.livraisons.map((l, i) => {
       cumul += segments[i]?.trajetMin || 0;
       const arrivee = cumul;
-      const montageStop = ((l.nbVelos || 0) * MINUTES_PAR_VELO) / Math.max(1, monteurs);
+      const montageStop = ((l.nbVelos || 0) * minutesParVelo(l.modeMontage)) / Math.max(1, monteurs);
       cumul += montageStop;
       return {
         livraison: l,
