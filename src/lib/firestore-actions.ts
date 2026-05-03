@@ -3857,11 +3857,21 @@ export async function runFirestoreAction(
           distance: 0,
         }];
 
+        // Yoann 2026-05-03 : ATOMICITÉ CLIENT.
+        // Avant : Math.min(c.velosRestants, resteCamion) → un client était
+        // splittée en 2 stops sur 2 tournées (Bottega 30v → 10v ici + 20v
+        // ailleurs). Sur le terrain : passage en double, paperasse FNUCI
+        // dédoublée, pénible.
+        // Maintenant : on n'inclut un nearby que s'il rentre EN ENTIER dans
+        // le reste camion. Sinon on saute (il sera couvert par une autre
+        // suggestion / camion). On continue à parcourir nearby pour caser
+        // les plus petits qui rentrent encore.
         let resteCamion = capacite - velosCeCamion;
         for (let j = 0; j < nearby.length && resteCamion > 0; j++) {
           const c = nearby[j];
           if (c.velosRestants <= 0) continue;
-          const nb = Math.min(c.velosRestants, resteCamion);
+          if (c.velosRestants > resteCamion) continue; // skip — pas atomique
+          const nb = c.velosRestants;
           stops.push({
             id: c.id,
             entreprise: c.entreprise,
@@ -4074,12 +4084,16 @@ export async function runFirestoreAction(
       type Stop = Candidate & { nbVelos: number };
 
       // Phase 1 : sélection capacité (tri par distance à l entrepôt)
+      // Yoann 2026-05-03 : ATOMICITÉ CLIENT — un client doit rentrer EN
+      // ENTIER dans le camion, pas de split. Si reste < total client, on
+      // saute ce client et on essaie le suivant qui rentre encore.
       const selected: Stop[] = [];
       let resteCamion = capaciteEffective;
       for (const c of candidats) {
         if (resteCamion <= 0) break;
-        const nb = Math.min(c.velosRestants, resteCamion);
-        if (nb <= 0) continue;
+        if (c.velosRestants <= 0) continue;
+        if (c.velosRestants > resteCamion) continue; // skip — pas atomique
+        const nb = c.velosRestants;
         selected.push({ ...c, nbVelos: nb });
         resteCamion -= nb;
       }
@@ -4344,13 +4358,17 @@ export async function runFirestoreAction(
         if (dispoCands.length === 0) break;
 
         // Sélection capacité = min(cap camion, stock restant)
+        // Yoann 2026-05-03 : ATOMICITÉ CLIENT — pas de split. Si reste
+        // camion < total client, on saute ce client (sera couvert dans
+        // la tournée suivante).
         const capEff = Math.min(capCamion, stockRestant);
         const sel: CandStorm[] = [];
         let resteCam = capEff;
         for (const c of dispoCands) {
           if (resteCam <= 0) break;
-          const nb = Math.min(c.velosRestants, resteCam);
-          if (nb <= 0) continue;
+          if (c.velosRestants <= 0) continue;
+          if (c.velosRestants > resteCam) continue; // skip — pas atomique
+          const nb = c.velosRestants;
           sel.push({ ...c, velosRestants: nb });
           resteCam -= nb;
         }
