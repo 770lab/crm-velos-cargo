@@ -148,6 +148,77 @@ async function createStockMouvement(params: {
   }
 }
 
+/** Yoann 2026-05-04 : aligne la collection velos avec nbVelosCommandes du
+ *  client. Crée des velos cibles vierges si on monte, soft-cancel les
+ *  velos vierges (sans fnuci ni date) en surplus si on descend. Garde-fou
+ *  pour que le compteur Prép. reflète toujours le nb réel à préparer.
+ *  Appelé en complément de reconcileClientLivraisons depuis updateClient
+ *  et setClientVelosTarget. */
+async function reconcileClientVelosCibles(clientId: string): Promise<{
+  created: number;
+  cancelled: number;
+}> {
+  let created = 0;
+  let cancelled = 0;
+  try {
+    const cSnap = await getDoc(doc(db, "clients", clientId));
+    if (!cSnap.exists()) return { created, cancelled };
+    const cd = cSnap.data() as { nbVelosCommandes?: number; apporteur?: string; apporteurLower?: string };
+    const target = Math.max(0, Number(cd.nbVelosCommandes || 0));
+    const apporteurLower = cd.apporteurLower
+      || (cd.apporteur ? String(cd.apporteur).trim().toLowerCase() : null)
+      || null;
+
+    const vSnap = await getDocs(query(collection(db, "velos"), where("clientId", "==", clientId)));
+    type V = { ref: typeof vSnap.docs[0]["ref"]; locked: boolean; isAnnule: boolean };
+    const all: V[] = vSnap.docs.map((d) => {
+      const o = d.data() as {
+        fnuci?: string | null;
+        datePreparation?: unknown;
+        dateChargement?: unknown;
+        dateLivraisonScan?: unknown;
+        dateMontage?: unknown;
+        annule?: boolean;
+      };
+      const locked = !!(o.fnuci || o.datePreparation || o.dateChargement || o.dateLivraisonScan || o.dateMontage);
+      return { ref: d.ref, locked, isAnnule: o.annule === true };
+    });
+    const actifs = all.filter((v) => !v.isAnnule);
+    if (actifs.length < target) {
+      const toCreate = target - actifs.length;
+      const batch = writeBatch(db);
+      for (let i = 0; i < toCreate; i++) {
+        const veloRef = doc(collection(db, "velos"));
+        batch.set(veloRef, {
+          clientId,
+          apporteurLower,
+          fnuci: null,
+          datePreparation: null,
+          dateChargement: null,
+          dateLivraisonScan: null,
+          dateMontage: null,
+          createdAt: ts(),
+          updatedAt: ts(),
+        });
+      }
+      await batch.commit();
+      created = toCreate;
+    } else if (actifs.length > target) {
+      // Soft-cancel des velos VIERGES (sans fnuci ni date) en surplus.
+      // Plancher de sécurité : on ne touche jamais aux velos engagés.
+      const toCancel = actifs.length - target;
+      const blanks = actifs.filter((v) => !v.locked).slice(0, toCancel);
+      const batch = writeBatch(db);
+      for (const v of blanks) batch.update(v.ref, { annule: true, updatedAt: ts() });
+      await batch.commit();
+      cancelled = blanks.length;
+    }
+  } catch (e) {
+    console.error("[reconcileClientVelosCibles] KO", clientId, e);
+  }
+  return { created, cancelled };
+}
+
 /** Yoann 2026-05-03 : reconcile force-align des livraisons d'un client
  *  avec son nbVelosCommandes. Appele apres toute modification du total
  *  commande (updateClient avec nbVelosCommandes, setClientVelosTarget).
@@ -496,13 +567,28 @@ export async function runFirestoreAction(
         }
       }
       // Yoann 2026-05-03 : avant updateDoc on capture si nbVelosCommandes
-      // change pour déclencher la réconciliation des livraisons.
+      // change pour déclencher la réconciliation des livraisons + velos cibles.
       const willChangeNbVelos = "nbVelosCommandes" in data;
       await updateDoc(doc(db, "clients", id), updates);
-      const recon = willChangeNbVelos
-        ? await reconcileClientLivraisons(id)
-        : { livAdjustments: [], livAdjustWarning: null };
-      return { ok: true, livAdjustments: recon.livAdjustments, livAdjustWarning: recon.livAdjustWarning };
+      let recon: {
+        livAdjustments: Array<{ livraisonId: string; oldNb: number; newNb: number }>;
+        livAdjustWarning: string | null;
+      } = { livAdjustments: [], livAdjustWarning: null };
+      let velosCibles: { created: number; cancelled: number } = { created: 0, cancelled: 0 };
+      if (willChangeNbVelos) {
+        recon = await reconcileClientLivraisons(id);
+        // Yoann 2026-05-04 : aligne aussi la collection velos (cibles).
+        // Sans ça, modifier nbVelosCommandes via la fiche client laisse les
+        // vélos cibles désynchronisés → compteur Prép. X/Y faux (cas OPEN
+        // SOURCING : 7v sur fiche, 6/6 sur prep).
+        velosCibles = await reconcileClientVelosCibles(id);
+      }
+      return {
+        ok: true,
+        livAdjustments: recon.livAdjustments,
+        livAdjustWarning: recon.livAdjustWarning,
+        velosCibles,
+      };
     }
 
     case "bulkUpdateClients": {
