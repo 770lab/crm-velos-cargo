@@ -330,10 +330,35 @@ function EtiquettesPage() {
                 if (i > 0) pdf.addPage([LABEL_WIDTH_MM, LABEL_HEIGHT_MM], "portrait");
                 pdf.addImage(imgData, "JPEG", 0, 0, LABEL_WIDTH_MM, LABEL_HEIGHT_MM);
               }
-              // .save() jsPDF déclenche un download natif avec MIME
-              // application/pdf et extension .pdf — iOS Safari l'identifie
-              // correctement et l'ouvre dans son viewer PDF natif.
-              pdf.save(`etiquettes-${tourneeId}.pdf`);
+              // Yoann 2026-05-04 : sur Android, pdf.save() ne fait que
+              // télécharger ; impossible d'envoyer direct à Flash Label
+              // Pro / autre app d'imprimante thermique. On utilise Web Share
+              // API pour ouvrir la feuille de partage native qui liste TOUTES
+              // les apps qui acceptent un PDF (Flash Label Pro, AirPrint,
+              // Bluetooth, etc.). Si l'API n'est pas dispo (desktop, vieux
+              // navigateurs), fallback sur download.
+              const filename = `etiquettes-${tourneeId}.pdf`;
+              const blob = pdf.output("blob");
+              const file = new File([blob], filename, { type: "application/pdf" });
+              const nav = navigator as Navigator & {
+                canShare?: (data: { files?: File[] }) => boolean;
+                share?: (data: { files?: File[]; title?: string; text?: string }) => Promise<void>;
+              };
+              if (nav.canShare && nav.share && nav.canShare({ files: [file] })) {
+                try {
+                  await nav.share({
+                    files: [file],
+                    title: "Étiquettes",
+                    text: filename,
+                  });
+                  return;
+                } catch (shareErr) {
+                  // Utilisateur a annulé OU app cible refuse → fallback download
+                  if (shareErr instanceof Error && shareErr.name === "AbortError") return;
+                  console.warn("[etiquettes] share failed, fallback download", shareErr);
+                }
+              }
+              pdf.save(filename);
             } catch (e) {
               alert("Erreur génération PDF : " + (e instanceof Error ? e.message : String(e)));
             }
