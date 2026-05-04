@@ -17,15 +17,17 @@ import type { EquipeRole } from "@/lib/data-context";
 const ALLOWED: Record<EquipeRole, string[]> = {
   superadmin: ["/"],
   admin: ["/"],
-  preparateur: ["/livraisons", "/preparation", "/tournee-execute", "/etiquettes", "/bl"],
+  // Yoann 2026-05-04 : ajout /atelier pour Naomi qui prépare + étiquette
+  // + affilie les FNUCI sur les sessions de pré-montage atelier.
+  preparateur: ["/livraisons", "/preparation", "/tournee-execute", "/etiquettes", "/bl", "/atelier"],
   // Yoann 2026-05-03 : chef d équipe = lecture seule planning + son équipe
   // + sa pointeuse (paiements de ses monteurs). Plus de /clients (pas son
   // métier), ajout de /finances pour la pointeuse.
-  chef: ["/livraisons", "/equipe", "/finances", "/preparation", "/chargement", "/livraison", "/montage", "/tournee-execute", "/etiquettes", "/bl"],
+  chef: ["/livraisons", "/equipe", "/finances", "/preparation", "/chargement", "/livraison", "/montage", "/tournee-execute", "/etiquettes", "/bl", "/atelier"],
   chauffeur: ["/livraisons", "/chargement", "/livraison", "/tournee-execute", "/etiquettes", "/bl"],
   // /finances est autorisé pour les monteurs : page elle-même filtre par
   // estChefMonteur (les monteurs simples voient le 403 amber).
-  monteur: ["/livraisons", "/montage", "/tournee-execute", "/finances", "/etiquettes", "/bl"],
+  monteur: ["/livraisons", "/montage", "/tournee-execute", "/finances", "/etiquettes", "/bl", "/atelier"],
   apporteur: ["/", "/clients", "/livraisons"],
 };
 
@@ -46,7 +48,7 @@ function isAllowed(role: EquipeRole, path: string, chefDeMonteurs?: boolean): bo
   // bord / Clients / Carte / Entrepôts / Finances. Chef monteur
   // (chefDeMonteurs === true) garde sa propre liste élargie (cf. NAV_BY_ROLE).
   if (role === "chef" && chefDeMonteurs !== true) {
-    const allowed = ["/livraisons", "/preparation", "/chargement", "/livraison", "/montage", "/tournee-execute", "/etiquettes", "/bl"];
+    const allowed = ["/livraisons", "/preparation", "/chargement", "/livraison", "/montage", "/tournee-execute", "/etiquettes", "/bl", "/atelier"];
     return allowed.some((p) => path === p || path.startsWith(p + "/") || path.startsWith(p + "?"));
   }
   const list = ALLOWED[role];
