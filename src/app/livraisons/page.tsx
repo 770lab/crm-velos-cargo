@@ -3150,6 +3150,14 @@ Réponds STRICTEMENT en JSON sans markdown, format :
             >
               🖨️ Imprimer tous
             </a>
+            <SendBlFranckTourneeBtn
+              tourneeId={tournee.tourneeId}
+              clients={progression.clients.map((c) => ({
+                clientId: c.clientId,
+                entreprise: c.entreprise || "?",
+              }))}
+              livraisons={tournee.livraisons}
+            />
           </div>
         )}
 
@@ -6846,6 +6854,106 @@ function SendBlFranckBtn({
       title="Envoyer le BL à Franck@axdis.fr pour impression (réservé Naomi/admin — workflow compta)"
     >
       {busy ? "⏳ Envoi…" : "📤 BL à Franck"}
+    </button>
+  );
+}
+
+// Yoann 2026-05-04 : bouton "Envoyer tous les BL de cette tournée à Franck".
+// Placé dans la modal tournée à côté de "Imprimer tous". Itère sur les clients
+// de la tournée et envoie un BL par client via sendBlToFranck. Persiste
+// blFranckEnvoyeAt sur chaque livraison pour éviter les doublons.
+function SendBlFranckTourneeBtn({
+  tourneeId,
+  clients,
+  livraisons,
+}: {
+  tourneeId: string;
+  clients: Array<{ clientId: string; entreprise: string }>;
+  livraisons: LivraisonRow[];
+}) {
+  const [busy, setBusy] = useState(false);
+  // Filtre : exclut les clients dont la livraison a déjà blFranckEnvoyeAt.
+  const restantsAEnvoyer = useMemo(() => {
+    return clients.filter((c) => {
+      const liv = livraisons.find((l) => l.clientId === c.clientId);
+      const sent = (liv as { blFranckEnvoyeAt?: string | null } | undefined)?.blFranckEnvoyeAt;
+      return !sent;
+    });
+  }, [clients, livraisons]);
+
+  const sendAll = async () => {
+    if (restantsAEnvoyer.length === 0) {
+      alert("Tous les BL de cette tournée ont déjà été envoyés.");
+      return;
+    }
+    const lines = restantsAEnvoyer.map((c) => `• ${c.entreprise}`).join("\n");
+    if (!confirm(`Envoyer ${restantsAEnvoyer.length} BL à Franck@axdis.fr ?\n\n${lines}`)) return;
+    setBusy(true);
+    let okCount = 0;
+    const failed: string[] = [];
+    try {
+      const { httpsCallable, getFunctions } = await import("firebase/functions");
+      const { firebaseApp, db } = await import("@/lib/firebase");
+      const { collection, query, where, getDocs, updateDoc, serverTimestamp } = await import("firebase/firestore");
+      const fn = httpsCallable<
+        { tourneeId: string; clientId: string },
+        { ok: true; numeroBL: string; velosCount: number }
+      >(getFunctions(firebaseApp, "europe-west1"), "sendBlToFranck");
+      for (const c of restantsAEnvoyer) {
+        try {
+          await fn({ tourneeId, clientId: c.clientId });
+          try {
+            const livSnap = await getDocs(query(
+              collection(db, "livraisons"),
+              where("tourneeId", "==", tourneeId),
+              where("clientId", "==", c.clientId),
+            ));
+            for (const ld of livSnap.docs) {
+              await updateDoc(ld.ref, {
+                blFranckEnvoyeAt: new Date().toISOString(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+          } catch (persistErr) {
+            console.error("[BL Franck tournée] persist failed", c, persistErr);
+          }
+          okCount++;
+        } catch (err) {
+          failed.push(`${c.entreprise} (${err instanceof Error ? err.message : "?"})`);
+        }
+      }
+      alert(
+        `✅ ${okCount}/${restantsAEnvoyer.length} envoyés${
+          failed.length > 0 ? `\n❌ Échecs :\n${failed.join("\n")}` : ""
+        }`
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const allSent = restantsAEnvoyer.length === 0;
+  return (
+    <button
+      onClick={(e) => {
+        e.stopPropagation();
+        void sendAll();
+      }}
+      disabled={busy || allSent}
+      className={`text-xs px-3 py-1.5 rounded font-medium whitespace-nowrap ${
+        allSent
+          ? "bg-emerald-100 text-emerald-700 cursor-default"
+          : "bg-purple-600 text-white hover:bg-purple-700 disabled:opacity-50"
+      }`}
+      title={allSent
+        ? "Tous les BL de cette tournée déjà envoyés à Franck"
+        : `Envoyer les ${restantsAEnvoyer.length} BL non encore envoyés à Franck@axdis.fr`}
+    >
+      {busy
+        ? "⏳ Envoi…"
+        : allSent
+          ? "✅ Tous envoyés"
+          : `📤 Envoyer ${restantsAEnvoyer.length} BL à Franck`}
     </button>
   );
 }
