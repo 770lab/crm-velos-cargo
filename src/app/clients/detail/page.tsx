@@ -290,11 +290,15 @@ function ClientDetailPage() {
             {client.email && <span>{client.email}</span>}
             {client.telephone && <span>{client.telephone}</span>}
           </div>
-          {(client.adresse || client.ville) && (
-            <div className="text-sm text-gray-400 mt-1">
-              {[client.adresse, client.codePostal, client.ville, client.departement ? `(${client.departement})` : null].filter(Boolean).join(", ")}
-            </div>
-          )}
+          <AdresseEdit
+            clientId={id}
+            initialAdresse={client.adresse || ""}
+            initialCodePostal={client.codePostal || ""}
+            initialVille={client.ville || ""}
+            initialDepartement={client.departement || ""}
+            onSaved={load}
+          />
+
           {(client.apporteur || client.operationNumero) && (
             <div className="text-sm text-gray-400 mt-1">
               {client.apporteur && <span>Apporteur: {client.apporteur}</span>}
@@ -1536,6 +1540,146 @@ function ApporteurNoteSection({
       ) : (
         <div className="text-sm text-amber-900 whitespace-pre-wrap">{currentNote}</div>
       )}
+    </div>
+  );
+}
+
+// Yoann 2026-05-04 : édition inline de l'adresse client. Affichage simple
+// par défaut → clic ✏️ → formulaire 4 champs (adresse, CP, ville,
+// département). Sauvegarde en 1 seul updateClient → backend re-géocode
+// auto les coordonnées (latitude/longitude) si adresse/CP/ville changent.
+function AdresseEdit({
+  clientId,
+  initialAdresse,
+  initialCodePostal,
+  initialVille,
+  initialDepartement,
+  onSaved,
+}: {
+  clientId: string;
+  initialAdresse: string;
+  initialCodePostal: string;
+  initialVille: string;
+  initialDepartement: string;
+  onSaved: () => void;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [adresse, setAdresse] = useState(initialAdresse);
+  const [codePostal, setCodePostal] = useState(initialCodePostal);
+  const [ville, setVille] = useState(initialVille);
+  const [departement, setDepartement] = useState(initialDepartement);
+  const [saving, setSaving] = useState(false);
+
+  const hasContent = !!(initialAdresse || initialVille);
+  const display = [initialAdresse, initialCodePostal, initialVille, initialDepartement ? `(${initialDepartement})` : null]
+    .filter(Boolean)
+    .join(", ");
+
+  const cancel = () => {
+    setAdresse(initialAdresse);
+    setCodePostal(initialCodePostal);
+    setVille(initialVille);
+    setDepartement(initialDepartement);
+    setEditing(false);
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      await gasPost("updateClient", {
+        id: clientId,
+        data: {
+          adresse: adresse.trim(),
+          codePostal: codePostal.trim(),
+          ville: ville.trim(),
+          departement: departement.trim(),
+        },
+      });
+      onSaved();
+      setEditing(false);
+    } catch (e) {
+      alert("Erreur sauvegarde adresse : " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (!editing) {
+    return (
+      <div className="text-sm text-gray-400 mt-1 flex items-center gap-2">
+        <span>{hasContent ? display : "Adresse non renseignée"}</span>
+        <button
+          onClick={() => setEditing(true)}
+          className="text-[11px] px-1.5 py-0.5 rounded border border-gray-300 text-gray-600 hover:bg-gray-50 hover:text-gray-900"
+          title="Modifier l'adresse client (re-géocodage auto)"
+        >
+          ✏️ Modifier
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mt-2 p-3 border border-blue-200 bg-blue-50 rounded-lg space-y-2">
+      <div className="text-xs font-semibold text-blue-900">Modifier l&apos;adresse · re-géocodage auto au save</div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <div className="sm:col-span-2">
+          <label className="text-[11px] text-gray-600">Adresse</label>
+          <input
+            type="text"
+            value={adresse}
+            onChange={(e) => setAdresse(e.target.value)}
+            placeholder="ex: 10 Rue DE VILLIERS"
+            className="w-full px-2 py-1.5 border rounded text-sm"
+          />
+        </div>
+        <div>
+          <label className="text-[11px] text-gray-600">Code postal</label>
+          <input
+            type="text"
+            value={codePostal}
+            onChange={(e) => setCodePostal(e.target.value)}
+            placeholder="92300"
+            className="w-full px-2 py-1.5 border rounded text-sm"
+          />
+        </div>
+        <div>
+          <label className="text-[11px] text-gray-600">Ville</label>
+          <input
+            type="text"
+            value={ville}
+            onChange={(e) => setVille(e.target.value)}
+            placeholder="LEVALLOIS PERRET"
+            className="w-full px-2 py-1.5 border rounded text-sm"
+          />
+        </div>
+        <div>
+          <label className="text-[11px] text-gray-600">Département</label>
+          <input
+            type="text"
+            value={departement}
+            onChange={(e) => setDepartement(e.target.value)}
+            placeholder="92"
+            className="w-full px-2 py-1.5 border rounded text-sm"
+          />
+        </div>
+      </div>
+      <div className="flex justify-end gap-2 pt-1">
+        <button
+          onClick={cancel}
+          disabled={saving}
+          className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-900"
+        >
+          Annuler
+        </button>
+        <button
+          onClick={save}
+          disabled={saving}
+          className="px-3 py-1.5 bg-blue-600 text-white rounded text-xs font-medium hover:bg-blue-700 disabled:opacity-50"
+        >
+          {saving ? "Sauvegarde…" : "Sauvegarder"}
+        </button>
+      </div>
     </div>
   );
 }
