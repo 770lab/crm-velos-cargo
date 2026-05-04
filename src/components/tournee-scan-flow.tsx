@@ -961,6 +961,51 @@ function Inner({ mode }: { mode: ScanMode }) {
               );
             })()}
 
+            {/* Yoann 2026-05-04 : bouton RUPTURE — quand on est en pleine
+                rupture stock entrepôt et qu'on doit imprimer les étiquettes
+                des vélos déjà scannés sans attendre la totalité. Visible
+                seulement si prep partielle (1+ scannés mais pas tous). */}
+            {mode === "preparation" && !allDone && counter > 0 && (() => {
+              const cid = focusClientId ? `&clientId=${encodeURIComponent(focusClientId)}` : "";
+              const cibleNom = focusClient?.entreprise || "la tournée";
+              return (
+                <div className="bg-amber-50 border-2 border-amber-400 rounded-xl p-4 mb-3 space-y-2">
+                  <div className="text-xs font-semibold text-amber-900 flex items-start gap-1.5">
+                    <span>🚨</span>
+                    <span>
+                      Mode <strong>rupture de stock</strong> : {counter}/{total} préparés pour {cibleNom}.
+                      Tu peux imprimer les étiquettes/BL des vélos déjà scannés.
+                      Les autres seront à compléter quand le stock arrive.
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <a
+                      href={`${BASE_PATH}/etiquettes?tourneeId=${encodeURIComponent(tourneeId)}${cid}&partial=1`}
+                      onClick={(e) => {
+                        if (!confirm(`Rupture de stock : imprimer les ${counter} étiquette${counter > 1 ? "s" : ""} déjà scannée${counter > 1 ? "s" : ""} (sur ${total} attendues) ?\n\nTu pourras réimprimer les manquantes plus tard.`)) {
+                          e.preventDefault();
+                        }
+                      }}
+                      className="block text-center bg-amber-600 text-white rounded-lg py-2.5 text-xs font-semibold hover:bg-amber-700"
+                    >
+                      🏷️ Imprimer {counter} étiq. (rupture)
+                    </a>
+                    <a
+                      href={`${BASE_PATH}/bl?tourneeId=${encodeURIComponent(tourneeId)}${cid}&partial=1`}
+                      onClick={(e) => {
+                        if (!confirm(`Imprimer le BL avec les ${counter} vélos déjà scannés (sur ${total} attendus) ?`)) {
+                          e.preventDefault();
+                        }
+                      }}
+                      className="block text-center bg-white border border-amber-400 text-amber-800 rounded-lg py-2.5 text-xs font-semibold hover:bg-amber-100"
+                    >
+                      📄 BL partiel
+                    </a>
+                  </div>
+                </div>
+              );
+            })()}
+
             {/* Livraison terminée pour ce client → photo du BL signé +
                 bouton "Marquer comme livré". Les 2 blocs s'affichent dès que
                 tous les vélos du client ont été marqués livrés. */}
