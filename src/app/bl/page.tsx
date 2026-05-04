@@ -18,7 +18,7 @@ type Client = {
   velos: Velo[];
 };
 type Progression =
-  | { tourneeId: string; datePrevue: string | null; clients: Client[] }
+  | { tourneeId: string; tourneeNumero?: number | null; datePrevue: string | null; clients: Client[] }
   | { error: string };
 
 const LOGO_PATH = `${BASE_PATH}/logo-av.png`;
@@ -63,6 +63,11 @@ function BlPage() {
     : [];
   const dateLivraison = safeData?.datePrevue ? new Date(safeData.datePrevue) : new Date();
   const dateStr = dateLivraison.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
+  // Yoann 2026-05-04 : afficher "Tournée 38" (numéro stable) au lieu du
+  // tourneeId aléatoire. Fallback sur tourneeId si numéro pas dispo.
+  const tourneeLabel = safeData?.tourneeNumero != null
+    ? `Tournée ${safeData.tourneeNumero}`
+    : `Tournée ${tourneeId}`;
 
   // Le numéro BL est attribué côté serveur via getBlForTournee (séquentiel par
   // année, format "BL-2026-00001"). Persistant en colonne numeroBL : une fois
@@ -237,7 +242,7 @@ function BlPage() {
             )}
           </div>
           <div className="text-gray-500 text-xs mt-0.5">
-            Tournée {tourneeId} · {clients.length} client{clients.length > 1 ? "s" : ""}
+            {tourneeLabel} · {clients.length} client{clients.length > 1 ? "s" : ""}
             {focusClientId ? " (focus)" : ""}
           </div>
         </div>
@@ -340,7 +345,7 @@ function BlPage() {
                     <div className="dv-head-left">
                       <div className="doc-title">Bon de livraison {ref} du {dateStr}</div>
                       <div className="doc-meta">
-                        Tournée : <strong>{tourneeId}</strong><br />
+                        Tournée : <strong>{safeData?.tourneeNumero != null ? safeData.tourneeNumero : tourneeId}</strong><br />
                         Référence client : <strong>{c.clientId}</strong><br />
                         Date de livraison : <strong>{dateStr}</strong>
                         {c.telephone && <><br />Client téléphone : {c.telephone}</>}
@@ -482,7 +487,7 @@ function BlPage() {
                     <div className="dv-head-left">
                       <div className="doc-title">Bon de livraison {ref} — Réception</div>
                       <div className="doc-meta">
-                        Tournée : <strong>{tourneeId}</strong><br />
+                        Tournée : <strong>{safeData?.tourneeNumero != null ? safeData.tourneeNumero : tourneeId}</strong><br />
                         Date de livraison : <strong>{dateStr}</strong><br />
                         Vélos livrés : <strong>{nbVelos}</strong>
                       </div>

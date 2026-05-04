@@ -7812,8 +7812,15 @@ export async function runFirestoreGet(
         }
       }
 
+      // Yoann 2026-05-04 : tourneeNumero (numéro stable persisté) pour
+      // que le BL affiche "Tournée 38" au lieu du tourneeId aléatoire.
+      const firstWithNumero = livSnap.docs.find((d) => typeof (d.data() as { tourneeNumero?: number }).tourneeNumero === "number");
+      const tourneeNumero = firstWithNumero
+        ? (firstWithNumero.data() as { tourneeNumero?: number }).tourneeNumero ?? null
+        : null;
       return {
         tourneeId,
+        tourneeNumero,
         datePrevue,
         clients: clientsByLiv.map((x) => x.client),
       };
