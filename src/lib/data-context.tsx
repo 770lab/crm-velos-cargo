@@ -155,6 +155,19 @@ interface LivraisonRow {
   dossierConfirmePar?: string | null;
   deposeAt?: string | null;
   deposePar?: string | null;
+  /** Yoann 2026-05-04 : timestamp ISO du dernier envoi du BL à Franck via
+   *  cloud function sendBlToFranck. Sert à éviter les doublons d'envoi
+   *  dans le batch "📤 BL Franck (X prêts)". */
+  blFranckEnvoyeAt?: string | null;
+  /** Compteurs vélos posés par le trigger backend onVeloWriteSyncClientStats.
+   *  Source de vérité côté backend pour les listes de "BL prêt à envoyer"
+   *  (counts.prepares >= nbVelos). */
+  counts?: {
+    prepares: number;
+    charges: number;
+    livres: number;
+    montes: number;
+  };
   client: {
     entreprise: string;
     ville: string | null;

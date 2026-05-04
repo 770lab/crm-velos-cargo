@@ -189,6 +189,15 @@ function livraisonFromDoc(id: string, d: DocumentData): LivraisonRow {
     dossierConfirmePar: typeof d.dossierConfirmePar === "string" ? d.dossierConfirmePar : null,
     deposeAt: tsToIso(d.deposeAt),
     deposePar: typeof d.deposePar === "string" ? d.deposePar : null,
+    blFranckEnvoyeAt: tsToIso(d.blFranckEnvoyeAt) ?? (typeof d.blFranckEnvoyeAt === "string" ? d.blFranckEnvoyeAt : null),
+    counts: d.counts && typeof d.counts === "object"
+      ? {
+          prepares: typeof d.counts.prepares === "number" ? d.counts.prepares : 0,
+          charges: typeof d.counts.charges === "number" ? d.counts.charges : 0,
+          livres: typeof d.counts.livres === "number" ? d.counts.livres : 0,
+          montes: typeof d.counts.montes === "number" ? d.counts.montes : 0,
+        }
+      : undefined,
     client: {
       entreprise: d.clientSnapshot?.entreprise ?? "",
       ville: d.clientSnapshot?.ville ?? null,

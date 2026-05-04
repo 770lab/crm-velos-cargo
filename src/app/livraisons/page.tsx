@@ -736,6 +736,7 @@ export default function LivraisonsPage() {
               >
                 📱 WhatsApp clients
               </button>
+              <BLFranckBatchBtn tournees={chauffeurFilteredTournees} />
               <button
                 onClick={() => setShowFeuilleJour(true)}
                 className="px-3 py-1.5 bg-blue-100 text-blue-800 border border-blue-300 rounded-lg hover:bg-blue-200 text-sm font-medium whitespace-nowrap"
@@ -6845,6 +6846,110 @@ function SendBlFranckBtn({
       title="Envoyer le BL à Franck@axdis.fr pour impression (réservé Naomi/admin — workflow compta)"
     >
       {busy ? "⏳ Envoi…" : "📤 BL à Franck"}
+    </button>
+  );
+}
+
+// Yoann 2026-05-04 : bouton mass "Envoyer tous les BL prêts à Franck".
+// Critère "prêt" : livraison non-annulée, datePrevue dans la fenêtre visible,
+// counts.prepares >= nbVelos (toutes les étiquettes posées). Évite les doublons
+// avec blFranckEnvoyeAt persisté en Firestore après chaque envoi réussi.
+function BLFranckBatchBtn({ tournees }: { tournees: Tournee[] }) {
+  const [busy, setBusy] = useState(false);
+  const eligibles = useMemo(() => {
+    type R = { tourneeId: string; clientId: string; clientName: string };
+    const out: R[] = [];
+    for (const t of tournees) {
+      const tid = t.tourneeId;
+      if (!tid) continue;
+      if (t.statutGlobal === "annulee") continue;
+      for (const l of t.livraisons) {
+        if (!l.clientId) continue;
+        if (l.statut === "annulee") continue;
+        const counts = (l as { counts?: { prepares?: number } }).counts;
+        const nbPrep = Number(counts?.prepares || 0);
+        const nb = Number(l.nbVelos || l._count?.velos || 0);
+        if (nb <= 0 || nbPrep < nb) continue;
+        // Skip si déjà envoyé
+        const sentAt = (l as { blFranckEnvoyeAt?: string | null }).blFranckEnvoyeAt;
+        if (sentAt) continue;
+        out.push({
+          tourneeId: tid,
+          clientId: l.clientId,
+          clientName: l.client?.entreprise || "?",
+        });
+      }
+    }
+    return out;
+  }, [tournees]);
+
+  const sendAll = async () => {
+    if (eligibles.length === 0) {
+      alert("Aucun BL prêt à envoyer (préparation pas encore complète, ou déjà envoyés).");
+      return;
+    }
+    const lines = eligibles.map((e) => `• ${e.clientName}`).join("\n");
+    if (!confirm(`Envoyer ${eligibles.length} BL à Franck@axdis.fr ?\n\n${lines}`)) return;
+    setBusy(true);
+    let okCount = 0;
+    const failed: string[] = [];
+    try {
+      const { httpsCallable, getFunctions } = await import("firebase/functions");
+      const { firebaseApp, db } = await import("@/lib/firebase");
+      const { collection, query, where, getDocs, updateDoc, serverTimestamp } = await import("firebase/firestore");
+      const fn = httpsCallable<
+        { tourneeId: string; clientId: string },
+        { ok: true; numeroBL: string; velosCount: number }
+      >(getFunctions(firebaseApp, "europe-west1"), "sendBlToFranck");
+      for (const e of eligibles) {
+        try {
+          await fn({ tourneeId: e.tourneeId, clientId: e.clientId });
+          // Persiste blFranckEnvoyeAt sur la livraison correspondante
+          // (la cloud function n'écrit pas ce champ → on le pose côté client
+          // pour ne pas re-envoyer au prochain batch).
+          try {
+            const livSnap = await getDocs(query(
+              collection(db, "livraisons"),
+              where("tourneeId", "==", e.tourneeId),
+              where("clientId", "==", e.clientId),
+            ));
+            for (const ld of livSnap.docs) {
+              await updateDoc(ld.ref, {
+                blFranckEnvoyeAt: new Date().toISOString(),
+                updatedAt: serverTimestamp(),
+              });
+            }
+          } catch (persistErr) {
+            console.error("[BL Franck batch] persist failed", e, persistErr);
+          }
+          okCount++;
+        } catch (err) {
+          failed.push(`${e.clientName} (${err instanceof Error ? err.message : "?"})`);
+        }
+      }
+      const summary = `✅ ${okCount}/${eligibles.length} envoyés${
+        failed.length > 0 ? `\n❌ Échecs :\n${failed.join("\n")}` : ""
+      }`;
+      alert(summary);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const label = eligibles.length > 0
+    ? `📤 BL Franck (${eligibles.length} prêt${eligibles.length > 1 ? "s" : ""})`
+    : "📤 BL Franck";
+
+  return (
+    <button
+      onClick={sendAll}
+      disabled={busy || eligibles.length === 0}
+      className="px-3 py-1.5 bg-purple-600 text-white rounded-lg hover:bg-purple-700 text-sm font-medium whitespace-nowrap disabled:opacity-50"
+      title={eligibles.length > 0
+        ? `Envoie en lot les ${eligibles.length} BL prêts (préparation complète) à Franck@axdis.fr`
+        : "Aucun BL prêt à envoyer (préparation incomplète ou déjà envoyés)"}
+    >
+      {busy ? "⏳ Envoi en cours…" : label}
     </button>
   );
 }
