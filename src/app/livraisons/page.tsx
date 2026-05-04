@@ -6887,46 +6887,22 @@ function SendBlFranckTourneeBtn({
       return;
     }
     const lines = restantsAEnvoyer.map((c) => `• ${c.entreprise}`).join("\n");
-    if (!confirm(`Envoyer ${restantsAEnvoyer.length} BL à Franck@axdis.fr ?\n\n${lines}`)) return;
+    if (!confirm(`Envoyer 1 mail à Franck@axdis.fr avec ${restantsAEnvoyer.length} BL en pièce jointe ?\n\n${lines}`)) return;
     setBusy(true);
-    let okCount = 0;
-    const failed: string[] = [];
     try {
       const { httpsCallable, getFunctions } = await import("firebase/functions");
-      const { firebaseApp, db } = await import("@/lib/firebase");
-      const { collection, query, where, getDocs, updateDoc, serverTimestamp } = await import("firebase/firestore");
+      const { firebaseApp } = await import("@/lib/firebase");
+      // Yoann 2026-05-04 : 1 seul appel sans clientId → mode tournée entière
+      // côté Cloud Function. 1 mail avec N PDFs (au lieu d'1 mail/client).
+      // La Cloud Function persiste blFranckEnvoyeAt sur toutes les livraisons.
       const fn = httpsCallable<
-        { tourneeId: string; clientId: string },
-        { ok: true; numeroBL: string; velosCount: number }
+        { tourneeId: string },
+        { ok: true; numeroBLs: string[]; velosCount: number; clientsCount: number }
       >(getFunctions(firebaseApp, "europe-west1"), "sendBlToFranck");
-      for (const c of restantsAEnvoyer) {
-        try {
-          await fn({ tourneeId, clientId: c.clientId });
-          try {
-            const livSnap = await getDocs(query(
-              collection(db, "livraisons"),
-              where("tourneeId", "==", tourneeId),
-              where("clientId", "==", c.clientId),
-            ));
-            for (const ld of livSnap.docs) {
-              await updateDoc(ld.ref, {
-                blFranckEnvoyeAt: new Date().toISOString(),
-                updatedAt: serverTimestamp(),
-              });
-            }
-          } catch (persistErr) {
-            console.error("[BL Franck tournée] persist failed", c, persistErr);
-          }
-          okCount++;
-        } catch (err) {
-          failed.push(`${c.entreprise} (${err instanceof Error ? err.message : "?"})`);
-        }
-      }
-      alert(
-        `✅ ${okCount}/${restantsAEnvoyer.length} envoyés${
-          failed.length > 0 ? `\n❌ Échecs :\n${failed.join("\n")}` : ""
-        }`
-      );
+      const r = await fn({ tourneeId });
+      alert(`✅ Mail envoyé à Franck — ${r.data.clientsCount} BL (${r.data.velosCount} vélos)`);
+    } catch (err) {
+      alert(`❌ Échec : ${err instanceof Error ? err.message : "?"}`);
     } finally {
       setBusy(false);
     }
@@ -6964,13 +6940,17 @@ function SendBlFranckTourneeBtn({
 // avec blFranckEnvoyeAt persisté en Firestore après chaque envoi réussi.
 function BLFranckBatchBtn({ tournees }: { tournees: Tournee[] }) {
   const [busy, setBusy] = useState(false);
+  // Yoann 2026-05-04 : on groupe par tournée. Une tournée est "prête" quand
+  // au moins une de ses livraisons a counts.prepares >= nbVelos ET pas
+  // encore envoyée à Franck. Un mail par tournée (avec N PDFs).
   const eligibles = useMemo(() => {
-    type R = { tourneeId: string; clientId: string; clientName: string };
+    type R = { tourneeId: string; tourneeNumero: number | null; nbBL: number };
     const out: R[] = [];
     for (const t of tournees) {
       const tid = t.tourneeId;
       if (!tid) continue;
       if (t.statutGlobal === "annulee") continue;
+      let nbBL = 0;
       for (const l of t.livraisons) {
         if (!l.clientId) continue;
         if (l.statut === "annulee") continue;
@@ -6978,14 +6958,12 @@ function BLFranckBatchBtn({ tournees }: { tournees: Tournee[] }) {
         const nbPrep = Number(counts?.prepares || 0);
         const nb = Number(l.nbVelos || l._count?.velos || 0);
         if (nb <= 0 || nbPrep < nb) continue;
-        // Skip si déjà envoyé
         const sentAt = (l as { blFranckEnvoyeAt?: string | null }).blFranckEnvoyeAt;
         if (sentAt) continue;
-        out.push({
-          tourneeId: tid,
-          clientId: l.clientId,
-          clientName: l.client?.entreprise || "?",
-        });
+        nbBL++;
+      }
+      if (nbBL > 0) {
+        out.push({ tourneeId: tid, tourneeNumero: t.numero ?? null, nbBL });
       }
     }
     return out;
@@ -6996,46 +6974,30 @@ function BLFranckBatchBtn({ tournees }: { tournees: Tournee[] }) {
       alert("Aucun BL prêt à envoyer (préparation pas encore complète, ou déjà envoyés).");
       return;
     }
-    const lines = eligibles.map((e) => `• ${e.clientName}`).join("\n");
-    if (!confirm(`Envoyer ${eligibles.length} BL à Franck@axdis.fr ?\n\n${lines}`)) return;
+    const lines = eligibles
+      .map((e) => `• ${e.tourneeNumero != null ? `Tournée ${e.tourneeNumero}` : `Tournée ${e.tourneeId.slice(0, 8)}…`} (${e.nbBL} BL)`)
+      .join("\n");
+    if (!confirm(`Envoyer ${eligibles.length} mail${eligibles.length > 1 ? "s" : ""} à Franck@axdis.fr (1 par tournée) ?\n\n${lines}`)) return;
     setBusy(true);
     let okCount = 0;
     const failed: string[] = [];
     try {
       const { httpsCallable, getFunctions } = await import("firebase/functions");
-      const { firebaseApp, db } = await import("@/lib/firebase");
-      const { collection, query, where, getDocs, updateDoc, serverTimestamp } = await import("firebase/firestore");
+      const { firebaseApp } = await import("@/lib/firebase");
       const fn = httpsCallable<
-        { tourneeId: string; clientId: string },
-        { ok: true; numeroBL: string; velosCount: number }
+        { tourneeId: string },
+        { ok: true; numeroBLs: string[]; velosCount: number; clientsCount: number }
       >(getFunctions(firebaseApp, "europe-west1"), "sendBlToFranck");
       for (const e of eligibles) {
         try {
-          await fn({ tourneeId: e.tourneeId, clientId: e.clientId });
-          // Persiste blFranckEnvoyeAt sur la livraison correspondante
-          // (la cloud function n'écrit pas ce champ → on le pose côté client
-          // pour ne pas re-envoyer au prochain batch).
-          try {
-            const livSnap = await getDocs(query(
-              collection(db, "livraisons"),
-              where("tourneeId", "==", e.tourneeId),
-              where("clientId", "==", e.clientId),
-            ));
-            for (const ld of livSnap.docs) {
-              await updateDoc(ld.ref, {
-                blFranckEnvoyeAt: new Date().toISOString(),
-                updatedAt: serverTimestamp(),
-              });
-            }
-          } catch (persistErr) {
-            console.error("[BL Franck batch] persist failed", e, persistErr);
-          }
+          await fn({ tourneeId: e.tourneeId });
           okCount++;
         } catch (err) {
-          failed.push(`${e.clientName} (${err instanceof Error ? err.message : "?"})`);
+          const label = e.tourneeNumero != null ? `Tournée ${e.tourneeNumero}` : e.tourneeId.slice(0, 8);
+          failed.push(`${label} (${err instanceof Error ? err.message : "?"})`);
         }
       }
-      const summary = `✅ ${okCount}/${eligibles.length} envoyés${
+      const summary = `✅ ${okCount}/${eligibles.length} mail${eligibles.length > 1 ? "s" : ""} envoyé${okCount > 1 ? "s" : ""}${
         failed.length > 0 ? `\n❌ Échecs :\n${failed.join("\n")}` : ""
       }`;
       alert(summary);
@@ -7044,8 +7006,9 @@ function BLFranckBatchBtn({ tournees }: { tournees: Tournee[] }) {
     }
   };
 
+  const totalBL = eligibles.reduce((s, e) => s + e.nbBL, 0);
   const label = eligibles.length > 0
-    ? `📤 BL Franck (${eligibles.length} prêt${eligibles.length > 1 ? "s" : ""})`
+    ? `📤 BL Franck (${eligibles.length} tournée${eligibles.length > 1 ? "s" : ""} · ${totalBL} BL)`
     : "📤 BL Franck";
 
   return (

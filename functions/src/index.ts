@@ -1751,15 +1751,20 @@ function pdfBlGenerate(opts: {
   });
 }
 
-export const sendBlToFranck = onCall<{ tourneeId: string; clientId: string }>(
-  { secrets: [GMAIL_APP_PASSWORD], timeoutSeconds: 90, memory: "512MiB" },
+export const sendBlToFranck = onCall<{ tourneeId: string; clientId?: string }>(
+  { secrets: [GMAIL_APP_PASSWORD], timeoutSeconds: 120, memory: "512MiB" },
   async (request) => {
     if (!request.auth) {
       throw new HttpsError("unauthenticated", "Authentification requise");
     }
     const { tourneeId, clientId } = request.data || {};
-    if (!tourneeId || !clientId) {
-      throw new HttpsError("invalid-argument", "tourneeId + clientId requis");
+    if (!tourneeId) {
+      throw new HttpsError("invalid-argument", "tourneeId requis");
+    }
+    // Yoann 2026-05-04 : si clientId absent → mode "tournée entière" :
+    // 1 seul mail avec 1 PDF par client (au lieu d'1 mail par client).
+    if (!clientId) {
+      return await sendBlTourneeFullToFranck(tourneeId);
     }
     const password = GMAIL_APP_PASSWORD.value();
     if (!password) {
@@ -1919,6 +1924,212 @@ export const sendBlToFranck = onCall<{ tourneeId: string; clientId: string }>(
     }
   },
 );
+
+// Yoann 2026-05-04 : envoi groupé tournée entière. 1 mail à Franck avec
+// 1 PDF par client (au lieu d'1 mail par client). Appelé via sendBlToFranck
+// quand clientId est omis. Persiste blFranckEnvoyeAt sur chaque livraison.
+async function sendBlTourneeFullToFranck(tourneeId: string): Promise<{
+  ok: true;
+  messageId: string;
+  sentTo: string;
+  numeroBLs: string[];
+  velosCount: number;
+  clientsCount: number;
+}> {
+  const password = GMAIL_APP_PASSWORD.value();
+  if (!password) {
+    throw new HttpsError("failed-precondition", "GMAIL_APP_PASSWORD non configurée");
+  }
+  // 1. Charge toutes les livraisons non annulées de la tournée
+  const livSnap = await db
+    .collection("livraisons")
+    .where("tourneeId", "==", tourneeId)
+    .get();
+  if (livSnap.empty) {
+    throw new HttpsError("not-found", "Aucune livraison trouvée pour cette tournée");
+  }
+  const livs = livSnap.docs.filter((d) => {
+    const v = d.data() as { statut?: string; annule?: boolean };
+    return v.statut !== "annulee" && v.annule !== true;
+  });
+  if (livs.length === 0) {
+    throw new HttpsError("not-found", "Toutes les livraisons sont annulées");
+  }
+
+  // 2. Métadonnées tournée (date + numéro tournée)
+  const firstData = livs[0].data() as {
+    datePrevue?: { toDate?: () => Date } | string;
+    numero?: number;
+    tourneeNumero?: number;
+  };
+  let dateLivStr = "";
+  const dp = firstData.datePrevue;
+  if (dp) {
+    const dt = typeof dp === "string" ? new Date(dp) : dp.toDate?.() || null;
+    if (dt) dateLivStr = dt.toLocaleDateString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric" });
+  }
+  const tourneeNum = firstData.tourneeNumero ?? firstData.numero;
+  const tourneeRef = typeof tourneeNum === "number" ? `TOURNEE ${tourneeNum}` : tourneeId;
+  const tourneeLabel = typeof tourneeNum === "number" ? `Tournée ${tourneeNum}` : `Tournée ${tourneeId.slice(0, 8)}`;
+
+  // 3. Boucle sur chaque livraison/client : génère PDF + persiste numeroBL
+  const attachments: Array<{ filename: string; content: Buffer; contentType: string }> = [];
+  const numeroBLs: string[] = [];
+  const summaryLines: string[] = [];
+  let totalVelos = 0;
+  for (const livDoc of livs) {
+    const livData = livDoc.data() as {
+      clientId?: string;
+      datePrevue?: { toDate?: () => Date } | string;
+      numero?: number;
+      numeroBL?: string;
+      tourneeNumero?: number;
+      clientSnapshot?: {
+        entreprise?: string;
+        adresse?: string;
+        codePostal?: string;
+        ville?: string;
+        siren?: string;
+        telephone?: string;
+      };
+    };
+    const cid = livData.clientId;
+    if (!cid) continue;
+
+    // Numéro BL séquentiel si manquant
+    let numeroBL = livData.numeroBL;
+    if (!numeroBL) {
+      const year = new Date().getFullYear();
+      const counterRef = db.collection("counters").doc(`bl-${year}`);
+      const next = await db.runTransaction(async (tx) => {
+        const snap = await tx.get(counterRef);
+        const n = snap.exists ? (snap.data()?.n || 0) + 1 : 1;
+        tx.set(counterRef, { n }, { merge: true });
+        return n;
+      });
+      numeroBL = `BL-${year}-${String(next).padStart(5, "0")}`;
+      await livDoc.ref.update({ numeroBL });
+    }
+
+    // Infos client
+    const cs = livData.clientSnapshot || {};
+    let clientName = cs.entreprise || "";
+    let clientAdresse = cs.adresse || "";
+    let clientCp = cs.codePostal || "";
+    let clientVille = cs.ville || "";
+    let clientSiren = cs.siren || null;
+    let clientTel = cs.telephone || null;
+    if (!clientName) {
+      const cDoc = await db.collection("clients").doc(cid).get();
+      if (cDoc.exists) {
+        const cd = cDoc.data() as Record<string, unknown>;
+        clientName = (cd.entreprise as string) || "";
+        clientAdresse = (cd.adresse as string) || "";
+        clientCp = (cd.codePostal as string) || "";
+        clientVille = (cd.ville as string) || "";
+        clientSiren = (cd.siren as string) || null;
+        clientTel = (cd.telephone as string) || null;
+      }
+    }
+
+    // FNUCI préparés
+    const vSnap = await db.collection("velos").where("clientId", "==", cid).get();
+    const fnucis: string[] = [];
+    for (const v of vSnap.docs) {
+      const vd = v.data() as { fnuci?: string; annule?: boolean; datePreparation?: unknown };
+      if (vd.annule) continue;
+      if (!vd.datePreparation) continue;
+      if (vd.fnuci) fnucis.push(vd.fnuci);
+    }
+    fnucis.sort();
+
+    const pdfBuffer = await pdfBlGenerate({
+      numeroBL,
+      dateLiv: dateLivStr,
+      tourneeRef,
+      clientName,
+      clientAdresse,
+      clientCpVille: `${clientCp} ${clientVille}`.trim(),
+      clientSiren,
+      clientTel,
+      fnucis,
+    });
+    attachments.push({
+      filename: `${numeroBL}-${(clientName || "client").replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.pdf`,
+      content: pdfBuffer,
+      contentType: "application/pdf",
+    });
+    numeroBLs.push(numeroBL);
+    summaryLines.push(`  • ${numeroBL} — ${clientName} — ${fnucis.length} vélo${fnucis.length > 1 ? "s" : ""}`);
+    totalVelos += fnucis.length;
+  }
+
+  if (attachments.length === 0) {
+    throw new HttpsError("not-found", "Aucun BL généré (livraisons sans client ?)");
+  }
+
+  // 4. Mail unique avec tous les PDFs
+  const subject = `BL ${tourneeLabel} (${attachments.length} client${attachments.length > 1 ? "s" : ""}, ${totalVelos} vélo${totalVelos > 1 ? "s" : ""}) — ${dateLivStr}`;
+  const body = [
+    `Bonjour Franck,`,
+    ``,
+    `Voici les bons de livraison de la ${tourneeLabel.toLowerCase()} du ${dateLivStr || "jour"} :`,
+    ``,
+    ...summaryLines,
+    ``,
+    `Total : ${attachments.length} BL · ${totalVelos} vélo${totalVelos > 1 ? "s" : ""}`,
+    ``,
+    `Les ${attachments.length} PDF${attachments.length > 1 ? "s sont" : " est"} en pièce jointe.`,
+    ``,
+    `Merci,`,
+    `Yoann`,
+  ].join("\n");
+
+  const transporter = nodemailer.createTransport({
+    host: "smtp.gmail.com",
+    port: 465,
+    secure: true,
+    auth: { user: SENDER_EMAIL, pass: password },
+  });
+
+  try {
+    const info = await transporter.sendMail({
+      from: `"VELO CARGO" <${SENDER_EMAIL}>`,
+      to: FRANCK_EMAIL,
+      cc: SENDER_EMAIL,
+      subject,
+      text: body,
+      attachments,
+    });
+    // Persiste blFranckEnvoyeAt sur toutes les livraisons envoyées (idempotence)
+    const sentAt = new Date().toISOString();
+    const batch = db.batch();
+    for (const livDoc of livs) {
+      batch.update(livDoc.ref, { blFranckEnvoyeAt: sentAt });
+    }
+    await batch.commit();
+    logger.info("sendBlTourneeFullToFranck envoyé", {
+      tourneeId,
+      numeroBLs,
+      clientsCount: attachments.length,
+      velosCount: totalVelos,
+      messageId: info.messageId,
+      to: FRANCK_EMAIL,
+    });
+    return {
+      ok: true,
+      messageId: info.messageId,
+      sentTo: FRANCK_EMAIL,
+      numeroBLs,
+      velosCount: totalVelos,
+      clientsCount: attachments.length,
+    };
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    logger.error("sendBlTourneeFullToFranck SMTP failed", { tourneeId, err: msg });
+    throw new HttpsError("internal", `Envoi SMTP échoué : ${msg}`);
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────────────
 // Phase 3 — Auto-matching bonsEnlevement <-> commandesCamion (Yoann
